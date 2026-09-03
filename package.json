@@ -1,0 +1,39 @@
+{
+  "name": "wardrobe-backend",
+  "version": "0.1.0",
+  "description": "Digital Wardrobe serverless backend (AWS CDK)",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "prepare:cdk": "node scripts/ensure-cdk-json.js",
+    "synth": "node scripts/ensure-cdk-json.js && cdk synth --app \"node -r ts-node/register/transpile-only bin/app.ts\"",
+    "diff": "node scripts/ensure-cdk-json.js && cdk diff --app \"node -r ts-node/register/transpile-only bin/app.ts\"",
+    "deploy": "node scripts/ensure-cdk-json.js && cdk deploy --app \"node -r ts-node/register/transpile-only bin/app.ts\"",
+    "deploy:pipeline": "node scripts/ensure-cdk-json.js && cdk deploy --app \"node -r ts-node/register/transpile-only bin/app.ts\" WardrobePipeline",
+    "destroy": "node scripts/ensure-cdk-json.js && cdk destroy --app \"node -r ts-node/register/transpile-only bin/app.ts\"",
+    "cdk": "cdk"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.10.2",
+    "aws-cdk": "^2.170.0",
+    "esbuild": "^0.24.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.714.0",
+    "@aws-sdk/client-s3": "^3.714.0",
+    "@aws-sdk/client-sqs": "^3.714.0",
+    "@aws-sdk/lib-dynamodb": "^3.714.0",
+    "@aws-sdk/s3-request-presigner": "^3.714.0",
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.4.2",
+    "nanoid": "^3.3.8",
+    "source-map-support": "^0.5.21"
+  }
+}
