@@ -4,7 +4,6 @@ import { WardrobeStack } from './wardrobe-stack';
 
 export interface WardrobeStageProps extends cdk.StageProps {
   stage: string;
-  firebaseProjectId: string;
 }
 
 export class WardrobeStage extends cdk.Stage {
@@ -16,7 +15,6 @@ export class WardrobeStage extends cdk.Stage {
       env: props.env,
       description: `Digital Wardrobe backend (${props.stage})`,
       stage: props.stage,
-      firebaseProjectId: props.firebaseProjectId,
     });
   }
 }

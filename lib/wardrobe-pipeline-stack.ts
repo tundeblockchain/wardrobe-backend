@@ -44,7 +44,6 @@ export class WardrobePipelineStack extends cdk.Stack {
       env: {
         CI: 'true',
         STAGE: 'prod',
-        FIREBASE_PROJECT_ID: config.firebaseProjectId,
         GITHUB_OWNER: config.githubOwner,
         GITHUB_REPO: config.githubRepo,
         GITHUB_BRANCH: config.githubBranch,
@@ -78,7 +77,6 @@ export class WardrobePipelineStack extends cdk.Stack {
       new WardrobeStage(this, 'Prod', {
         env: props.env,
         stage: 'prod',
-        firebaseProjectId: config.firebaseProjectId,
       }),
     );
   }

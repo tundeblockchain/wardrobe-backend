@@ -1,6 +1,5 @@
 export interface AppConfig {
   stage: string;
-  firebaseProjectId: string;
   githubOwner?: string;
   githubRepo?: string;
   githubBranch: string;
@@ -30,13 +29,6 @@ function readString(
 export function resolveAppConfig(node: ContextReader): AppConfig {
   return {
     stage: readString(node, 'stage', process.env.STAGE, 'dev') ?? 'dev',
-    firebaseProjectId:
-      readString(
-        node,
-        'firebaseProjectId',
-        process.env.FIREBASE_PROJECT_ID,
-        'your-firebase-project-id',
-      ) ?? 'your-firebase-project-id',
     githubOwner: readString(node, 'githubOwner', process.env.GITHUB_OWNER),
     githubRepo: readString(node, 'githubRepo', process.env.GITHUB_REPO),
     githubBranch:

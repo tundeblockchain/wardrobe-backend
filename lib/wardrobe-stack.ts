@@ -9,14 +9,13 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { NodejsFunction, NodejsFunctionProps } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
 export interface WardrobeStackProps extends cdk.StackProps {
   stage?: string;
-  firebaseProjectId?: string;
 }
 
 export class WardrobeStack extends cdk.Stack {
@@ -28,11 +27,6 @@ export class WardrobeStack extends cdk.Stack {
       (this.node.tryGetContext('stage') as string | undefined) ??
       process.env.STAGE ??
       'dev';
-    const firebaseProjectId =
-      props?.firebaseProjectId ??
-      (this.node.tryGetContext('firebaseProjectId') as string | undefined) ??
-      process.env.FIREBASE_PROJECT_ID ??
-      'your-firebase-project-id';
     const isDev = stage === 'dev';
     const removalPolicy = isDev ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
 
@@ -83,11 +77,14 @@ export class WardrobeStack extends cdk.Stack {
       },
     });
 
-    new ssm.StringParameter(this, 'FirebaseProjectIdParameter', {
-      parameterName: `/wardrobe/${stage}/firebase-project-id`,
-      stringValue: firebaseProjectId,
-      description: 'Firebase project ID used to validate ID tokens',
+    const firebaseSecretName = `wardrobe/${stage}/firebase-project-id`;
+    const firebaseProjectIdSecret = new secretsmanager.Secret(this, 'FirebaseProjectIdSecret', {
+      secretName: firebaseSecretName,
+      description:
+        'Firebase project ID used to validate ID tokens. Replace the generated value with your Firebase project ID.',
+      removalPolicy,
     });
+    const firebaseProjectId = `{{resolve:secretsmanager:${firebaseSecretName}:SecretString:::}}`;
 
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -172,6 +169,7 @@ export class WardrobeStack extends cdk.Stack {
         maxAge: cdk.Duration.days(1),
       },
     });
+    httpApi.node.addDependency(firebaseProjectIdSecret);
 
     const healthIntegration = new HttpLambdaIntegration('HealthIntegration', healthFn);
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
@@ -264,6 +262,11 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ProcessingQueueUrl', {
       value: processingQueue.queueUrl,
       description: 'Item processing queue URL',
+    });
+
+    new cdk.CfnOutput(this, 'FirebaseProjectIdSecretName', {
+      value: firebaseProjectIdSecret.secretName,
+      description: 'Secrets Manager secret that must contain the Firebase project ID',
     });
   }
 

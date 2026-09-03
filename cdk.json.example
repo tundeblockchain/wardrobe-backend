@@ -16,7 +16,6 @@
   },
   "context": {
     "stage": "dev",
-    "firebaseProjectId": "your-firebase-project-id",
     "githubOwner": "",
     "githubRepo": "",
     "githubBranch": "master",

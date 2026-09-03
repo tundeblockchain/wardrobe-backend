@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs and a DLQ alarm |
-| SSM Parameter | Firebase project ID |
+| Secrets Manager | Firebase project ID |
 
 Working in this first cut:
 
@@ -41,22 +41,21 @@ Stubbed for the next pass:
 npm install
 ```
 
-`cdk.json` is gitignored. Copy the example and set your Firebase project ID:
+`cdk.json` is gitignored. Copy the example if you want a local file:
 
 ```bash
 cp cdk.json.example cdk.json
 ```
 
-```json
-{
-  "context": {
-    "stage": "dev",
-    "firebaseProjectId": "your-actual-firebase-project-id"
-  }
-}
-```
-
 If `cdk.json` is missing, `npm run synth` / `npm run deploy` generate it from `cdk.json.example`.
+
+The Firebase project ID is not CDK context. After the stack deploys, put it in Secrets Manager (`wardrobe/{stage}/firebase-project-id`), then deploy once more so API Gateway picks up the issuer and audience:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/dev/firebase-project-id \
+  --secret-string "your-actual-firebase-project-id"
+```
 
 If this is the first CDK app in the account/region:
 
@@ -144,10 +143,10 @@ Routes exist and require a valid Firebase token. They currently return:
 
 Identity always comes from the validated Firebase token (`sub` = Firebase UID). Clients must not send `userId` as proof of ownership.
 
-HTTP API JWT authorizer settings:
+HTTP API JWT authorizer settings come from the Secrets Manager value:
 
-- Issuer: `https://securetoken.google.com/<firebaseProjectId>`
-- Audience: `<firebaseProjectId>`
+- Issuer: `https://securetoken.google.com/<firebase-project-id>`
+- Audience: `<firebase-project-id>`
 
 ## DynamoDB keys
 
@@ -191,8 +190,10 @@ src/shared/
 ## Environments
 
 ```bash
-npm run deploy -- -c stage=staging -c firebaseProjectId=your-firebase-project-id
+npm run deploy -- -c stage=staging
 ```
+
+Then set `wardrobe/staging/firebase-project-id` in Secrets Manager and deploy again.
 
 Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. Staging and production retain data.
 
@@ -200,7 +201,7 @@ Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. S
 
 Pushes to `master` trigger an AWS CodePipeline that synths and deploys `WardrobeStack-prod`.
 
-`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, `FIREBASE_PROJECT_ID`, GitHub source settings). Synth also passes `--app`, so CDK does not need a committed `cdk.json`.
+`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID stays in Secrets Manager.
 
 ### One-time setup
 
@@ -211,7 +212,6 @@ Pushes to `master` trigger an AWS CodePipeline that synths and deploys `Wardrobe
 ```json
 {
   "context": {
-    "firebaseProjectId": "your-actual-firebase-project-id",
     "githubOwner": "your-github-user",
     "githubRepo": "wardrobe-backend",
     "githubBranch": "master",

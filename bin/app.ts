@@ -32,7 +32,6 @@ if (!isCi) {
   new WardrobeStack(app, `WardrobeStack-${config.stage}`, {
     env,
     stage: config.stage,
-    firebaseProjectId: config.firebaseProjectId,
     description: `Digital Wardrobe backend (${config.stage})`,
   });
 }
