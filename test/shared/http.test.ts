@@ -64,6 +64,18 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps ITEM_NOT_FOUND to a 404 envelope', () => {
+    const result = asResult(errorResponse(Errors.itemNotFound()));
+
+    expect(result.statusCode).toBe(404);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ITEM_NOT_FOUND',
+        message: 'Clothing item not found.',
+      },
+    });
+  });
+
   it('maps UPLOAD_INVALID to a 400 envelope', () => {
     const result = asResult(
       errorResponse(Errors.uploadInvalid('purpose must be WARDROBE_ITEM.')),

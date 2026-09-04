@@ -20,11 +20,11 @@ Working in this first cut:
 
 - `GET /health` (no auth)
 - Wardrobe CRUD
+- Clothing item CRUD (nested under a wardrobe)
 - `POST /uploads` (S3 pre-signed PUT URL)
 
 Stubbed for the next pass:
 
-- Clothing item APIs
 - Outfit APIs
 - Processing worker (logs the SQS message only)
 
@@ -145,9 +145,38 @@ Identity always comes from the Firebase token. A body `userId` is ignored.
 
 The client then `PUT`s the image directly to `uploadUrl` with the same `Content-Type` (and `Content-Length` when it was declared). The media bucket stays private; the URL is time-limited.
 
-### Items and outfits
+### Clothing items
 
-Routes exist and require a valid Firebase token. They currently return:
+Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must belong to that user before any item operation. Body `userId` is ignored.
+
+```http
+POST   /wardrobes/{wardrobeId}/items
+GET    /wardrobes/{wardrobeId}/items
+GET    /wardrobes/{wardrobeId}/items/{itemId}
+PATCH  /wardrobes/{wardrobeId}/items/{itemId}
+DELETE /wardrobes/{wardrobeId}/items/{itemId}
+```
+
+Create body (`name`, `category`, and `imageKey` required):
+
+```json
+{
+  "name": "Black T-Shirt",
+  "category": "TOP",
+  "subcategory": "TSHIRT",
+  "colours": ["BLACK"],
+  "brand": "Nike",
+  "imageKey": "users/{uid}/uploads/....jpg"
+}
+```
+
+`category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user.
+
+Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, `processingStatus`, ISO 8601 timestamps). Phase-1 always sets `processingStatus` to `READY` and does **not** enqueue SQS. List returns `{ "items": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+
+### Outfits
+
+Outfit routes exist and require a valid Firebase token. They currently return:
 
 ```json
 {
@@ -257,7 +286,6 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 ## Next
 
-1. Clothing item CRUD and SQS job on create
-2. Outfit CRUD with wardrobe/item ownership checks
-3. Worker: processing status updates (AI later)
-4. Pagination, download pre-signed URLs, and environment-specific alarms
+1. Outfit CRUD with wardrobe/item ownership checks
+2. Phase-2: enqueue SQS on item create and worker processing-status updates (AI later)
+3. Pagination, download pre-signed URLs, and environment-specific alarms

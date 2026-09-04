@@ -120,3 +120,22 @@ export async function getOwnedWardrobe(
   }
   return item;
 }
+
+export async function getOwnedItem(
+  userId: string,
+  wardrobeId: string,
+  itemId: string,
+): Promise<DynamoItem> {
+  await getOwnedWardrobe(userId, wardrobeId);
+
+  const item = await getItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
+  if (
+    !item ||
+    item.entityType !== 'ITEM' ||
+    item.userId !== userId ||
+    item.wardrobeId !== wardrobeId
+  ) {
+    throw Errors.itemNotFound();
+  }
+  return item;
+}
