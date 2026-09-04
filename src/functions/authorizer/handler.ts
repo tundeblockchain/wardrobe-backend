@@ -4,6 +4,10 @@ import {
   APIGatewaySimpleAuthorizerWithContextResult,
 } from 'aws-lambda';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import {
+  extractBearerToken,
+  firebaseUidFromPayload,
+} from '../../shared/firebase-token';
 import { logger } from '../../shared/logger';
 
 const secrets = new SecretsManagerClient({});
@@ -25,20 +29,23 @@ export async function handler(
   event: APIGatewayRequestAuthorizerEventV2,
 ): Promise<APIGatewaySimpleAuthorizerWithContextResult<AuthorizerContext>> {
   try {
-    const token = bearerToken(event);
+    const token = extractBearerToken(event);
     const projectId = await firebaseProjectId();
     const { payload } = await jwtVerify(token, FIREBASE_JWKS, {
       issuer: `https://securetoken.google.com/${projectId}`,
       audience: projectId,
+      algorithms: ['RS256'],
+      clockTolerance: 5,
     });
 
-    if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+    const uid = firebaseUidFromPayload(payload);
+    if (!uid) {
       return deny();
     }
 
     return {
       isAuthorized: true,
-      context: { sub: payload.sub },
+      context: { sub: uid },
     };
   } catch (error) {
     logger.warn('Firebase token validation failed', {
@@ -50,24 +57,6 @@ export async function handler(
 
 function deny(): APIGatewaySimpleAuthorizerWithContextResult<AuthorizerContext> {
   return { isAuthorized: false, context: { sub: '' } };
-}
-
-function bearerToken(event: APIGatewayRequestAuthorizerEventV2): string {
-  const header =
-    event.headers?.authorization ??
-    event.headers?.Authorization ??
-    event.identitySource?.[0];
-
-  if (!header) {
-    throw new Error('Missing Authorization header');
-  }
-
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  if (!match?.[1]) {
-    throw new Error('Authorization header must be a Bearer token');
-  }
-
-  return match[1];
 }
 
 async function firebaseProjectId(): Promise<string> {
@@ -108,4 +97,10 @@ function parseProjectId(secretString: string | undefined): string {
   }
 
   return trimmed;
+}
+
+/** Test-only: clear the in-memory Firebase project ID cache. */
+export function resetAuthorizerCache(): void {
+  cachedProjectId = undefined;
+  cachedAt = 0;
 }
