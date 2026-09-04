@@ -19,3 +19,18 @@ export function requireNonEmptyString(
 
   return trimmed;
 }
+
+export function optionalInteger(
+  value: unknown,
+  field: string,
+): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw Errors.validation(`${field} must be an integer.`);
+  }
+
+  return value;
+}

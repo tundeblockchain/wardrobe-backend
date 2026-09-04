@@ -63,4 +63,18 @@ describe('shared error envelope', () => {
       },
     });
   });
+
+  it('maps UPLOAD_INVALID to a 400 envelope', () => {
+    const result = asResult(
+      errorResponse(Errors.uploadInvalid('purpose must be WARDROBE_ITEM.')),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'UPLOAD_INVALID',
+        message: 'purpose must be WARDROBE_ITEM.',
+      },
+    });
+  });
 });
