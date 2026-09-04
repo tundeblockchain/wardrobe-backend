@@ -135,7 +135,14 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     const health = routes.find((route) => route.Properties.RouteKey === 'GET /health');
     expect(health?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
 
-    for (const routeKey of ['GET /wardrobes', 'POST /wardrobes', 'POST /uploads']) {
+    for (const routeKey of [
+      'GET /wardrobes',
+      'POST /wardrobes',
+      'GET /wardrobes/{wardrobeId}',
+      'PATCH /wardrobes/{wardrobeId}',
+      'DELETE /wardrobes/{wardrobeId}',
+      'POST /uploads',
+    ]) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
     }
