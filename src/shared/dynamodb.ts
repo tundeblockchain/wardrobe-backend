@@ -115,7 +115,7 @@ export async function getOwnedWardrobe(
   wardrobeId: string,
 ): Promise<DynamoItem> {
   const item = await getItem(keys.userPk(userId), keys.wardrobeSk(wardrobeId));
-  if (!item) {
+  if (!item || item.entityType !== 'WARDROBE') {
     throw Errors.wardrobeNotFound();
   }
   return item;

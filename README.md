@@ -97,6 +97,8 @@ GET /health
 
 ### Wardrobes
 
+Identity comes from the Firebase authorizer (`getUserId`). Body/query/path `userId` is ignored.
+
 ```http
 POST   /wardrobes
 GET    /wardrobes
@@ -105,11 +107,13 @@ PATCH  /wardrobes/{wardrobeId}
 DELETE /wardrobes/{wardrobeId}
 ```
 
-Create body:
+Create / update body (`name` required, trimmed, 1–100 characters):
 
 ```json
 { "name": "Summer Clothes" }
 ```
+
+Create returns `201` with the Flutter DTO (`wardrobeId`, `name`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "wardrobes": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Delete returns `204`.
 
 ### Uploads
 

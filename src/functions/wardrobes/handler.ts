@@ -34,18 +34,16 @@ export async function handler(
   try {
     const userId = getUserId(event);
     const method = event.requestContext.http.method;
-    const wardrobeId = event.pathParameters?.wardrobeId;
-
-    if (method === 'GET' && !wardrobeId) {
-      return ok({ wardrobes: await listWardrobes(userId) });
-    }
-
-    if (method === 'POST' && !wardrobeId) {
-      return created(await createWardrobe(userId, parseJsonBody(event)));
-    }
+    const wardrobeId = event.pathParameters?.wardrobeId?.trim();
 
     if (!wardrobeId) {
-      throw Errors.validation('wardrobeId is required.');
+      if (method === 'GET') {
+        return ok({ wardrobes: await listWardrobes(userId) });
+      }
+      if (method === 'POST') {
+        return created(await createWardrobe(userId, parseJsonBody(event)));
+      }
+      throw Errors.validation(`Unsupported method: ${method}`);
     }
 
     if (method === 'GET') {
@@ -123,7 +121,7 @@ function toWardrobe(item: DynamoItem): Wardrobe {
   return {
     wardrobeId: String(item.wardrobeId),
     name: String(item.name),
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
+    createdAt: String(item.createdAt),
+    updatedAt: String(item.updatedAt),
   };
 }

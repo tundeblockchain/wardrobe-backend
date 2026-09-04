@@ -39,4 +39,28 @@ describe('shared error envelope', () => {
       },
     });
   });
+
+  it('maps VALIDATION_ERROR to a 400 envelope', () => {
+    const result = asResult(errorResponse(Errors.validation('name is required.')));
+
+    expect(result.statusCode).toBe(400);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'name is required.',
+      },
+    });
+  });
+
+  it('maps WARDROBE_NOT_FOUND to a 404 envelope', () => {
+    const result = asResult(errorResponse(Errors.wardrobeNotFound()));
+
+    expect(result.statusCode).toBe(404);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'WARDROBE_NOT_FOUND',
+        message: 'Wardrobe not found.',
+      },
+    });
+  });
 });
