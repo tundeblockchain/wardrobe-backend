@@ -1,11 +1,14 @@
-export type ClothingCategory =
-  | 'TOP'
-  | 'BOTTOM'
-  | 'DRESS'
-  | 'OUTERWEAR'
-  | 'SHOES'
-  | 'ACCESSORY'
-  | 'BAG';
+export const CLOTHING_CATEGORIES = [
+  'TOP',
+  'BOTTOM',
+  'DRESS',
+  'OUTERWEAR',
+  'SHOES',
+  'ACCESSORY',
+  'BAG',
+] as const;
+
+export type ClothingCategory = (typeof CLOTHING_CATEGORIES)[number];
 
 export type ProcessingStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
 
@@ -20,7 +23,7 @@ export interface ClothingItem {
   itemId: string;
   wardrobeId: string;
   name: string;
-  category?: ClothingCategory;
+  category: ClothingCategory;
   subcategory?: string;
   colours?: string[];
   brand?: string;
