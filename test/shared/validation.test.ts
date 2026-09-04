@@ -1,4 +1,4 @@
-import { requireNonEmptyString } from '../../src/shared/validation';
+import { optionalInteger, requireNonEmptyString } from '../../src/shared/validation';
 import { AppError } from '../../src/shared/errors';
 
 describe('validation', () => {
@@ -59,6 +59,31 @@ describe('validation', () => {
       const input = 'ab';
       expect(requireNonEmptyString(input, 'name', 5)).toBe('ab');
       expect(() => requireNonEmptyString('abcdef', 'name', 5)).toThrow(AppError);
+    });
+  });
+
+  describe('optionalInteger', () => {
+    it('returns undefined for missing values', () => {
+      expect(optionalInteger(undefined, 'contentLength')).toBeUndefined();
+      expect(optionalInteger(null, 'contentLength')).toBeUndefined();
+      expect(optionalInteger('', 'contentLength')).toBeUndefined();
+    });
+
+    it('returns an integer as-is', () => {
+      expect(optionalInteger(0, 'contentLength')).toBe(0);
+      expect(optionalInteger(10, 'contentLength')).toBe(10);
+    });
+
+    it('throws VALIDATION_ERROR for non-integers', () => {
+      expect(() => optionalInteger(1.5, 'contentLength')).toThrow(AppError);
+      expect(() => optionalInteger('10', 'contentLength')).toThrow(AppError);
+      try {
+        optionalInteger(1.5, 'contentLength');
+      } catch (err) {
+        const appErr = err as AppError;
+        expect(appErr.code).toBe('VALIDATION_ERROR');
+        expect(appErr.message).toBe('contentLength must be an integer.');
+      }
     });
   });
 });

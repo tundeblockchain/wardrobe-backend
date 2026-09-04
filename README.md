@@ -124,11 +124,26 @@ POST /uploads
 ```json
 {
   "contentType": "image/jpeg",
-  "purpose": "WARDROBE_ITEM"
+  "purpose": "WARDROBE_ITEM",
+  "contentLength": 2048
 }
 ```
 
-The client then `PUT`s the image directly to `uploadUrl`.
+`contentType` must be `image/jpeg`, `image/png`, `image/webp`, or `image/heic`. `purpose` must be `WARDROBE_ITEM`. `contentLength` is optional; when sent it must be an integer from 1 to 10485760 (10MB) and is signed onto the S3 PUT so the object cannot exceed that exact size. The MVP max upload is 10MB either way.
+
+Response (`UploadTicket`):
+
+```json
+{
+  "uploadUrl": "https://...",
+  "objectKey": "users/{uid}/uploads/{id}.jpg",
+  "expiresIn": 900
+}
+```
+
+Identity always comes from the Firebase token. A body `userId` is ignored.
+
+The client then `PUT`s the image directly to `uploadUrl` with the same `Content-Type` (and `Content-Length` when it was declared). The media bucket stays private; the URL is time-limited.
 
 ### Items and outfits
 

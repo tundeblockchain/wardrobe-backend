@@ -119,6 +119,36 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/firebase-adminsdk/);
   });
 
+  test('media bucket CORS stays PUT/GET only and is not a public website', () => {
+    template.hasResourceProperties('AWS::S3::Bucket', {
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+      WebsiteConfiguration: Match.absent(),
+      CorsConfiguration: {
+        CorsRules: [
+          Match.objectLike({
+            AllowedMethods: ['PUT', 'GET'],
+            AllowedOrigins: ['*'],
+            AllowedHeaders: ['*'],
+            ExposedHeaders: ['ETag'],
+            MaxAge: 3000,
+          }),
+        ],
+      },
+    });
+
+    const buckets = Object.values(
+      template.findResources('AWS::S3::Bucket'),
+    ) as Array<{ Properties?: { AccessControl?: string } }>;
+    for (const bucket of buckets) {
+      expect(bucket.Properties?.AccessControl).toBeUndefined();
+    }
+  });
+
   test('protected routes use the Firebase Lambda authorizer; /health stays public', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
       Name: 'firebase-dev',
