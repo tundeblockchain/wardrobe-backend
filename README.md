@@ -8,7 +8,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 
 | Resource | Purpose |
 | --- | --- |
-| HTTP API Gateway | Public API with a Firebase JWT authorizer |
+| HTTP API Gateway | Public API with a Firebase Lambda authorizer |
 | Lambda (domain handlers) | Health, wardrobes, items, outfits, uploads, processing |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
@@ -49,11 +49,11 @@ cp cdk.json.example cdk.json
 
 If `cdk.json` is missing, `npm run synth` / `npm run deploy` generate it from `cdk.json.example`.
 
-The Firebase project ID is not CDK context. After the stack deploys, put it in Secrets Manager (`wardrobe/{stage}/firebase-project-id`), then deploy once more so API Gateway picks up the issuer and audience:
+The Firebase project ID is stored in Secrets Manager, not CDK context. After the stack deploys, set the secret. Authenticated routes start working without another deploy (the authorizer reads the secret at runtime):
 
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id wardrobe/dev/firebase-project-id \
+  --secret-id wardrobe/prod/firebase-project-id \
   --secret-string "your-actual-firebase-project-id"
 ```
 
@@ -143,7 +143,7 @@ Routes exist and require a valid Firebase token. They currently return:
 
 Identity always comes from the validated Firebase token (`sub` = Firebase UID). Clients must not send `userId` as proof of ownership.
 
-HTTP API JWT authorizer settings come from the Secrets Manager value:
+A Lambda authorizer reads the Firebase project ID from Secrets Manager and validates the ID token:
 
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
@@ -193,7 +193,7 @@ src/shared/
 npm run deploy -- -c stage=staging
 ```
 
-Then set `wardrobe/staging/firebase-project-id` in Secrets Manager and deploy again.
+Then set `wardrobe/staging/firebase-project-id` in Secrets Manager.
 
 Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. Staging and production retain data.
 

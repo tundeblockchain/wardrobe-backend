@@ -1,6 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-import { HttpJwtAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import { HttpLambdaAuthorizer, HttpLambdaResponseType } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -84,8 +84,6 @@ export class WardrobeStack extends cdk.Stack {
         'Firebase project ID used to validate ID tokens. Replace the generated value with your Firebase project ID.',
       removalPolicy,
     });
-    const firebaseProjectId = `{{resolve:secretsmanager:${firebaseSecretName}:SecretString:::}}`;
-
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
@@ -104,6 +102,15 @@ export class WardrobeStack extends cdk.Stack {
         POWERTOOLS_SERVICE_NAME: 'wardrobe-backend',
       },
     };
+
+    const authorizerFn = this.lambda('AuthorizerFn', 'authorizer', {
+      ...commonLambdaProps,
+      environment: {
+        ...commonLambdaProps.environment,
+        FIREBASE_PROJECT_ID_SECRET_ARN: firebaseProjectIdSecret.secretArn,
+      },
+    });
+    firebaseProjectIdSecret.grantRead(authorizerFn);
 
     const healthFn = this.lambda('HealthFn', 'health', commonLambdaProps);
     const wardrobesFn = this.lambda('WardrobesFn', 'wardrobes', commonLambdaProps);
@@ -144,12 +151,14 @@ export class WardrobeStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
-    const jwtAuthorizer = new HttpJwtAuthorizer(
+    const firebaseAuthorizer = new HttpLambdaAuthorizer(
       'FirebaseAuthorizer',
-      `https://securetoken.google.com/${firebaseProjectId}`,
+      authorizerFn,
       {
-        jwtAudience: [firebaseProjectId],
         authorizerName: `firebase-${stage}`,
+        responseTypes: [HttpLambdaResponseType.SIMPLE],
+        identitySource: ['$request.header.Authorization'],
+        resultsCacheTtl: cdk.Duration.minutes(5),
       },
     );
 
@@ -169,7 +178,6 @@ export class WardrobeStack extends cdk.Stack {
         maxAge: cdk.Duration.days(1),
       },
     });
-    httpApi.node.addDependency(firebaseProjectIdSecret);
 
     const healthIntegration = new HttpLambdaIntegration('HealthIntegration', healthFn);
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
@@ -187,7 +195,7 @@ export class WardrobeStack extends cdk.Stack {
       path: '/wardrobes',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: wardrobesIntegration,
-      authorizer: jwtAuthorizer,
+      authorizer: firebaseAuthorizer,
     });
 
     httpApi.addRoutes({
@@ -198,14 +206,14 @@ export class WardrobeStack extends cdk.Stack {
         apigwv2.HttpMethod.DELETE,
       ],
       integration: wardrobesIntegration,
-      authorizer: jwtAuthorizer,
+      authorizer: firebaseAuthorizer,
     });
 
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/items',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: itemsIntegration,
-      authorizer: jwtAuthorizer,
+      authorizer: firebaseAuthorizer,
     });
 
     httpApi.addRoutes({
@@ -216,14 +224,14 @@ export class WardrobeStack extends cdk.Stack {
         apigwv2.HttpMethod.DELETE,
       ],
       integration: itemsIntegration,
-      authorizer: jwtAuthorizer,
+      authorizer: firebaseAuthorizer,
     });
 
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/outfits',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: outfitsIntegration,
-      authorizer: jwtAuthorizer,
+      authorizer: firebaseAuthorizer,
     });
 
     httpApi.addRoutes({
@@ -234,14 +242,14 @@ export class WardrobeStack extends cdk.Stack {
         apigwv2.HttpMethod.DELETE,
       ],
       integration: outfitsIntegration,
-      authorizer: jwtAuthorizer,
+      authorizer: firebaseAuthorizer,
     });
 
     httpApi.addRoutes({
       path: '/uploads',
       methods: [apigwv2.HttpMethod.POST],
       integration: uploadsIntegration,
-      authorizer: jwtAuthorizer,
+      authorizer: firebaseAuthorizer,
     });
 
     new cdk.CfnOutput(this, 'ApiUrl', {
