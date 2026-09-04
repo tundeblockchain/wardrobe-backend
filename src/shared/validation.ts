@@ -1,5 +1,10 @@
 import { Errors } from './errors';
-import { CLOTHING_CATEGORIES, ClothingCategory } from './types';
+import {
+  CLOTHING_CATEGORIES,
+  ClothingCategory,
+  OutfitItem,
+  OutfitSlot,
+} from './types';
 
 export function requireNonEmptyString(
   value: unknown,
@@ -33,13 +38,69 @@ export function optionalNonEmptyString(
 }
 
 export function requireCategory(value: unknown): ClothingCategory {
-  const category = requireNonEmptyString(value, 'category', 32);
-  if (!(CLOTHING_CATEGORIES as readonly string[]).includes(category)) {
+  return requireControlledSlot(value, 'category');
+}
+
+export function requireSlot(value: unknown, field = 'slot'): OutfitSlot {
+  return requireControlledSlot(value, field);
+}
+
+function requireControlledSlot(
+  value: unknown,
+  field: string,
+): ClothingCategory {
+  const slot = requireNonEmptyString(value, field, 32);
+  if (!(CLOTHING_CATEGORIES as readonly string[]).includes(slot)) {
     throw Errors.validation(
-      `category must be one of: ${CLOTHING_CATEGORIES.join(', ')}.`,
+      `${field} must be one of: ${CLOTHING_CATEGORIES.join(', ')}.`,
     );
   }
-  return category as ClothingCategory;
+  return slot as ClothingCategory;
+}
+
+const UNIQUE_SLOTS = new Set<OutfitSlot>(
+  CLOTHING_CATEGORIES.filter((slot) => slot !== 'ACCESSORY'),
+);
+
+export function requireOutfitItems(value: unknown): OutfitItem[] {
+  if (!Array.isArray(value)) {
+    throw Errors.validation('items must be an array.');
+  }
+  if (value.length === 0) {
+    throw Errors.validation('items must contain at least one item.');
+  }
+
+  const items: OutfitItem[] = [];
+  const seenItemIds = new Set<string>();
+  const seenUniqueSlots = new Set<OutfitSlot>();
+
+  value.forEach((entry, index) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw Errors.validation(`items[${index}] must be an object.`);
+    }
+
+    const raw = entry as { itemId?: unknown; slot?: unknown };
+    const itemId = requireNonEmptyString(raw.itemId, `items[${index}].itemId`);
+    const slot = requireSlot(raw.slot, `items[${index}].slot`);
+
+    if (seenItemIds.has(itemId)) {
+      throw Errors.validation('items must not contain duplicate itemId values.');
+    }
+    seenItemIds.add(itemId);
+
+    if (UNIQUE_SLOTS.has(slot)) {
+      if (seenUniqueSlots.has(slot)) {
+        throw Errors.validation(
+          `slot ${slot} can only appear once (ACCESSORY may appear multiple times).`,
+        );
+      }
+      seenUniqueSlots.add(slot);
+    }
+
+    items.push({ itemId, slot });
+  });
+
+  return items;
 }
 
 export function optionalStringArray(

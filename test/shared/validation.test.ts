@@ -4,7 +4,9 @@ import {
   optionalStringArray,
   requireCategory,
   requireNonEmptyString,
+  requireOutfitItems,
   requireOwnedImageKey,
+  requireSlot,
 } from '../../src/shared/validation';
 import { AppError } from '../../src/shared/errors';
 
@@ -132,6 +134,87 @@ describe('validation', () => {
           'category must be one of: TOP, BOTTOM, DRESS, OUTERWEAR, SHOES, ACCESSORY, BAG.',
         );
       }
+    });
+  });
+
+  describe('requireSlot', () => {
+    it('accepts each controlled outfit slot', () => {
+      for (const slot of [
+        'TOP',
+        'BOTTOM',
+        'DRESS',
+        'OUTERWEAR',
+        'SHOES',
+        'ACCESSORY',
+        'BAG',
+      ]) {
+        expect(requireSlot(slot)).toBe(slot);
+      }
+    });
+
+    it('rejects unknown slots with the field name', () => {
+      expect(() => requireSlot('HAT', 'items[0].slot')).toThrow(AppError);
+      try {
+        requireSlot('HAT', 'items[0].slot');
+      } catch (err) {
+        const appErr = err as AppError;
+        expect(appErr.code).toBe('VALIDATION_ERROR');
+        expect(appErr.message).toBe(
+          'items[0].slot must be one of: TOP, BOTTOM, DRESS, OUTERWEAR, SHOES, ACCESSORY, BAG.',
+        );
+      }
+    });
+  });
+
+  describe('requireOutfitItems', () => {
+    it('returns trimmed item IDs and slots', () => {
+      expect(
+        requireOutfitItems([
+          { itemId: '  item_top  ', slot: 'TOP' },
+          { itemId: 'item_acc', slot: 'ACCESSORY' },
+        ]),
+      ).toEqual([
+        { itemId: 'item_top', slot: 'TOP' },
+        { itemId: 'item_acc', slot: 'ACCESSORY' },
+      ]);
+    });
+
+    it('allows multiple ACCESSORY slots', () => {
+      expect(
+        requireOutfitItems([
+          { itemId: 'item_a', slot: 'ACCESSORY' },
+          { itemId: 'item_b', slot: 'ACCESSORY' },
+        ]),
+      ).toHaveLength(2);
+    });
+
+    it('rejects an empty array', () => {
+      expect(() => requireOutfitItems([])).toThrow(AppError);
+      try {
+        requireOutfitItems([]);
+      } catch (err) {
+        const appErr = err as AppError;
+        expect(appErr.code).toBe('VALIDATION_ERROR');
+        expect(appErr.message).toBe('items must contain at least one item.');
+      }
+    });
+
+    it('rejects duplicate non-ACCESSORY slots', () => {
+      expect(() =>
+        requireOutfitItems([
+          { itemId: 'item_a', slot: 'TOP' },
+          { itemId: 'item_b', slot: 'TOP' },
+        ]),
+      ).toThrow(AppError);
+    });
+
+    it('rejects duplicate item IDs', () => {
+      expect(() =>
+        requireOutfitItems([
+          { itemId: 'item_a', slot: 'TOP' },
+          { itemId: 'item_a', slot: 'BOTTOM' },
+        ]),
+      ).toThrow(AppError);
     });
   });
 

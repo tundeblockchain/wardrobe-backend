@@ -21,11 +21,11 @@ Working in this first cut:
 - `GET /health` (no auth)
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe)
+- Outfit CRUD (nested under a wardrobe)
 - `POST /uploads` (S3 pre-signed PUT URL)
 
 Stubbed for the next pass:
 
-- Outfit APIs
 - Processing worker (logs the SQS message only)
 
 ## Prerequisites
@@ -176,16 +176,31 @@ Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`
 
 ### Outfits
 
-Outfit routes exist and require a valid Firebase token. They currently return:
+Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must belong to that user before any outfit operation. Every referenced `itemId` must already exist in that wardrobe. Body `userId` is ignored.
+
+```http
+POST   /wardrobes/{wardrobeId}/outfits
+GET    /wardrobes/{wardrobeId}/outfits
+GET    /wardrobes/{wardrobeId}/outfits/{outfitId}
+PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
+```
+
+Create body (`name` and `items` required):
 
 ```json
 {
-  "error": {
-    "code": "NOT_IMPLEMENTED",
-    "message": "..."
-  }
+  "name": "Friday Night",
+  "items": [
+    { "itemId": "item_...", "slot": "TOP" },
+    { "itemId": "item_...", "slot": "BOTTOM" }
+  ]
 }
 ```
+
+`name` is trimmed, 1–100 characters. `items` must contain at least one entry. `slot` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `ACCESSORY` may appear more than once; other slots may appear only once. Duplicate `itemId` values are rejected.
+
+Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Phase-1 outfits do not include AI or render fields.
 
 ## Auth
 
@@ -286,6 +301,5 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 ## Next
 
-1. Outfit CRUD with wardrobe/item ownership checks
-2. Phase-2: enqueue SQS on item create and worker processing-status updates (AI later)
-3. Pagination, download pre-signed URLs, and environment-specific alarms
+1. Phase-2: enqueue SQS on item create and worker processing-status updates (AI later)
+2. Pagination, download pre-signed URLs, and environment-specific alarms

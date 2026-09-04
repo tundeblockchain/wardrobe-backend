@@ -36,9 +36,11 @@ export interface ClothingItem {
   updatedAt: string;
 }
 
+export type OutfitSlot = ClothingCategory;
+
 export interface OutfitItem {
   itemId: string;
-  slot: string;
+  slot: OutfitSlot;
 }
 
 export interface Outfit {

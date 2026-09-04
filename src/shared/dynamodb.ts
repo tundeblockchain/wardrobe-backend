@@ -139,3 +139,22 @@ export async function getOwnedItem(
   }
   return item;
 }
+
+export async function getOwnedOutfit(
+  userId: string,
+  wardrobeId: string,
+  outfitId: string,
+): Promise<DynamoItem> {
+  await getOwnedWardrobe(userId, wardrobeId);
+
+  const item = await getItem(keys.wardrobePk(wardrobeId), keys.outfitSk(outfitId));
+  if (
+    !item ||
+    item.entityType !== 'OUTFIT' ||
+    item.userId !== userId ||
+    item.wardrobeId !== wardrobeId
+  ) {
+    throw Errors.outfitNotFound();
+  }
+  return item;
+}
