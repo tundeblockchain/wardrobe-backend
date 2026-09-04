@@ -118,4 +118,26 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/BEGIN (RSA )?PRIVATE KEY/);
     expect(synthesized).not.toMatch(/firebase-adminsdk/);
   });
+
+  test('protected routes use the Firebase Lambda authorizer; /health stays public', () => {
+    template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
+      Name: 'firebase-dev',
+      AuthorizerType: 'REQUEST',
+      IdentitySource: ['$request.header.Authorization'],
+    });
+
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+
+    const health = routes.find((route) => route.Properties.RouteKey === 'GET /health');
+    expect(health?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
+    for (const routeKey of ['GET /wardrobes', 'POST /wardrobes', 'POST /uploads']) {
+      const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
+      expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+    }
+  });
 });
