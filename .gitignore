@@ -1,17 +1,42 @@
+# Build outputs
 *.js
 !jest.config.js
 !scripts/**/*.js
 *.d.ts
-node_modules
-dist
-cdk.out
-cdk.json
+node_modules/
+dist/
+cdk.out/
+*.tsbuildinfo
+
+# Environment & secrets
 .env
 .env.*
 !.env.example
-*.log
+cdk.json
+!cdk.json.example
+
+# Firebase / credentials (DO NOT COMMIT)
+*-firebase-adminsdk*.json
+serviceAccount*.json
+firebase-*.json
+*.pem
+*.p12
+secrets/
+credentials/
+
+# Coverage
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS junk
 .DS_Store
-coverage
-.idea
-.vscode
-*.tsbuildinfo
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
