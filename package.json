@@ -6,6 +6,9 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "typecheck": "tsc --noEmit",
     "prepare:cdk": "node scripts/ensure-cdk-json.js",
     "synth": "node scripts/ensure-cdk-json.js && cdk synth --app \"node -r ts-node/register/transpile-only bin/app.ts\"",
     "diff": "node scripts/ensure-cdk-json.js && cdk diff --app \"node -r ts-node/register/transpile-only bin/app.ts\"",
@@ -19,9 +22,12 @@
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.145",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.10.2",
     "aws-cdk": "^2.170.0",
     "esbuild": "^0.24.2",
+    "jest": "^30.5.1",
+    "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.2"
   },
