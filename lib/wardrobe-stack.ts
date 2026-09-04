@@ -4,6 +4,7 @@ import { HttpLambdaAuthorizer, HttpLambdaResponseType } from 'aws-cdk-lib/aws-ap
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { NodejsFunction, NodejsFunctionProps } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -30,12 +31,19 @@ export class WardrobeStack extends cdk.Stack {
     const isDev = stage === 'dev';
     const removalPolicy = isDev ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
 
+    cdk.Tags.of(this).add('Service', 'wardrobe-backend');
+    cdk.Tags.of(this).add('Stage', stage);
+
+    // Single-table PK/SK matches backend.md §16–17 access patterns:
+    // USER#{uid}          / PROFILE | WARDROBE#{wardrobeId}
+    // WARDROBE#{wardrobeId} / ITEM#{itemId} | OUTFIT#{outfitId}
     const table = new dynamodb.Table(this, 'WardrobeTable', {
       tableName: `wardrobe-app-${stage}`,
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      deletionProtection: !isDev,
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: !isDev,
       },
@@ -46,6 +54,7 @@ export class WardrobeStack extends cdk.Stack {
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
       versioned: false,
       cors: [
         {
@@ -60,6 +69,8 @@ export class WardrobeStack extends cdk.Stack {
       autoDeleteObjects: isDev,
     });
 
+    // Phase-2 infrastructure hook only. The worker Lambda is a no-op stub
+    // (no AI classification or background removal in this ticket).
     const processingDlq = new sqs.Queue(this, 'ItemProcessingDlq', {
       queueName: `wardrobe-item-processing-dlq-${stage}`,
       retentionPeriod: cdk.Duration.days(14),
@@ -162,6 +173,13 @@ export class WardrobeStack extends cdk.Stack {
       },
     );
 
+    const apiAccessLogs = new logs.LogGroup(this, 'ApiAccessLogs', {
+      logGroupName: `/wardrobe/${stage}/http-api`,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy,
+    });
+    apiAccessLogs.grantWrite(new iam.ServicePrincipal('apigateway.amazonaws.com'));
+
     const httpApi = new apigwv2.HttpApi(this, 'WardrobeApi', {
       apiName: `wardrobe-api-${stage}`,
       description: 'Digital Wardrobe HTTP API',
@@ -178,6 +196,25 @@ export class WardrobeStack extends cdk.Stack {
         maxAge: cdk.Duration.days(1),
       },
     });
+
+    const cfnDefaultStage = httpApi.defaultStage?.node.defaultChild as
+      | apigwv2.CfnStage
+      | undefined;
+    if (cfnDefaultStage) {
+      cfnDefaultStage.accessLogSettings = {
+        destinationArn: apiAccessLogs.logGroupArn,
+        format: JSON.stringify({
+          requestId: '$context.requestId',
+          ip: '$context.identity.sourceIp',
+          requestTime: '$context.requestTime',
+          httpMethod: '$context.httpMethod',
+          routeKey: '$context.routeKey',
+          status: '$context.status',
+          protocol: '$context.protocol',
+          responseLength: '$context.responseLength',
+        }),
+      };
+    }
 
     const healthIntegration = new HttpLambdaIntegration('HealthIntegration', healthFn);
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
