@@ -630,7 +630,7 @@ describe('outfits handler (WARDROBE-7)', () => {
   describe('PATCH /wardrobes/{wardrobeId}/outfits/{outfitId}', () => {
     it('updates name and items for the owner and refreshes updatedAt', async () => {
       const existing = dynamoOutfit();
-      const updatedItems = [
+      const updatedItems: Outfit['items'] = [
         { itemId: TOP_ITEM_ID, slot: 'TOP' },
         { itemId: ACCESSORY_A_ID, slot: 'ACCESSORY' },
       ];
