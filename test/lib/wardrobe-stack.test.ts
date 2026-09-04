@@ -177,6 +177,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /wardrobes/{wardrobeId}/items/{itemId}',
       'PATCH /wardrobes/{wardrobeId}/items/{itemId}',
       'DELETE /wardrobes/{wardrobeId}/items/{itemId}',
+      'GET /wardrobes/{wardrobeId}/outfits',
+      'POST /wardrobes/{wardrobeId}/outfits',
+      'GET /wardrobes/{wardrobeId}/outfits/{outfitId}',
+      'PATCH /wardrobes/{wardrobeId}/outfits/{outfitId}',
+      'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}',
     ]) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
