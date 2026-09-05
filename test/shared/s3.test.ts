@@ -1,11 +1,16 @@
 import { MAX_UPLOAD_BYTES } from '../../src/shared/s3';
 
 const mockGetSignedUrl = jest.fn();
+const mockSend = jest.fn();
 
 jest.mock('@aws-sdk/client-s3', () => ({
-  S3Client: jest.fn(() => ({})),
+  S3Client: jest.fn(() => ({ send: mockSend })),
   PutObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
     _op: 'PutObject',
+    input,
+  })),
+  GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'GetObject',
     input,
   })),
 }));
@@ -20,7 +25,10 @@ import {
   bucketName,
   createPresignedPutUrl,
   extensionForContentType,
+  getObjectBytes,
   PRESIGNED_URL_EXPIRES_IN,
+  processedImageObjectKey,
+  putObjectBytes,
 } from '../../src/shared/s3';
 
 describe('s3 helpers (WARDROBE-8)', () => {
@@ -141,6 +149,61 @@ describe('s3 helpers (WARDROBE-8)', () => {
         }),
       ).rejects.toMatchObject({ code: 'UPLOAD_INVALID' });
       expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('processedImageObjectKey', () => {
+    it('uses users/{userId}/items/{itemId}/processed.png', () => {
+      expect(processedImageObjectKey('uid-1', 'item_abc')).toBe(
+        'users/uid-1/items/item_abc/processed.png',
+      );
+    });
+  });
+
+  describe('getObjectBytes / putObjectBytes', () => {
+    it('reads object bytes from the private media bucket', async () => {
+      const bytes = Uint8Array.from([1, 2, 3]);
+      mockSend.mockResolvedValue({
+        Body: { transformToByteArray: async () => bytes },
+        ContentType: 'image/jpeg',
+      });
+
+      await expect(getObjectBytes('users/uid/uploads/a.jpg')).resolves.toEqual({
+        bytes,
+        contentType: 'image/jpeg',
+      });
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'GetObject',
+          input: {
+            Bucket: 'wardrobe-media-test',
+            Key: 'users/uid/uploads/a.jpg',
+          },
+        }),
+      );
+    });
+
+    it('writes processed bytes without deleting the original', async () => {
+      mockSend.mockResolvedValue({});
+      const body = Uint8Array.from([0x89, 0x50]);
+
+      await putObjectBytes({
+        objectKey: 'users/uid/items/item_1/processed.png',
+        body,
+        contentType: 'image/png',
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'PutObject',
+          input: {
+            Bucket: 'wardrobe-media-test',
+            Key: 'users/uid/items/item_1/processed.png',
+            Body: body,
+            ContentType: 'image/png',
+          },
+        }),
+      );
     });
   });
 });

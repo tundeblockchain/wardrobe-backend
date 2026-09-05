@@ -102,7 +102,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
   test('SQS processing queue and DLQ meet WARDROBE-15 hardening', () => {
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'wardrobe-item-processing-dev',
-      VisibilityTimeout: 60,
+      VisibilityTimeout: 120,
       MessageRetentionPeriod: 345600,
       ReceiveMessageWaitTimeSeconds: 20,
       SqsManagedSseEnabled: true,
@@ -278,13 +278,13 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     }>;
 
     const processing = functions.find(
-      (fn) => fn.Properties.Timeout === 30 && fn.Properties.MemorySize === 512,
+      (fn) => fn.Properties.Timeout === 60 && fn.Properties.MemorySize === 512,
     );
     expect(processing).toBeDefined();
 
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'wardrobe-item-processing-dev',
-      VisibilityTimeout: 60,
+      VisibilityTimeout: 120,
       RedrivePolicy: {
         maxReceiveCount: 3,
         deadLetterTargetArn: {
@@ -296,10 +296,10 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       },
     });
 
-    expect(processing?.Properties.Timeout).toBeLessThan(60);
+    expect(processing?.Properties.Timeout).toBeLessThan(120);
   });
 
-  test('ProcessingFn IAM is least privilege for Get/Update and S3 read', () => {
+  test('ProcessingFn IAM is least privilege for Get/Update and S3 read+write', () => {
     type PolicyResource = {
       Properties: {
         PolicyDocument: {
@@ -338,9 +338,17 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
     const s3 = actionsFor('ProcessingFn', 's3:');
     expect(s3.some((action) => action.startsWith('s3:Get'))).toBe(true);
-    expect(s3).not.toContain('s3:PutObject');
+    expect(s3.some((action) => action === 's3:PutObject' || action === 's3:PutObject*')).toBe(
+      true,
+    );
     expect(s3).not.toContain('s3:DeleteObject');
     expect(s3).not.toContain('s3:*');
+
+    const secrets = actionsFor('ProcessingFn', 'secretsmanager:');
+    expect(secrets).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
+    expect(secrets).not.toContain('secretsmanager:*');
   });
 
   test('stack does not introduce EventBridge', () => {
@@ -377,6 +385,39 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
     expect(synthesized).not.toMatch(/BEGIN (RSA )?PRIVATE KEY/);
     expect(synthesized).not.toMatch(/firebase-adminsdk/);
+  });
+
+  test('background-removal API key is a Secrets Manager placeholder (no real credentials)', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/background-removal-api-key',
+    });
+
+    template.hasOutput('BackgroundRemovalSecretName', {
+      Description:
+        'Secrets Manager secret for the background-removal API key (and optional endpoint JSON)',
+    });
+
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: {
+        Timeout?: number;
+        Environment?: { Variables?: Record<string, unknown> };
+      };
+    }>;
+    const processing = functions.find((fn) => fn.Properties.Timeout === 60);
+    expect(processing?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        BACKGROUND_REMOVAL_SECRET_ARN: expect.anything(),
+      }),
+    );
+    expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
+      'BACKGROUND_REMOVAL_API_KEY',
+    );
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toMatch(/sk_live_/);
+    expect(synthesized).not.toMatch(/remove\.bg\/[A-Za-z0-9]{10,}/);
   });
 
   test('media bucket CORS stays PUT/GET only and is not a public website', () => {

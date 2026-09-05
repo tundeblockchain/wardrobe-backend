@@ -1,4 +1,5 @@
 import { DynamoItem } from '../../shared/types';
+import { runBackgroundRemoval } from './background-removal';
 
 /**
  * Dynamo-validated work context. Callers must load the clothing item
@@ -16,13 +17,9 @@ export interface ProcessingContext {
 /**
  * Ordered clothing-item processing pipeline.
  *
- * Later tickets replace these no-op hooks in place. Do not add RemBG,
- * vision APIs, Secrets Manager AI keys, or other external model calls
- * in this ticket (WARDROBE-17).
- *
- *   1. removeBackground        — WARDROBE-18
- *   2. classifyGarment         — WARDROBE-19
- *   3. detectColourAndCategory — WARDROBE-20
+ *   1. removeBackground        — WARDROBE-18 (S3 + injectable rembg client)
+ *   2. classifyGarment         — WARDROBE-19 (no-op stub)
+ *   3. detectColourAndCategory — WARDROBE-20 (no-op stub)
  */
 export async function runProcessingPipeline(
   context: ProcessingContext,
@@ -32,11 +29,11 @@ export async function runProcessingPipeline(
   await detectColourAndCategory(context);
 }
 
-/** WARDROBE-18: background removal. No-op stub — no RemBG / image I/O. */
+/** WARDROBE-18: read original from S3, remove background, write processed.png. */
 export async function removeBackground(
-  _context: ProcessingContext,
+  context: ProcessingContext,
 ): Promise<void> {
-  // Intentionally empty. WARDROBE-18 writes the processed image to S3.
+  await runBackgroundRemoval(context);
 }
 
 /** WARDROBE-19: AI garment classification. No-op stub — no model calls. */

@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID |
+| Secrets Manager | Firebase project ID, background-removal API key |
 
 Working in this first cut:
 
@@ -23,7 +23,7 @@ Working in this first cut:
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
 - `POST /uploads` (S3 pre-signed PUT URL)
-- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; AI hooks are no-op)
+- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification hooks are no-op)
 
 ## Prerequisites
 
@@ -52,6 +52,14 @@ The Firebase project ID is stored in Secrets Manager, not CDK context. After the
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/firebase-project-id \
   --secret-string "your-actual-firebase-project-id"
+```
+
+Background removal reads its provider credential from Secrets Manager (plain API key, or JSON `{ "apiKey", "endpoint" }`). Optionally set CDK context / env `backgroundRemovalEndpoint` / `BACKGROUND_REMOVAL_ENDPOINT` if the endpoint is not in the secret:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/background-removal-api-key \
+  --secret-string '{"apiKey":"your-provider-key","endpoint":"https://your-rembg-endpoint"}'
 ```
 
 If this is the first CDK app in the account/region:
@@ -178,17 +186,25 @@ The processing Lambda consumes `wardrobe-item-processing`. DynamoDB is the sourc
 Status machine:
 
 ```text
-PENDING → PROCESSING → READY     stub pipeline success (WARDROBE-17)
+PENDING → PROCESSING → READY     pipeline success
         → FAILED                 permanent / validation errors
 ```
 
 Poison messages (invalid JSON, unknown `jobType`, missing item, owner mismatch) are acked and dropped. An `originalImageKey` mismatch sets `FAILED` then acks.
 
-Retries use the existing queue (WARDROBE-15): Lambda timeout 30s, visibility timeout 60s, `maxReceiveCount: 3`, then the DLQ + CloudWatch alarms. Retryable DynamoDB / transient errors are returned as SQS batch item failures so the message is redelivered.
+Retries use the existing queue (WARDROBE-15): Lambda timeout **60s**, visibility timeout **120s** (visibility must stay greater than the timeout), `maxReceiveCount: 3`, then the DLQ + CloudWatch alarms. Retryable DynamoDB / provider / S3 errors are returned as SQS batch item failures so the message is redelivered.
 
-Pipeline hooks are ordered no-ops until later tickets replace them. This worker does not call RemBG, vision APIs, or other external models.
+Background removal (WARDROBE-18) reads the Dynamo-validated `originalImageKey` from the private media bucket, calls an injectable rembg HTTP client (Secrets Manager credential; unit tests mock the client — no live provider in CI), writes `users/{userId}/items/{itemId}/processed.png`, and updates DynamoDB:
 
-1. Background removal (WARDROBE-18)
+- `processedKey` — Flutter `ClothingItem.image.processedKey`
+- `ai.backgroundRemoved = true`
+- `ai.processedImageKey` — architecture metadata (merged into any existing `ai` map)
+
+The original object is kept. Permanent rembg / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
+
+Later hooks stay no-op stubs:
+
+1. Background removal (WARDROBE-18) — implemented
 2. AI classification (WARDROBE-19)
 3. Colour / category detection (WARDROBE-20)
 
@@ -255,7 +271,7 @@ src/functions/
   items/
   outfits/
   uploads/
-  processing/          handler, pipeline hooks, retry/poison errors
+  processing/          handler, rembg hook, pipeline stubs, retry/poison errors
 src/shared/
   auth.ts
   dynamodb.ts
@@ -264,6 +280,7 @@ src/shared/
   ids.ts
   logger.ts
   s3.ts
+  secrets.ts
   sqs.ts
   types.ts
   validation.ts
