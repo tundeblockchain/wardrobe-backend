@@ -1,6 +1,8 @@
 import { PermanentProcessingError, RetryableProcessingError } from '../../src/functions/processing/errors';
 import {
-  createHttpBackgroundRemovalClient,
+  createGeminiBackgroundRemovalClient,
+  DEFAULT_GEMINI_MODEL,
+  geminiGenerateContentUrl,
   loadBackgroundRemovalConfig,
   parseBackgroundRemovalSecret,
   runBackgroundRemoval,
@@ -9,6 +11,8 @@ import { DynamoItem } from '../../src/shared/types';
 
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 const ORIGINAL = Uint8Array.from([0xff, 0xd8, 0xff, 0x01]);
+const PNG_BASE64 = Buffer.from(PNG).toString('base64');
+const DEFAULT_ENDPOINT = geminiGenerateContentUrl(DEFAULT_GEMINI_MODEL);
 
 const USER_ID = 'firebase-uid-owner';
 const WARDROBE_ID = 'wd_abc123xyz0';
@@ -43,40 +47,72 @@ function context(item = dynamoItem()) {
   };
 }
 
+function geminiImageResponse(data = PNG_BASE64): string {
+  return JSON.stringify({
+    candidates: [
+      {
+        content: {
+          parts: [{ inlineData: { mimeType: 'image/png', data } }],
+        },
+        finishReason: 'STOP',
+      },
+    ],
+  });
+}
+
 describe('parseBackgroundRemovalSecret', () => {
-  it('accepts a plain API key string', () => {
-    expect(parseBackgroundRemovalSecret('  provider-key  ')).toEqual({
-      apiKey: 'provider-key',
-      endpoint: '',
+  it('accepts a plain Gemini API key and fills default model + endpoint', () => {
+    expect(parseBackgroundRemovalSecret('  gemini-key  ')).toEqual({
+      apiKey: 'gemini-key',
+      model: DEFAULT_GEMINI_MODEL,
+      endpoint: DEFAULT_ENDPOINT,
     });
   });
 
-  it('accepts JSON with apiKey and endpoint', () => {
+  it('accepts JSON with apiKey, model, and endpoint', () => {
     expect(
       parseBackgroundRemovalSecret(
         JSON.stringify({
           apiKey: 'json-key',
-          endpoint: 'https://rembg.example/api/remove',
-          fieldName: 'file',
+          model: 'gemini-3.1-flash-image',
+          endpoint:
+            'https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-image:generateContent',
         }),
       ),
     ).toEqual({
       apiKey: 'json-key',
-      endpoint: 'https://rembg.example/api/remove',
-      fieldName: 'file',
+      model: 'gemini-3.1-flash-image',
+      endpoint:
+        'https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-image:generateContent',
+    });
+  });
+
+  it('builds a generateContent URL when JSON has a model but no endpoint', () => {
+    expect(
+      parseBackgroundRemovalSecret(
+        JSON.stringify({
+          apiKey: 'json-key',
+          model: 'gemini-2.5-flash-image',
+        }),
+      ),
+    ).toEqual({
+      apiKey: 'json-key',
+      model: 'gemini-2.5-flash-image',
+      endpoint: geminiGenerateContentUrl('gemini-2.5-flash-image'),
     });
   });
 
   it('treats JSON without apiKey as retryable (secret not populated yet)', () => {
-    expect(() => parseBackgroundRemovalSecret(JSON.stringify({ endpoint: 'https://x' }))).toThrow(
-      RetryableProcessingError,
-    );
+    expect(() =>
+      parseBackgroundRemovalSecret(JSON.stringify({ model: 'gemini-2.5-flash-image' })),
+    ).toThrow(RetryableProcessingError);
   });
 });
 
 describe('loadBackgroundRemovalConfig', () => {
   const originalArn = process.env.BACKGROUND_REMOVAL_SECRET_ARN;
-  const originalEndpoint = process.env.BACKGROUND_REMOVAL_ENDPOINT;
+  const originalModel = process.env.GEMINI_MODEL;
+  const originalEndpoint = process.env.GEMINI_ENDPOINT;
 
   afterEach(() => {
     if (originalArn === undefined) {
@@ -84,42 +120,53 @@ describe('loadBackgroundRemovalConfig', () => {
     } else {
       process.env.BACKGROUND_REMOVAL_SECRET_ARN = originalArn;
     }
-    if (originalEndpoint === undefined) {
-      delete process.env.BACKGROUND_REMOVAL_ENDPOINT;
+    if (originalModel === undefined) {
+      delete process.env.GEMINI_MODEL;
     } else {
-      process.env.BACKGROUND_REMOVAL_ENDPOINT = originalEndpoint;
+      process.env.GEMINI_MODEL = originalModel;
+    }
+    if (originalEndpoint === undefined) {
+      delete process.env.GEMINI_ENDPOINT;
+    } else {
+      process.env.GEMINI_ENDPOINT = originalEndpoint;
     }
   });
 
-  it('prefers BACKGROUND_REMOVAL_ENDPOINT over the secret endpoint', async () => {
+  it('prefers GEMINI_MODEL and GEMINI_ENDPOINT over the secret', async () => {
     process.env.BACKGROUND_REMOVAL_SECRET_ARN = 'arn:secret';
-    process.env.BACKGROUND_REMOVAL_ENDPOINT = 'https://env.example/remove';
+    process.env.GEMINI_MODEL = 'gemini-from-env';
+    process.env.GEMINI_ENDPOINT = 'https://env.example/generateContent';
 
     const config = await loadBackgroundRemovalConfig(async () =>
       JSON.stringify({
         apiKey: 'from-secret',
-        endpoint: 'https://secret.example/remove',
+        model: 'gemini-from-secret',
+        endpoint: 'https://secret.example/generateContent',
       }),
     );
 
     expect(config).toEqual({
       apiKey: 'from-secret',
-      endpoint: 'https://env.example/remove',
-      fieldName: undefined,
+      model: 'gemini-from-env',
+      endpoint: 'https://env.example/generateContent',
+    });
+  });
+
+  it('defaults model and generateContent endpoint from a plain API key', async () => {
+    process.env.BACKGROUND_REMOVAL_SECRET_ARN = 'arn:secret';
+    delete process.env.GEMINI_MODEL;
+    delete process.env.GEMINI_ENDPOINT;
+
+    await expect(loadBackgroundRemovalConfig(async () => 'plain-key')).resolves.toEqual({
+      apiKey: 'plain-key',
+      model: DEFAULT_GEMINI_MODEL,
+      endpoint: DEFAULT_ENDPOINT,
     });
   });
 
   it('fails retryably when the secret ARN is missing', async () => {
     delete process.env.BACKGROUND_REMOVAL_SECRET_ARN;
     await expect(loadBackgroundRemovalConfig(async () => 'key')).rejects.toBeInstanceOf(
-      RetryableProcessingError,
-    );
-  });
-
-  it('fails retryably when neither env nor secret provides an endpoint', async () => {
-    process.env.BACKGROUND_REMOVAL_SECRET_ARN = 'arn:secret';
-    delete process.env.BACKGROUND_REMOVAL_ENDPOINT;
-    await expect(loadBackgroundRemovalConfig(async () => 'plain-key')).rejects.toBeInstanceOf(
       RetryableProcessingError,
     );
   });
@@ -210,7 +257,7 @@ describe('runBackgroundRemoval', () => {
         metadata: { update: async () => undefined },
         client: {
           removeBackground: async () => {
-            throw new PermanentProcessingError('Background removal rejected the image (422)');
+            throw new PermanentProcessingError('Gemini rejected the image (422)');
           },
         },
       }),
@@ -245,7 +292,7 @@ describe('runBackgroundRemoval', () => {
     ).rejects.toBeInstanceOf(PermanentProcessingError);
   });
 
-  it('does not call the live provider when a client is injected', async () => {
+  it('does not call live Gemini when a client is injected', async () => {
     const loadConfig = jest.fn();
     const fetchImpl = jest.fn();
 
@@ -263,47 +310,123 @@ describe('runBackgroundRemoval', () => {
     expect(loadConfig).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
-});
 
-describe('createHttpBackgroundRemovalClient', () => {
-  const config = {
-    apiKey: 'test-key',
-    endpoint: 'https://rembg.example/api/remove',
-  };
-
-  it('POSTs the image and returns PNG bytes', async () => {
+  it('uses the mocked Gemini generateContent adapter when no client is injected', async () => {
     const fetchImpl = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      arrayBuffer: async () => PNG.buffer,
+      text: async () => geminiImageResponse(),
     });
 
-    const client = createHttpBackgroundRemovalClient(config, fetchImpl);
-    await expect(client.removeBackground(ORIGINAL, 'image/jpeg')).resolves.toEqual(
-      PNG,
+    await expect(
+      runBackgroundRemoval(context(), {
+        store: {
+          getObject: async () => ({ bytes: ORIGINAL, contentType: 'image/jpeg' }),
+          putObject: async () => undefined,
+        },
+        metadata: { update: async () => undefined },
+        loadConfig: async () => ({
+          apiKey: 'test-key',
+          model: DEFAULT_GEMINI_MODEL,
+          endpoint: DEFAULT_ENDPOINT,
+        }),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      }),
+    ).resolves.toBe(PROCESSED_KEY);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      DEFAULT_ENDPOINT,
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': 'test-key',
+        },
+      }),
     );
+    const init = fetchImpl.mock.calls[0][1] as { body: string };
+    const sent = JSON.parse(init.body) as {
+      contents: Array<{ parts: Array<Record<string, unknown>> }>;
+      generationConfig: { responseModalities: string[] };
+    };
+    expect(sent.generationConfig.responseModalities).toEqual(['TEXT', 'IMAGE']);
+    expect(sent.contents[0].parts[0]).toEqual(
+      expect.objectContaining({ text: expect.stringContaining('Remove the background') }),
+    );
+    expect(sent.contents[0].parts[1]).toEqual({
+      inlineData: {
+        mimeType: 'image/jpeg',
+        data: Buffer.from(ORIGINAL).toString('base64'),
+      },
+    });
+  });
+});
+
+describe('createGeminiBackgroundRemovalClient', () => {
+  const config = {
+    apiKey: 'test-key',
+    model: DEFAULT_GEMINI_MODEL,
+    endpoint: DEFAULT_ENDPOINT,
+  };
+
+  it('POSTs generateContent and returns PNG bytes from inlineData', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => geminiImageResponse(),
+    });
+
+    const client = createGeminiBackgroundRemovalClient(config, fetchImpl);
+    await expect(client.removeBackground(ORIGINAL, 'image/jpeg')).resolves.toEqual(PNG);
 
     expect(fetchImpl).toHaveBeenCalledWith(
       config.endpoint,
       expect.objectContaining({
         method: 'POST',
         headers: {
-          'X-Api-Key': 'test-key',
-          Authorization: 'Bearer test-key',
+          'Content-Type': 'application/json',
+          'x-goog-api-key': 'test-key',
         },
       }),
     );
   });
 
+  it('accepts snake_case inline_data in the Gemini JSON body', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ inline_data: { mime_type: 'image/png', data: PNG_BASE64 } }],
+              },
+            },
+          ],
+        }),
+    });
+
+    const client = createGeminiBackgroundRemovalClient(config, fetchImpl);
+    await expect(client.removeBackground(ORIGINAL, 'image/jpeg')).resolves.toEqual(PNG);
+  });
+
   it('maps 429 / 5xx to retryable and 4xx image errors to permanent', async () => {
-    const retry = createHttpBackgroundRemovalClient(config, async () =>
+    const retry = createGeminiBackgroundRemovalClient(config, async () =>
       ({ ok: false, status: 503 }) as Response,
     );
     await expect(retry.removeBackground(ORIGINAL, 'image/jpeg')).rejects.toBeInstanceOf(
       RetryableProcessingError,
     );
 
-    const permanent = createHttpBackgroundRemovalClient(config, async () =>
+    const unauthorized = createGeminiBackgroundRemovalClient(config, async () =>
+      ({ ok: false, status: 401 }) as Response,
+    );
+    await expect(unauthorized.removeBackground(ORIGINAL, 'image/jpeg')).rejects.toBeInstanceOf(
+      RetryableProcessingError,
+    );
+
+    const permanent = createGeminiBackgroundRemovalClient(config, async () =>
       ({ ok: false, status: 422 }) as Response,
     );
     await expect(permanent.removeBackground(ORIGINAL, 'image/jpeg')).rejects.toBeInstanceOf(
@@ -312,11 +435,41 @@ describe('createHttpBackgroundRemovalClient', () => {
   });
 
   it('maps network failures to retryable', async () => {
-    const client = createHttpBackgroundRemovalClient(config, async () => {
+    const client = createGeminiBackgroundRemovalClient(config, async () => {
       throw new Error('fetch failed');
     });
     await expect(client.removeBackground(ORIGINAL, 'image/jpeg')).rejects.toBeInstanceOf(
       RetryableProcessingError,
+    );
+  });
+
+  it('treats a 200 without image bytes as permanent', async () => {
+    const client = createGeminiBackgroundRemovalClient(config, async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: 'nope' }] } }] }),
+      }) as Response,
+    );
+    await expect(client.removeBackground(ORIGINAL, 'image/jpeg')).rejects.toBeInstanceOf(
+      PermanentProcessingError,
+    );
+  });
+
+  it('treats a safety-blocked Gemini response as permanent', async () => {
+    const client = createGeminiBackgroundRemovalClient(config, async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            promptFeedback: { blockReason: 'SAFETY' },
+            candidates: [],
+          }),
+      }) as Response,
+    );
+    await expect(client.removeBackground(ORIGINAL, 'image/jpeg')).rejects.toBeInstanceOf(
+      PermanentProcessingError,
     );
   });
 });

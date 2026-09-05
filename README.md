@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, background-removal API key, garment-classification, colour-detection, and optional recommender credentials (placeholders) |
+| Secrets Manager | Firebase project ID, Gemini background-removal, garment-classification, colour-detection, and optional recommender credentials (placeholders) |
 
 Working in this first cut:
 
@@ -55,13 +55,23 @@ aws secretsmanager put-secret-value \
   --secret-string "your-actual-firebase-project-id"
 ```
 
-Background removal reads its provider credential from Secrets Manager (plain API key, or JSON `{ "apiKey", "endpoint" }`). Optionally set CDK context / env `backgroundRemovalEndpoint` / `BACKGROUND_REMOVAL_ENDPOINT` if the endpoint is not in the secret:
+Background removal uses **Google Gemini** (`generateContent` image edit). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash-image`); JSON can override `model` and `endpoint`. Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id wardrobe/prod/background-removal-api-key \
-  --secret-string '{"apiKey":"your-provider-key","endpoint":"https://your-rembg-endpoint"}'
+  --secret-id wardrobe/prod/gemini-background-removal \
+  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash-image"}'
 ```
+
+A raw key string also works:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/gemini-background-removal \
+  --secret-string "your-gemini-api-key"
+```
+
+Optional CDK context / env `geminiModel` / `GEMINI_MODEL` and `geminiEndpoint` / `GEMINI_ENDPOINT` override the secret when you need a different Gemini image model or a proxy URL. The processing Lambda reads `BACKGROUND_REMOVAL_SECRET_ARN` at runtime.
 
 Garment classification reads API credentials from Secrets Manager at runtime. After deploy, replace the generated placeholder (never commit the key):
 
@@ -225,21 +235,21 @@ Poison messages (invalid JSON, unknown `jobType`, missing item, owner mismatch) 
 
 Retries use the existing queue (WARDROBE-15): Lambda timeout **60s**, visibility timeout **120s** (visibility must stay greater than the timeout), `maxReceiveCount: 3`, then the DLQ + CloudWatch alarms. Retryable DynamoDB / provider / S3 errors are returned as SQS batch item failures so the message is redelivered.
 
-Background removal (WARDROBE-18) reads the Dynamo-validated `originalImageKey` from the private media bucket, calls an injectable rembg HTTP client (Secrets Manager credential; unit tests mock the client — no live provider in CI), writes `users/{userId}/items/{itemId}/processed.png`, and updates DynamoDB:
+Background removal (WARDROBE-26) reads the Dynamo-validated `originalImageKey` from the private media bucket, calls an injectable Gemini vision/image client (Secrets Manager credential; unit tests mock Gemini — no live Gemini calls in CI), writes `users/{userId}/items/{itemId}/processed.png`, and updates DynamoDB:
 
 - `processedKey` — Flutter `ClothingItem.image.processedKey`
 - `ai.backgroundRemoved = true`
 - `ai.processedImageKey` — architecture metadata (merged into any existing `ai` map)
 
-The original object is kept. Permanent rembg / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
+The original object is kept. Permanent Gemini / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
 
 Pipeline hooks:
 
-1. Background removal (WARDROBE-18) — implemented
+1. Background removal (WARDROBE-26, Gemini) — implemented
 2. AI classification (WARDROBE-19) — injectable classifier; persists `ai.detectedCategory` / `ai.detectedSubcategory` only (never overwrites user `category` / `subcategory`)
 3. Colour / category detection (WARDROBE-20) — injectable detector; persists `ai.detectedColours` (controlled tokens such as `BLACK`, `WHITE`, `RED`, `BLUE`) and may refine `ai.detectedCategory` / `ai.detectedSubcategory`. Never overwrites user-owned `category`, `subcategory`, or `colours`.
 
-Classification and colour detection both use the processed image key when present (including the key just written by rembg), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/ai-classifier` and `wardrobe/{stage}/ai-colour-detector`); unit tests inject mock clients and never call a live vision API. After deploy, replace the placeholder secrets with JSON `{"apiKey":"...","endpoint":"https://..."}` — do not commit AI keys.
+Classification and colour detection both use the processed image key when present (including the key just written by Gemini), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/gemini-background-removal`, `wardrobe/{stage}/ai-classifier`, and `wardrobe/{stage}/ai-colour-detector`); unit tests inject mock clients and never call a live vision API. After deploy, replace the Gemini placeholder with an API key (or JSON `{"apiKey":"...","model":"gemini-2.5-flash-image"}`) — do not commit AI keys.
 
 The worker still sets `processingStatus: READY` after the full pipeline returns successfully, or `FAILED` on `PermanentProcessingError`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
 
@@ -338,7 +348,7 @@ src/functions/
   outfits/
   recommendations/     owner-only derived outfits; injectable rule-based strategy
   uploads/
-  processing/          handler, rembg, classify, colour-detect, pipeline, retry/poison errors
+  processing/          handler, Gemini bg-remove, classify, colour-detect, pipeline, retry/poison errors
 src/shared/
   auth.ts
   dynamodb.ts
