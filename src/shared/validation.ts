@@ -1,7 +1,11 @@
 import { Errors } from './errors';
 import {
   CLOTHING_CATEGORIES,
+  CLOTHING_COLOURS,
+  CLOTHING_SUBCATEGORIES,
   ClothingCategory,
+  ClothingColour,
+  ClothingSubcategory,
   OutfitItem,
   OutfitSlot,
 } from './types';
@@ -39,6 +43,37 @@ export function optionalNonEmptyString(
 
 export function requireCategory(value: unknown): ClothingCategory {
   return requireControlledSlot(value, 'category');
+}
+
+export function requireColour(value: unknown): ClothingColour {
+  const colour = requireNonEmptyString(value, 'colour', 32);
+  if (!(CLOTHING_COLOURS as readonly string[]).includes(colour)) {
+    throw Errors.validation(
+      `colour must be one of: ${CLOTHING_COLOURS.join(', ')}.`,
+    );
+  }
+  return colour as ClothingColour;
+}
+
+export function requireSubcategory(value: unknown): ClothingSubcategory {
+  const subcategory = requireNonEmptyString(value, 'subcategory', 32);
+  if (!(CLOTHING_SUBCATEGORIES as readonly string[]).includes(subcategory)) {
+    throw Errors.validation(
+      `subcategory must be one of: ${CLOTHING_SUBCATEGORIES.join(', ')}.`,
+    );
+  }
+  return subcategory as ClothingSubcategory;
+}
+
+/** Missing / blank query values are omitted; present values must be non-empty. */
+export function optionalQueryString(
+  value: unknown,
+  field: string,
+): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  return requireNonEmptyString(value, field, 32);
 }
 
 export function requireSlot(value: unknown, field = 'slot'): OutfitSlot {

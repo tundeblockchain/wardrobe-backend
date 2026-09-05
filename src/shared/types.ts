@@ -133,6 +133,16 @@ export interface ClothingItem {
   updatedAt: string;
 }
 
+/**
+ * Flutter `ItemListResponse` for `GET /wardrobes/{wardrobeId}/items`.
+ *
+ * Pagination can later add an opaque `nextCursor` string here.
+ * Do not expose DynamoDB `LastEvaluatedKey`.
+ */
+export interface ClothingItemList {
+  items: ClothingItem[];
+}
+
 export type OutfitSlot = ClothingCategory;
 
 export interface OutfitItem {

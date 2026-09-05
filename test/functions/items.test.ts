@@ -137,6 +137,7 @@ function event(options: {
   method: string;
   wardrobeId?: string;
   itemId?: string;
+  query?: Record<string, string | undefined>;
   body?: unknown;
   rawBody?: string;
   sub?: string | null;
@@ -156,12 +157,20 @@ function event(options: {
     ? `${options.method} /wardrobes/{wardrobeId}/items/{itemId}`
     : `${options.method} /wardrobes/{wardrobeId}/items`;
 
+  const queryEntries = Object.entries(options.query ?? {}).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string',
+  );
+  const rawQueryString = queryEntries
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&');
+
   return {
     version: '2.0',
     routeKey,
     rawPath,
-    rawQueryString: '',
+    rawQueryString,
     headers: { authorization: 'Bearer unused-in-handler' },
+    queryStringParameters: options.query,
     body:
       options.rawBody !== undefined
         ? options.rawBody
@@ -519,6 +528,210 @@ describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Query'),
       ).toBe(false);
     });
+
+    it('filters by user category and keeps the Flutter items wrapper', async () => {
+      const top = dynamoItem();
+      const shoes = dynamoItem(OWNER_ID, {
+        itemId: 'item_shoes0001',
+        SK: 'ITEM#item_shoes0001',
+        category: 'SHOES',
+        subcategory: 'SNEAKERS',
+        colours: ['WHITE'],
+      });
+
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [top, shoes] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', query: { category: 'TOP' } })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as { items: ClothingItem[] };
+      expect(body).toEqual({ items: [itemDto()] });
+      expect(body).not.toHaveProperty('LastEvaluatedKey');
+      expect(body).not.toHaveProperty('nextCursor');
+    });
+
+    it('matches category against ai.detectedCategory when the user field differs', async () => {
+      const detectedTop = dynamoItem(OWNER_ID, {
+        itemId: 'item_ai_top001',
+        SK: 'ITEM#item_ai_top001',
+        category: 'BOTTOM',
+        subcategory: 'JEANS',
+        colours: ['BLUE'],
+        ai: { detectedCategory: 'TOP', detectedSubcategory: 'TSHIRT' },
+      });
+
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [dynamoItem(), detectedTop] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', query: { category: 'TOP' } })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as { items: ClothingItem[] };
+      expect(body.items.map((item) => item.itemId)).toEqual([
+        ITEM_ID,
+        'item_ai_top001',
+      ]);
+    });
+
+    it('filters by user colours and ai.detectedColours', async () => {
+      const userBlack = dynamoItem();
+      const aiNavy = dynamoItem(OWNER_ID, {
+        itemId: 'item_ai_navy01',
+        SK: 'ITEM#item_ai_navy01',
+        category: 'TOP',
+        colours: ['WHITE'],
+        ai: { detectedColours: ['NAVY'] },
+      });
+      const red = dynamoItem(OWNER_ID, {
+        itemId: 'item_red000001',
+        SK: 'ITEM#item_red000001',
+        colours: ['RED'],
+      });
+
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [userBlack, aiNavy, red] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const black = asResult(
+        await handler(event({ method: 'GET', query: { colour: 'BLACK' } })),
+      );
+      expect(black.statusCode).toBe(200);
+      expect(
+        (bodyOf(black) as { items: ClothingItem[] }).items.map((item) => item.itemId),
+      ).toEqual([ITEM_ID]);
+
+      const navy = asResult(
+        await handler(event({ method: 'GET', query: { colour: 'NAVY' } })),
+      );
+      expect(navy.statusCode).toBe(200);
+      expect(
+        (bodyOf(navy) as { items: ClothingItem[] }).items.map((item) => item.itemId),
+      ).toEqual(['item_ai_navy01']);
+    });
+
+    it('ANDs category, colour, and subcategory filters', async () => {
+      const match = dynamoItem();
+      const wrongColour = dynamoItem(OWNER_ID, {
+        itemId: 'item_white0001',
+        SK: 'ITEM#item_white0001',
+        colours: ['WHITE'],
+      });
+      const aiMatch = dynamoItem(OWNER_ID, {
+        itemId: 'item_ai_and001',
+        SK: 'ITEM#item_ai_and001',
+        category: 'BOTTOM',
+        subcategory: 'JEANS',
+        colours: ['BLUE'],
+        ai: {
+          detectedCategory: 'TOP',
+          detectedSubcategory: 'TSHIRT',
+          detectedColours: ['BLACK'],
+        },
+      });
+
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [match, wrongColour, aiMatch] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'GET',
+            query: { category: 'TOP', colour: 'BLACK', subcategory: 'TSHIRT' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(
+        (bodyOf(result) as { items: ClothingItem[] }).items.map((item) => item.itemId),
+      ).toEqual([ITEM_ID, 'item_ai_and001']);
+    });
+
+    it('returns an empty items array when filters match nothing', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [dynamoItem()] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', query: { colour: 'GOLD' } })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ items: [] });
+    });
+
+    it('ignores a query userId and still lists only token-owned items', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [
+              dynamoItem(),
+              dynamoItem(OTHER_ID, {
+                itemId: 'item_other0001',
+                SK: 'ITEM#item_other0001',
+              }),
+            ],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'GET',
+            query: { userId: OTHER_ID, category: 'TOP' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ items: [itemDto()] });
+    });
+
+    it.each([
+      ['category', { category: 'HAT' }, 'category must be one of: TOP, BOTTOM, DRESS, OUTERWEAR, SHOES, ACCESSORY, BAG.'],
+      [
+        'colour',
+        { colour: 'TURQUOISE' },
+        'colour must be one of: BLACK, WHITE, GREY, RED, BLUE, GREEN, YELLOW, ORANGE, PINK, PURPLE, BROWN, BEIGE, NAVY, CREAM, GOLD, SILVER, BURGUNDY, KHAKI, TEAL, OLIVE, MULTICOLOUR.',
+      ],
+      ['subcategory', { subcategory: 'CAP' }, expect.stringMatching(/^subcategory must be one of:/)],
+    ])(
+      'returns 400 VALIDATION_ERROR for an invalid %s token before querying items',
+      async (_label, query, message) => {
+        const result = asResult(await handler(event({ method: 'GET', query })));
+
+        expect(result.statusCode).toBe(400);
+        expect(bodyOf(result)).toEqual({
+          error: { code: 'VALIDATION_ERROR', message },
+        });
+        expect(mockSend).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('GET /wardrobes/{wardrobeId}/items/{itemId}', () => {
