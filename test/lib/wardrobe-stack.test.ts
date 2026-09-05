@@ -420,6 +420,67 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/remove\.bg\/[A-Za-z0-9]{10,}/);
   });
 
+  test('AI classifier credentials are a Secrets Manager placeholder granted to ProcessingFn', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/ai-classifier',
+    });
+
+    template.hasOutput('AiClassifierSecretName', {
+      Description:
+        'Secrets Manager secret for garment classification API credentials (placeholder until replaced)',
+    });
+
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: {
+        Timeout?: number;
+        MemorySize?: number;
+        Environment?: { Variables?: Record<string, unknown> };
+      };
+    }>;
+    const processing = functions.find(
+      (fn) => fn.Properties.Timeout === 60 && fn.Properties.MemorySize === 512,
+    );
+    expect(processing?.Properties.Environment?.Variables?.AI_CLASSIFIER_SECRET_ARN).toBeDefined();
+    expect(processing?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        BACKGROUND_REMOVAL_SECRET_ARN: expect.anything(),
+        AI_CLASSIFIER_SECRET_ARN: expect.anything(),
+      }),
+    );
+
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+            Effect?: string;
+          }>;
+        };
+      };
+    };
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    const secretActions = policies
+      .filter((policy) => JSON.stringify(policy).includes('ProcessingFn'))
+      .flatMap((policy) =>
+        policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+          const actions = statement.Action;
+          const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+          return list.filter((action) => action.startsWith('secretsmanager:'));
+        }),
+      );
+    expect(secretActions).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
+    expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
+  });
+
   test('media bucket CORS stays PUT/GET only and is not a public website', () => {
     template.hasResourceProperties('AWS::S3::Bucket', {
       PublicAccessBlockConfiguration: {

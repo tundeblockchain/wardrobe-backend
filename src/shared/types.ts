@@ -10,6 +10,66 @@ export const CLOTHING_CATEGORIES = [
 
 export type ClothingCategory = (typeof CLOTHING_CATEGORIES)[number];
 
+/** Controlled garment subcategories used by AI classification (WARDROBE-19). */
+export const CLOTHING_SUBCATEGORIES = [
+  'TSHIRT',
+  'SHIRT',
+  'BLOUSE',
+  'POLO',
+  'SWEATER',
+  'HOODIE',
+  'JEANS',
+  'TROUSERS',
+  'SHORTS',
+  'SKIRT',
+  'DRESS',
+  'JUMPSUIT',
+  'ROMPER',
+  'JACKET',
+  'COAT',
+  'BLAZER',
+  'SNEAKERS',
+  'BOOTS',
+  'HEELS',
+  'SANDALS',
+  'FLATS',
+  'HAT',
+  'BELT',
+  'SCARF',
+  'JEWELRY',
+  'SUNGLASSES',
+  'WATCH',
+  'HANDBAG',
+  'BACKPACK',
+  'TOTE',
+  'CLUTCH',
+  'CROSSBODY',
+] as const;
+
+export type ClothingSubcategory = (typeof CLOTHING_SUBCATEGORIES)[number];
+
+export const SUBCATEGORIES_BY_CATEGORY: Record<
+  ClothingCategory,
+  readonly ClothingSubcategory[]
+> = {
+  TOP: ['TSHIRT', 'SHIRT', 'BLOUSE', 'POLO', 'SWEATER', 'HOODIE'],
+  BOTTOM: ['JEANS', 'TROUSERS', 'SHORTS', 'SKIRT'],
+  DRESS: ['DRESS', 'JUMPSUIT', 'ROMPER'],
+  OUTERWEAR: ['JACKET', 'COAT', 'BLAZER'],
+  SHOES: ['SNEAKERS', 'BOOTS', 'HEELS', 'SANDALS', 'FLATS'],
+  ACCESSORY: ['HAT', 'BELT', 'SCARF', 'JEWELRY', 'SUNGLASSES', 'WATCH'],
+  BAG: ['HANDBAG', 'BACKPACK', 'TOTE', 'CLUTCH', 'CROSSBODY'],
+};
+
+/** AI-only fields. Never overwrite user-set category / subcategory. */
+export interface GarmentAiMetadata {
+  detectedCategory?: ClothingCategory;
+  detectedSubcategory?: ClothingSubcategory;
+  detectedColours?: string[];
+  backgroundRemoved?: boolean;
+  processedImageKey?: string;
+}
+
 export type ProcessingStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
 
 export const PROCESS_WARDROBE_ITEM_JOB = 'PROCESS_WARDROBE_ITEM' as const;

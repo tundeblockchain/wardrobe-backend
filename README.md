@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, background-removal API key |
+| Secrets Manager | Firebase project ID, background-removal API key, garment-classification credentials (placeholders) |
 
 Working in this first cut:
 
@@ -23,7 +23,7 @@ Working in this first cut:
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
 - `POST /uploads` (S3 pre-signed PUT URL)
-- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification hooks are no-op)
+- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification persists under `ai`)
 
 ## Prerequisites
 
@@ -60,6 +60,14 @@ Background removal reads its provider credential from Secrets Manager (plain API
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/background-removal-api-key \
   --secret-string '{"apiKey":"your-provider-key","endpoint":"https://your-rembg-endpoint"}'
+```
+
+Garment classification reads API credentials from Secrets Manager at runtime. After deploy, replace the generated placeholder (never commit the key):
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/ai-classifier \
+  --secret-string '{"apiKey":"your-classifier-api-key","endpoint":"https://your-classifier.example/classify"}'
 ```
 
 If this is the first CDK app in the account/region:
@@ -202,11 +210,13 @@ Background removal (WARDROBE-18) reads the Dynamo-validated `originalImageKey` f
 
 The original object is kept. Permanent rembg / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
 
-Later hooks stay no-op stubs:
+Pipeline hooks:
 
 1. Background removal (WARDROBE-18) — implemented
-2. AI classification (WARDROBE-19)
-3. Colour / category detection (WARDROBE-20)
+2. AI classification (WARDROBE-19) — injectable classifier; persists `ai.detectedCategory` / `ai.detectedSubcategory` only (never overwrites user `category` / `subcategory`)
+3. Colour / category detection (WARDROBE-20) — no-op stub
+
+Classification uses the processed image key when present (including the key just written by rembg), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/ai-classifier`); unit tests inject a mock client and never call a live vision API. After deploy, replace the placeholder secret with JSON `{"apiKey":"...","endpoint":"https://..."}` — do not commit AI keys.
 
 ### Outfits
 
