@@ -1372,7 +1372,7 @@ CloudWatch:
 
 Secrets Manager / Parameter Store:
 - External API credentials
-- AI provider credentials when required
+- AI provider credentials when required (Gemini background-removal, Gemini colour detection, optional classifier / recommender)
 ```
 
 Whether individual API operations use separate Lambdas or grouped domain Lambdas can be decided during implementation.

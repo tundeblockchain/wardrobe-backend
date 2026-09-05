@@ -19,9 +19,35 @@ import {
   PermanentProcessingError,
   RetryableProcessingError,
 } from './errors';
+import {
+  classifyGeminiHttpStatus,
+  DEFAULT_GEMINI_COLOUR_MODEL,
+  extractGeminiText,
+  firstString,
+  geminiBlockReason,
+  geminiGenerateContentUrl,
+  GEMINI_PROVIDER_TIMEOUT_MS,
+  parseGeminiJsonText,
+  resolveGeminiImageMimeType,
+} from './gemini';
 import type { ProcessingContext } from './pipeline';
 
 export const MAX_DETECTED_COLOURS = 8;
+
+export { DEFAULT_GEMINI_COLOUR_MODEL };
+export const COLOUR_DETECTOR_STRATEGY_GEMINI = 'gemini';
+export const COLOUR_DETECTOR_STRATEGY_HTTP = 'http';
+
+const COLOUR_DETECTION_PROMPT = [
+  'Identify the clothing item colours in this image, and optionally refine its category.',
+  'Return JSON only with this shape:',
+  '{ "detectedColours": ["BLACK"], "detectedCategory": "TOP", "detectedSubcategory": "TSHIRT" }',
+  `detectedColours is required. Use only these colour tokens: ${CLOTHING_COLOURS.join(', ')}.`,
+  'Order colours by visual dominance. At most 8. De-duplicate. Do not invent colours.',
+  `detectedCategory if present must be one of: ${CLOTHING_CATEGORIES.join(', ')}.`,
+  'detectedSubcategory if present must be a controlled subcategory for that category.',
+  'Omit category fields when you are not confident.',
+].join(' ');
 
 export interface ColourDetection {
   detectedColours: ClothingColour[];
@@ -51,6 +77,16 @@ export interface ColourDetectorSecret {
   endpoint: string;
 }
 
+export interface GeminiColourDetectorConfig {
+  apiKey: string;
+  model: string;
+  endpoint: string;
+}
+
+export type ColourDetectorStrategy =
+  | typeof COLOUR_DETECTOR_STRATEGY_GEMINI
+  | typeof COLOUR_DETECTOR_STRATEGY_HTTP;
+
 export type FetchLike = (
   url: string,
   init?: {
@@ -73,9 +109,31 @@ export interface HttpColourDetectorOptions {
   httpPost?: FetchLike;
 }
 
+export interface GeminiColourDetectorOptions {
+  fetchSecret?: () => Promise<GeminiColourDetectorConfig>;
+  getImage?: (imageKey: string) => Promise<{
+    bytes: Uint8Array;
+    contentType: string;
+  }>;
+  fetchImpl?: typeof fetch;
+}
+
+export interface DefaultColourDetectorOptions {
+  getImage?: (imageKey: string) => Promise<{
+    bytes: Uint8Array;
+    contentType: string;
+  }>;
+  httpPost?: FetchLike;
+  fetchImpl?: typeof fetch;
+  fetchHttpSecret?: () => Promise<ColourDetectorSecret>;
+  fetchGeminiSecret?: () => Promise<GeminiColourDetectorConfig>;
+}
+
 const SECRET_CACHE_TTL_MS = 5 * 60 * 1000;
 let cachedSecret: ColourDetectorSecret | undefined;
 let cachedSecretAt = 0;
+let cachedGeminiConfig: GeminiColourDetectorConfig | undefined;
+let cachedGeminiConfigAt = 0;
 
 const COLOUR_ALIASES: Record<string, ClothingColour> = {
   GRAY: 'GREY',
@@ -94,16 +152,17 @@ const COLOUR_ALIASES: Record<string, ClothingColour> = {
 };
 
 /**
- * WARDROBE-20: detect colours (and optionally refine category) and persist
- * under `ai` only. User-set `category` / `subcategory` / `colours` are
- * never overwritten.
+ * WARDROBE-20 / WARDROBE-29: detect colours (and optionally refine category)
+ * and persist under `ai` only. User-set `category` / `subcategory` /
+ * `colours` are never overwritten. Deployed default is Gemini
+ * generateContent; tests inject a mock or use the HTTP strategy.
  */
 export async function detectColourAndCategory(
   context: ProcessingContext,
   deps: DetectColourAndCategoryDeps = {},
 ): Promise<void> {
   const imageKey = resolveColourDetectionImageKey(context);
-  const detector = deps.detector ?? createHttpColourDetector();
+  const detector = deps.detector ?? createDefaultColourDetector();
   const persistAi = deps.persistAi ?? persistColourDetection;
 
   let detection: ColourDetection;
@@ -273,9 +332,96 @@ export function createHttpColourDetector(
   };
 }
 
+export function resolveColourDetectorStrategy(): ColourDetectorStrategy {
+  const raw = process.env.COLOUR_DETECTOR_STRATEGY?.trim().toLowerCase();
+  return raw === COLOUR_DETECTOR_STRATEGY_HTTP
+    ? COLOUR_DETECTOR_STRATEGY_HTTP
+    : COLOUR_DETECTOR_STRATEGY_GEMINI;
+}
+
+/**
+ * Deployed default is Gemini. `COLOUR_DETECTOR_STRATEGY=http` keeps the
+ * vendor-agnostic hook for tests and local non-Gemini paths.
+ */
+export function createDefaultColourDetector(
+  options: DefaultColourDetectorOptions = {},
+): ColourDetector {
+  if (resolveColourDetectorStrategy() === COLOUR_DETECTOR_STRATEGY_HTTP) {
+    return createHttpColourDetector({
+      fetchSecret: options.fetchHttpSecret,
+      getImage: options.getImage,
+      httpPost: options.httpPost,
+    });
+  }
+  return createGeminiColourDetector({
+    fetchSecret: options.fetchGeminiSecret,
+    getImage: options.getImage,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
+export function createGeminiColourDetector(
+  options: GeminiColourDetectorOptions = {},
+): ColourDetector {
+  const fetchSecret = options.fetchSecret ?? loadGeminiColourDetectorConfig;
+  const getImage = options.getImage ?? getColourDetectionImage;
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  return {
+    async detect(input: DetectColourInput): Promise<ColourDetection> {
+      const config = await fetchSecret();
+      const image = await getImage(input.imageKey);
+      const payload = await postGeminiColourDetection(
+        image,
+        config,
+        fetchImpl,
+      );
+      const blocked = geminiBlockReason(payload);
+      if (blocked) {
+        throw new PermanentProcessingError(
+          `Gemini blocked the clothing image (${blocked})`,
+        );
+      }
+
+      const text = extractGeminiText(payload);
+      if (!text) {
+        throw new PermanentProcessingError(
+          'Gemini did not return colour detection text',
+        );
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = parseGeminiJsonText(text);
+      } catch (error) {
+        if (
+          error instanceof PermanentProcessingError ||
+          error instanceof RetryableProcessingError
+        ) {
+          throw error;
+        }
+        throw new PermanentProcessingError(
+          'Gemini colour response was not valid JSON',
+        );
+      }
+
+      const detection = toControlledColourDetection(parsed);
+      if (!detection) {
+        throw new PermanentProcessingError(
+          'Gemini colour response was not a controlled colour detection',
+        );
+      }
+
+      return detection;
+    },
+  };
+}
+
 export function resetColourDetectorSecretCache(): void {
   cachedSecret = undefined;
   cachedSecretAt = 0;
+  cachedGeminiConfig = undefined;
+  cachedGeminiConfigAt = 0;
 }
 
 export function parseColourDetectorSecret(
@@ -313,6 +459,92 @@ export function parseColourDetectorSecret(
   }
 
   return { apiKey, endpoint };
+}
+
+export function parseGeminiColourDetectorSecret(
+  secretString: string | undefined,
+): GeminiColourDetectorConfig {
+  if (!secretString?.trim()) {
+    throw new RetryableProcessingError('Gemini colour-detection secret is empty');
+  }
+
+  const parsed = parseJsonObjectOrString(secretString);
+  if (typeof parsed === 'string') {
+    return {
+      apiKey: parsed,
+      model: DEFAULT_GEMINI_COLOUR_MODEL,
+      endpoint: geminiGenerateContentUrl(DEFAULT_GEMINI_COLOUR_MODEL),
+    };
+  }
+
+  const apiKey = firstString(parsed, ['apiKey', 'api_key', 'key']);
+  if (!apiKey) {
+    throw new RetryableProcessingError(
+      'Gemini colour-detection secret is missing apiKey',
+    );
+  }
+
+  const model =
+    firstString(parsed, ['model']) ?? DEFAULT_GEMINI_COLOUR_MODEL;
+  const endpoint =
+    firstString(parsed, ['endpoint', 'url']) ?? geminiGenerateContentUrl(model);
+
+  return { apiKey, model, endpoint };
+}
+
+export async function loadGeminiColourDetectorConfig(
+  getSecret: (secretId: string) => Promise<string> = getSecretString,
+): Promise<GeminiColourDetectorConfig> {
+  if (
+    cachedGeminiConfig &&
+    Date.now() - cachedGeminiConfigAt < SECRET_CACHE_TTL_MS
+  ) {
+    return cachedGeminiConfig;
+  }
+
+  const secretId = process.env.AI_COLOUR_DETECTOR_SECRET_ARN;
+  if (!secretId) {
+    throw new RetryableProcessingError(
+      'AI_COLOUR_DETECTOR_SECRET_ARN is not configured',
+    );
+  }
+
+  let raw: string;
+  try {
+    raw = await getSecret(secretId);
+  } catch (error) {
+    if (
+      error instanceof PermanentProcessingError ||
+      error instanceof RetryableProcessingError
+    ) {
+      throw error;
+    }
+    throw new RetryableProcessingError(
+      error instanceof Error
+        ? error.message
+        : 'Failed to load Gemini colour detector credentials',
+      error,
+    );
+  }
+
+  const fromSecret = parseGeminiColourDetectorSecret(raw);
+  if (!fromSecret.apiKey) {
+    throw new RetryableProcessingError('Gemini colour-detection API key is empty');
+  }
+
+  const model =
+    process.env.GEMINI_COLOUR_MODEL?.trim() ||
+    fromSecret.model ||
+    DEFAULT_GEMINI_COLOUR_MODEL;
+  const endpoint =
+    process.env.GEMINI_COLOUR_ENDPOINT?.trim() ||
+    fromSecret.endpoint ||
+    geminiGenerateContentUrl(model);
+
+  const config = { apiKey: fromSecret.apiKey, model, endpoint };
+  cachedGeminiConfig = config;
+  cachedGeminiConfigAt = Date.now();
+  return config;
 }
 
 async function persistColourDetection(
@@ -420,6 +652,65 @@ async function getColourDetectionImage(imageKey: string): Promise<{
   }
 }
 
+async function postGeminiColourDetection(
+  image: { bytes: Uint8Array; contentType: string },
+  config: GeminiColourDetectorConfig,
+  fetchImpl: typeof fetch,
+): Promise<unknown> {
+  const mimeType = resolveGeminiImageMimeType(image.bytes, image.contentType);
+  const body = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: COLOUR_DETECTION_PROMPT },
+          {
+            inlineData: {
+              mimeType,
+              data: Buffer.from(image.bytes).toString('base64'),
+            },
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json',
+    },
+  };
+
+  let response: Response;
+  try {
+    response = await fetchImpl(config.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': config.apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new RetryableProcessingError(
+      error instanceof Error
+        ? error.message
+        : 'Gemini colour-detection request failed',
+      error,
+    );
+  }
+
+  if (!response.ok) {
+    classifyGeminiHttpStatus(response.status, 'Gemini colour detection');
+  }
+
+  try {
+    return JSON.parse(await response.text());
+  } catch {
+    throw new PermanentProcessingError(
+      'Gemini colour detection returned a non-JSON body',
+    );
+  }
+}
+
 function defaultFetch(
   url: string,
   init?: {
@@ -504,19 +795,6 @@ function normalizeToken(value: unknown): string | undefined {
   }
   const normalized = value.trim().toUpperCase().replace(/[\s-]+/g, '_');
   return normalized || undefined;
-}
-
-function firstString(
-  record: Record<string, unknown>,
-  keysToTry: string[],
-): string | undefined {
-  for (const key of keysToTry) {
-    const value = record[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
 }
 
 function asAiMetadata(value: unknown): GarmentAiMetadata | undefined {

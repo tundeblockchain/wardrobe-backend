@@ -9,6 +9,9 @@ export const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
 /** Multimodal text model used by WARDROBE-27 garment classification. */
 export const DEFAULT_GEMINI_CLASSIFIER_MODEL = 'gemini-2.5-flash';
 
+/** Multimodal text model used by WARDROBE-29 colour / category detection. */
+export const DEFAULT_GEMINI_COLOUR_MODEL = 'gemini-2.5-flash';
+
 export const GEMINI_PROVIDER_TIMEOUT_MS = 45_000;
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -166,7 +169,20 @@ export function parseGeminiJsonText(text: string): unknown {
   const trimmed = text.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   const raw = (fenced ? fenced[1] : trimmed).trim();
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(raw.slice(start, end + 1));
+      } catch {
+        // fall through
+      }
+    }
+    throw new PermanentProcessingError('Gemini returned a non-JSON body');
+  }
 }
 
 export function classifyGeminiHttpStatus(status: number, label: string): never {

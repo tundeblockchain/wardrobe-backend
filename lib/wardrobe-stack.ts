@@ -71,7 +71,7 @@ export class WardrobeStack extends cdk.Stack {
 
     // WARDROBE-15 queue + WARDROBE-16 enqueue + WARDROBE-17 worker +
     // WARDROBE-18/26 Gemini bg-remove + WARDROBE-19/27 Gemini classify +
-    // WARDROBE-20 colour. Visibility must stay greater than the worker
+    // WARDROBE-20/29 Gemini colour. Visibility must stay greater than the worker
     // timeout so an in-flight Gemini / vision invoke is not redelivered. After
     // maxReceiveCount: 3 SQS sends the message to the DLQ (alarmed
     // below). No EventBridge.
@@ -125,6 +125,20 @@ export class WardrobeStack extends cdk.Stack {
       (this.node.tryGetContext('geminiEndpoint') as string | undefined) ??
       process.env.GEMINI_ENDPOINT ??
       '';
+    const geminiColourModel =
+      (this.node.tryGetContext('geminiColourModel') as string | undefined) ??
+      process.env.GEMINI_COLOUR_MODEL ??
+      '';
+    const geminiColourEndpoint =
+      (this.node.tryGetContext('geminiColourEndpoint') as string | undefined) ??
+      process.env.GEMINI_COLOUR_ENDPOINT ??
+      '';
+    const colourDetectorStrategy =
+      (
+        (this.node.tryGetContext('colourDetectorStrategy') as string | undefined) ??
+        process.env.COLOUR_DETECTOR_STRATEGY ??
+        'gemini'
+      ).trim() || 'gemini';
 
     const geminiClassifierModel =
       (this.node.tryGetContext('geminiClassifierModel') as string | undefined) ??
@@ -145,15 +159,15 @@ export class WardrobeStack extends cdk.Stack {
         'Gemini garment-classification credentials. Replace the generated value with a Gemini API key, or JSON { "apiKey", "model", "endpoint" }. Never commit the real key.',
       removalPolicy,
     });
-    // Placeholder only — replace the generated value with colour-
-    // detector credentials (apiKey + endpoint JSON). Never commit AI keys.
+    // Placeholder only — replace the generated value with a Gemini API
+    // key (or JSON { apiKey, model, endpoint }). Never commit AI keys.
     const aiColourDetectorSecret = new secretsmanager.Secret(
       this,
       'AiColourDetectorSecret',
       {
-        secretName: `wardrobe/${stage}/ai-colour-detector`,
+        secretName: `wardrobe/${stage}/gemini-colour`,
         description:
-          'Placeholder colour-detection API credentials. Store JSON { "apiKey", "endpoint" }; never commit AI keys.',
+          'Gemini colour-detection credentials. Replace the generated value with a Gemini API key, or JSON { "apiKey", "model", "endpoint" }. Never commit the real key.',
         removalPolicy,
       },
     );
@@ -224,6 +238,7 @@ export class WardrobeStack extends cdk.Stack {
         BACKGROUND_REMOVAL_SECRET_ARN: backgroundRemovalSecret.secretArn,
         AI_CLASSIFIER_SECRET_ARN: aiClassifierSecret.secretArn,
         AI_COLOUR_DETECTOR_SECRET_ARN: aiColourDetectorSecret.secretArn,
+        COLOUR_DETECTOR_STRATEGY: colourDetectorStrategy,
         ...(geminiModel ? { GEMINI_MODEL: geminiModel } : {}),
         ...(geminiEndpoint ? { GEMINI_ENDPOINT: geminiEndpoint } : {}),
         ...(geminiClassifierModel
@@ -231,6 +246,10 @@ export class WardrobeStack extends cdk.Stack {
           : {}),
         ...(geminiClassifierEndpoint
           ? { GEMINI_CLASSIFIER_ENDPOINT: geminiClassifierEndpoint }
+          : {}),
+        ...(geminiColourModel ? { GEMINI_COLOUR_MODEL: geminiColourModel } : {}),
+        ...(geminiColourEndpoint
+          ? { GEMINI_COLOUR_ENDPOINT: geminiColourEndpoint }
           : {}),
       },
     });
@@ -474,7 +493,7 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AiColourDetectorSecretName', {
       value: aiColourDetectorSecret.secretName,
       description:
-        'Secrets Manager secret for colour detection API credentials (placeholder until replaced)',
+        'Secrets Manager secret for Gemini colour-detection credentials (API key, optional model/endpoint)',
     });
 
     new cdk.CfnOutput(this, 'AiRecommenderSecretName', {
