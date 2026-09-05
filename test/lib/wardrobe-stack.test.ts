@@ -259,7 +259,14 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(processingSqs).not.toContain('sqs:SendMessage');
     expect(processingSqs).not.toContain('sqs:*');
 
-    for (const fnId of ['HealthFn', 'WardrobesFn', 'OutfitsFn', 'UploadsFn', 'AuthorizerFn']) {
+    for (const fnId of [
+      'HealthFn',
+      'WardrobesFn',
+      'OutfitsFn',
+      'RecommendationsFn',
+      'UploadsFn',
+      'AuthorizerFn',
+    ]) {
       expect(sqsActionsFor(fnId)).toEqual([]);
     }
 
@@ -516,6 +523,85 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
   });
 
+  test('recommendations route is owner-auth and uses a dedicated read-only Lambda', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+    const recommendations = routes.find(
+      (route) => route.Properties.RouteKey === 'GET /wardrobes/{wardrobeId}/recommendations',
+    );
+    expect(recommendations?.Properties.AuthorizationType).toBe('CUSTOM');
+
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/ai-recommender',
+    });
+    template.hasOutput('AiRecommenderSecretName', {
+      Description:
+        'Optional Secrets Manager secret for an external outfit recommender (unused by the default rule-based strategy)',
+    });
+
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+            Effect?: string;
+          }>;
+        };
+      };
+    };
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    const actionsFor = (prefix: string): string[] =>
+      policies
+        .filter((policy) => JSON.stringify(policy).includes('RecommendationsFn'))
+        .flatMap((policy) =>
+          policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+            const actions = statement.Action;
+            const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+            return list.filter((action) => action.startsWith(prefix));
+          }),
+        );
+
+    const dynamo = actionsFor('dynamodb:');
+    expect(dynamo).toEqual(
+      expect.arrayContaining(['dynamodb:GetItem', 'dynamodb:Query']),
+    );
+    expect(dynamo).not.toContain('dynamodb:PutItem');
+    expect(dynamo).not.toContain('dynamodb:UpdateItem');
+    expect(dynamo).not.toContain('dynamodb:DeleteItem');
+    expect(dynamo).not.toContain('dynamodb:*');
+
+    const secrets = actionsFor('secretsmanager:');
+    expect(secrets).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
+    expect(secrets).not.toContain('secretsmanager:*');
+
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: { Environment?: { Variables?: Record<string, unknown> } };
+    }>;
+    const recommendationsFn = functions.find(
+      (fn) => fn.Properties.Environment?.Variables?.AI_RECOMMENDER_SECRET_ARN,
+    );
+    expect(recommendationsFn).toBeDefined();
+    expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'AI_RECOMMENDER_API_KEY',
+    );
+    expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'RECOMMENDER_STRATEGY',
+    );
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
+    expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
+  });
+
   test('media bucket CORS stays PUT/GET only and is not a public website', () => {
     template.hasResourceProperties('AWS::S3::Bucket', {
       PublicAccessBlockConfiguration: {
@@ -579,6 +665,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'PATCH /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}',
+      'GET /wardrobes/{wardrobeId}/recommendations',
     ]) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
