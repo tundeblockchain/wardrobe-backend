@@ -447,6 +447,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       expect.objectContaining({
         BACKGROUND_REMOVAL_SECRET_ARN: expect.anything(),
         AI_CLASSIFIER_SECRET_ARN: expect.anything(),
+        AI_COLOUR_DETECTOR_SECRET_ARN: expect.anything(),
       }),
     );
 
@@ -474,6 +475,40 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       );
     expect(secretActions).toEqual(
       expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
+    expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
+  });
+
+  test('AI colour detector credentials are a Secrets Manager placeholder granted to ProcessingFn', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/ai-colour-detector',
+    });
+
+    template.hasOutput('AiColourDetectorSecretName', {
+      Description:
+        'Secrets Manager secret for colour detection API credentials (placeholder until replaced)',
+    });
+
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: {
+        Timeout?: number;
+        MemorySize?: number;
+        Environment?: { Variables?: Record<string, unknown> };
+      };
+    }>;
+    const processing = functions.find(
+      (fn) => fn.Properties.Timeout === 60 && fn.Properties.MemorySize === 512,
+    );
+    expect(
+      processing?.Properties.Environment?.Variables?.AI_COLOUR_DETECTOR_SECRET_ARN,
+    ).toBeDefined();
+    expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
+      'AI_COLOUR_DETECTOR_API_KEY',
     );
 
     const synthesized = JSON.stringify(template.toJSON());

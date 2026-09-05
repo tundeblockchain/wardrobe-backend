@@ -61,11 +61,38 @@ export const SUBCATEGORIES_BY_CATEGORY: Record<
   BAG: ['HANDBAG', 'BACKPACK', 'TOTE', 'CLUTCH', 'CROSSBODY'],
 };
 
-/** AI-only fields. Never overwrite user-set category / subcategory. */
+/** Controlled colour tokens used by AI colour detection (WARDROBE-20). */
+export const CLOTHING_COLOURS = [
+  'BLACK',
+  'WHITE',
+  'GREY',
+  'RED',
+  'BLUE',
+  'GREEN',
+  'YELLOW',
+  'ORANGE',
+  'PINK',
+  'PURPLE',
+  'BROWN',
+  'BEIGE',
+  'NAVY',
+  'CREAM',
+  'GOLD',
+  'SILVER',
+  'BURGUNDY',
+  'KHAKI',
+  'TEAL',
+  'OLIVE',
+  'MULTICOLOUR',
+] as const;
+
+export type ClothingColour = (typeof CLOTHING_COLOURS)[number];
+
+/** AI-only fields. Never overwrite user-set category / subcategory / colours. */
 export interface GarmentAiMetadata {
   detectedCategory?: ClothingCategory;
   detectedSubcategory?: ClothingSubcategory;
-  detectedColours?: string[];
+  detectedColours?: ClothingColour[];
   backgroundRemoved?: boolean;
   processedImageKey?: string;
 }

@@ -41,7 +41,7 @@ function context(): ProcessingContext {
   };
 }
 
-describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19)', () => {
+describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19 + WARDROBE-20)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockRunBackgroundRemoval.mockResolvedValue(PROCESSED_KEY);
@@ -52,11 +52,6 @@ describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19)', () => {
     await expect(removeBackground(ctx)).resolves.toBeUndefined();
     expect(mockRunBackgroundRemoval).toHaveBeenCalledWith(ctx);
     expect(ctx.item.processedKey).toBe(PROCESSED_KEY);
-  });
-
-  it('leaves detectColourAndCategory as a no-op stub (WARDROBE-20)', async () => {
-    await expect(detectColourAndCategory(context())).resolves.toBeUndefined();
-    expect(mockRunBackgroundRemoval).not.toHaveBeenCalled();
   });
 
   it('runs classifyGarment via the injectable client without a live vision API', async () => {
@@ -76,7 +71,23 @@ describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19)', () => {
     expect(mockRunBackgroundRemoval).not.toHaveBeenCalled();
   });
 
-  it('runs rembg before classify and prefers the processed image key', async () => {
+  it('runs detectColourAndCategory via the injectable client without a live vision API', async () => {
+    const detect = jest.fn().mockResolvedValue({
+      detectedColours: ['BLACK'],
+    });
+    const persistAi = jest.fn().mockResolvedValue(undefined);
+    const ctx = context();
+
+    await expect(
+      detectColourAndCategory(ctx, { detector: { detect }, persistAi }),
+    ).resolves.toBeUndefined();
+
+    expect(detect).toHaveBeenCalledTimes(1);
+    expect(persistAi).toHaveBeenCalledTimes(1);
+    expect(mockRunBackgroundRemoval).not.toHaveBeenCalled();
+  });
+
+  it('runs rembg, classify, then colour and prefers the processed image key', async () => {
     const order: string[] = [];
     mockRunBackgroundRemoval.mockImplementation(async () => {
       order.push('removeBackground');
@@ -87,13 +98,27 @@ describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19)', () => {
       expect(input.imageKey).toBe(PROCESSED_KEY);
       return { detectedCategory: 'TOP', detectedSubcategory: 'TSHIRT' };
     });
+    const detect = jest.fn().mockImplementation(async (input: { imageKey: string }) => {
+      order.push('detectColourAndCategory');
+      expect(input.imageKey).toBe(PROCESSED_KEY);
+      return { detectedColours: ['BLACK', 'WHITE'] };
+    });
     const persistAi = jest.fn().mockResolvedValue(undefined);
 
-    await runProcessingPipeline(context(), { classifier: { classify }, persistAi });
+    await runProcessingPipeline(context(), {
+      classifier: { classify },
+      detector: { detect },
+      persistAi,
+    });
 
-    expect(order).toEqual(['removeBackground', 'classifyGarment']);
+    expect(order).toEqual([
+      'removeBackground',
+      'classifyGarment',
+      'detectColourAndCategory',
+    ]);
     expect(mockRunBackgroundRemoval).toHaveBeenCalledTimes(1);
     expect(classify).toHaveBeenCalledTimes(1);
-    expect(persistAi).toHaveBeenCalledTimes(1);
+    expect(detect).toHaveBeenCalledTimes(1);
+    expect(persistAi).toHaveBeenCalledTimes(2);
   });
 });
