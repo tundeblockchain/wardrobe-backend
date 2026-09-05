@@ -69,19 +69,27 @@ export class WardrobeStack extends cdk.Stack {
       autoDeleteObjects: isDev,
     });
 
-    // Phase-2 infrastructure hook only. The worker Lambda is a no-op stub
-    // (no AI classification or background removal in this ticket).
+    // WARDROBE-15: processing queue + DLQ only. Enqueue (WARDROBE-16) and
+    // real worker behavior (WARDROBE-17 / AI) are later tickets. The worker
+    // Lambda below stays a no-op hook so the event source can be wired.
     const processingDlq = new sqs.Queue(this, 'ItemProcessingDlq', {
       queueName: `wardrobe-item-processing-dlq-${stage}`,
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      removalPolicy,
     });
 
     const processingQueue = new sqs.Queue(this, 'ItemProcessingQueue', {
       queueName: `wardrobe-item-processing-${stage}`,
+      // Visibility > ProcessingFn timeout (30s) so in-flight work is not
+      // redelivered while the stub (and later worker) is still running.
       visibilityTimeout: cdk.Duration.seconds(60),
       retentionPeriod: cdk.Duration.days(4),
+      receiveMessageWaitTime: cdk.Duration.seconds(20),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      removalPolicy,
       deadLetterQueue: {
         queue: processingDlq,
         maxReceiveCount: 3,
@@ -109,7 +117,6 @@ export class WardrobeStack extends cdk.Stack {
         STAGE: stage,
         TABLE_NAME: table.tableName,
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        PROCESSING_QUEUE_URL: processingQueue.queueUrl,
         POWERTOOLS_SERVICE_NAME: 'wardrobe-backend',
       },
     };
@@ -125,13 +132,24 @@ export class WardrobeStack extends cdk.Stack {
 
     const healthFn = this.lambda('HealthFn', 'health', commonLambdaProps);
     const wardrobesFn = this.lambda('WardrobesFn', 'wardrobes', commonLambdaProps);
-    const itemsFn = this.lambda('ItemsFn', 'items', commonLambdaProps);
+    const itemsFn = this.lambda('ItemsFn', 'items', {
+      ...commonLambdaProps,
+      environment: {
+        ...commonLambdaProps.environment,
+        // Present for WARDROBE-16 enqueue. Item create does not send yet.
+        PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+      },
+    });
     const outfitsFn = this.lambda('OutfitsFn', 'outfits', commonLambdaProps);
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
     const processingFn = this.lambda('ProcessingFn', 'processing', {
       ...commonLambdaProps,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
+      environment: {
+        ...commonLambdaProps.environment,
+        PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+      },
     });
 
     table.grantReadWriteData(wardrobesFn);
@@ -157,6 +175,30 @@ export class WardrobeStack extends cdk.Stack {
         period: cdk.Duration.minutes(1),
       }),
       threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'ProcessingQueueDepthAlarm', {
+      alarmName: `wardrobe-item-processing-depth-${stage}`,
+      alarmDescription: 'Processing queue approximate depth is high',
+      metric: processingQueue.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 25,
+      evaluationPeriods: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'ProcessingQueueOldestMessageAlarm', {
+      alarmName: `wardrobe-item-processing-oldest-${stage}`,
+      alarmDescription: 'Oldest message in the processing queue exceeds age threshold',
+      metric: processingQueue.metricApproximateAgeOfOldestMessage({
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 300,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,

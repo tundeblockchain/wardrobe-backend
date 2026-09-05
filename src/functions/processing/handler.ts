@@ -2,9 +2,10 @@ import { SQSEvent } from 'aws-lambda';
 import { logger } from '../../shared/logger';
 
 /**
- * Phase-2 hook: clothing-item processing worker.
- * Intentionally a no-op stub — AI classification and background removal
- * are out of scope for the WARDROBE-4 CDK foundation.
+ * WARDROBE-15 hook: clothing-item processing worker.
+ * Intentionally a no-op stub — enqueue (WARDROBE-16), worker status
+ * updates (WARDROBE-17), and AI / background removal (WARDROBE-18–20)
+ * are later tickets. Do not add classification or image work here.
  */
 export async function handler(event: SQSEvent): Promise<void> {
   for (const record of event.Records) {

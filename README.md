@@ -13,7 +13,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
-| CloudWatch | Lambda logs and a DLQ alarm |
+| CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
 | Secrets Manager | Firebase project ID |
 
 Working in this first cut:

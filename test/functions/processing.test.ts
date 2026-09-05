@@ -20,7 +20,7 @@ function record(body: string, messageId = 'msg-1'): SQSRecord {
   };
 }
 
-describe('processing worker (Phase-2 stub)', () => {
+describe('processing worker (WARDROBE-15 no-op hook)', () => {
   it('is a no-op that logs SQS messages and does not throw', async () => {
     const event: SQSEvent = {
       Records: [record(JSON.stringify({ jobType: 'PROCESS_WARDROBE_ITEM' }))],
