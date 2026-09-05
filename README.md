@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Gemini background-removal, garment-classification, colour-detection, and OpenAI recommender credentials (placeholders) |
+| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, colour-detection, and OpenAI recommender credentials (placeholders) |
 
 Working in this first cut:
 
@@ -73,13 +73,23 @@ aws secretsmanager put-secret-value \
 
 Optional CDK context / env `geminiModel` / `GEMINI_MODEL` and `geminiEndpoint` / `GEMINI_ENDPOINT` override the secret when you need a different Gemini image model or a proxy URL. The processing Lambda reads `BACKGROUND_REMOVAL_SECRET_ARN` at runtime.
 
-Garment classification reads API credentials from Secrets Manager at runtime. After deploy, replace the generated placeholder (never commit the key):
+Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id wardrobe/prod/ai-classifier \
-  --secret-string '{"apiKey":"your-classifier-api-key","endpoint":"https://your-classifier.example/classify"}'
+  --secret-id wardrobe/prod/gemini-classifier \
+  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash"}'
 ```
+
+A raw key string also works:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/gemini-classifier \
+  --secret-string "your-gemini-api-key"
+```
+
+Optional CDK context / env `geminiClassifierModel` / `GEMINI_CLASSIFIER_MODEL` and `geminiClassifierEndpoint` / `GEMINI_CLASSIFIER_ENDPOINT` override the classifier secret when you need a different Gemini text+image model or a proxy URL. The processing Lambda reads `AI_CLASSIFIER_SECRET_ARN` at runtime. Do not reuse `GEMINI_MODEL` here — that override is for background-removal's image-edit model.
 
 Colour / category detection uses a separate Secrets Manager placeholder. After deploy, replace it (never commit the key):
 
@@ -261,10 +271,12 @@ The original object is kept. Permanent Gemini / missing-image failures throw `Pe
 Pipeline hooks:
 
 1. Background removal (WARDROBE-26, Gemini) — implemented
-2. AI classification (WARDROBE-19) — injectable classifier; persists `ai.detectedCategory` / `ai.detectedSubcategory` only (never overwrites user `category` / `subcategory`)
+2. AI classification (WARDROBE-19/27, Gemini) — injectable `generateContent` classifier; persists `ai.detectedCategory` / `ai.detectedSubcategory` only (never overwrites user `category` / `subcategory`)
 3. Colour / category detection (WARDROBE-20) — injectable detector; persists `ai.detectedColours` (controlled tokens such as `BLACK`, `WHITE`, `RED`, `BLUE`) and may refine `ai.detectedCategory` / `ai.detectedSubcategory`. Never overwrites user-owned `category`, `subcategory`, or `colours`.
 
-Classification and colour detection both use the processed image key when present (including the key just written by Gemini), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/gemini-background-removal`, `wardrobe/{stage}/ai-classifier`, and `wardrobe/{stage}/ai-colour-detector`); unit tests inject mock clients and never call a live vision API. After deploy, replace the Gemini placeholder with an API key (or JSON `{"apiKey":"...","model":"gemini-2.5-flash-image"}`) — do not commit AI keys.
+Classification and colour detection both use the processed image key when present (including the key just written by Gemini), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/gemini-background-removal`, `wardrobe/{stage}/gemini-classifier`, and `wardrobe/{stage}/ai-colour-detector`); unit tests inject mock clients and never call a live vision API. After deploy, replace the Gemini placeholders with API keys (or JSON `{"apiKey":"...","model":"..."}`) — do not commit AI keys.
+
+Gemini classifier failures follow the existing worker degrade path: permanent errors (`PermanentProcessingError`) mark the item `FAILED` and ack; transient errors (`RetryableProcessingError`) are reported as SQS batch item failures for retry then DLQ. The worker does not 500.
 
 The worker still sets `processingStatus: READY` after the full pipeline returns successfully, or `FAILED` on `PermanentProcessingError`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
 
@@ -382,7 +394,7 @@ src/functions/
   outfits/
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
-  processing/          handler, Gemini bg-remove, classify, colour-detect, pipeline, retry/poison errors
+  processing/          handler, Gemini helpers, bg-remove, classify, colour-detect, pipeline, retry/poison errors
 src/shared/
   auth.ts
   dynamodb.ts

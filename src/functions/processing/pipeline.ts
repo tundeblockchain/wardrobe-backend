@@ -29,7 +29,7 @@ export type ProcessingPipelineDeps = ClassifyGarmentDeps &
  * Ordered clothing-item processing pipeline.
  *
  *   1. removeBackground        — WARDROBE-18/26 (S3 + injectable Gemini client)
- *   2. classifyGarment         — WARDROBE-19 (injectable classifier; `ai` only)
+ *   2. classifyGarment         — WARDROBE-19/27 (injectable Gemini classifier; `ai` only)
  *   3. detectColourAndCategory — WARDROBE-20 (injectable detector; `ai` only)
  *
  * The worker sets processingStatus READY after this function returns.
@@ -51,7 +51,7 @@ export async function removeBackground(
   rememberProcessedImage(context, processedKey);
 }
 
-/** WARDROBE-19: AI garment classification. Persists under `ai` only. */
+/** WARDROBE-19/27: Gemini garment classification. Persists under `ai` only. */
 export async function classifyGarment(
   context: ProcessingContext,
   deps?: ClassifyGarmentDeps,

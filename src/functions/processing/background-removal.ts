@@ -7,9 +7,20 @@ import {
   processedImageObjectKey,
   putObjectBytes,
 } from '../../shared/s3';
-import { getSecretString, parseJsonObjectOrString } from '../../shared/secrets';
+import { getSecretString } from '../../shared/secrets';
 import { DynamoItem } from '../../shared/types';
 import { PermanentProcessingError, RetryableProcessingError } from './errors';
+import {
+  DEFAULT_GEMINI_API_BASE,
+  DEFAULT_GEMINI_IMAGE_MODEL,
+  GEMINI_PROVIDER_TIMEOUT_MS,
+  classifyGeminiHttpStatus,
+  extractGeminiInlineImage,
+  geminiBlockReason,
+  geminiGenerateContentUrl,
+  parseGeminiApiSecret,
+  resolveGeminiImageMimeType,
+} from './gemini';
 
 export interface BackgroundRemovalContext {
   userId: string;
@@ -21,11 +32,9 @@ export interface BackgroundRemovalContext {
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PROCESSED_CONTENT_TYPE = 'image/png';
-const PROVIDER_TIMEOUT_MS = 45_000;
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash-image';
-export const DEFAULT_GEMINI_API_BASE =
-  'https://generativelanguage.googleapis.com/v1beta/models';
+export const DEFAULT_GEMINI_MODEL = DEFAULT_GEMINI_IMAGE_MODEL;
+export { DEFAULT_GEMINI_API_BASE, geminiGenerateContentUrl };
 
 const BACKGROUND_REMOVAL_PROMPT =
   'Remove the background from this clothing item. Return a PNG image with a fully transparent background. Keep the garment shape, colour, texture, and details unchanged. Do not add, restyle, crop, or replace the clothing.';
@@ -86,35 +95,10 @@ export interface BackgroundRemovalDeps {
   fetchImpl?: typeof fetch;
 }
 
-export function geminiGenerateContentUrl(model: string): string {
-  return `${DEFAULT_GEMINI_API_BASE}/${encodeURIComponent(model)}:generateContent`;
-}
-
 export function parseBackgroundRemovalSecret(
   secretString: string,
 ): GeminiBackgroundRemovalConfig {
-  const parsed = parseJsonObjectOrString(secretString);
-  if (typeof parsed === 'string') {
-    return {
-      apiKey: parsed,
-      model: DEFAULT_GEMINI_MODEL,
-      endpoint: geminiGenerateContentUrl(DEFAULT_GEMINI_MODEL),
-    };
-  }
-
-  const apiKey = firstString(parsed, ['apiKey', 'api_key', 'key']);
-  if (!apiKey) {
-    throw new RetryableProcessingError(
-      'Gemini background-removal secret is missing apiKey.',
-    );
-  }
-
-  const model =
-    firstString(parsed, ['model']) ?? DEFAULT_GEMINI_MODEL;
-  const endpoint =
-    firstString(parsed, ['endpoint', 'url']) ?? geminiGenerateContentUrl(model);
-
-  return { apiKey, model, endpoint };
+  return parseGeminiApiSecret(secretString, DEFAULT_GEMINI_MODEL);
 }
 
 export async function loadBackgroundRemovalConfig(
@@ -307,7 +291,7 @@ async function generateBackgroundRemovedPng(
   config: GeminiBackgroundRemovalConfig,
   fetchImpl: typeof fetch,
 ): Promise<Uint8Array> {
-  const mimeType = resolveImageMimeType(image, contentType);
+  const mimeType = resolveGeminiImageMimeType(image, contentType);
   const body = {
     contents: [
       {
@@ -337,14 +321,14 @@ async function generateBackgroundRemovedPng(
         'x-goog-api-key': config.apiKey,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
     });
   } catch (error) {
     throw toRetryable(error, 'Gemini background-removal request failed');
   }
 
   if (!response.ok) {
-    throw classifyProviderStatus(response.status);
+    classifyGeminiHttpStatus(response.status, 'Gemini background removal');
   }
 
   let payload: unknown;
@@ -371,131 +355,6 @@ async function generateBackgroundRemovedPng(
   }
 
   return processed;
-}
-
-function classifyProviderStatus(status: number): never {
-  if (status === 429 || status === 401 || status === 403 || status >= 500) {
-    throw new RetryableProcessingError(
-      `Gemini background removal returned ${status}`,
-    );
-  }
-  throw new PermanentProcessingError(
-    `Gemini rejected the image (${status})`,
-  );
-}
-
-function extractGeminiInlineImage(payload: unknown): Uint8Array | undefined {
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-
-  const candidates = (payload as { candidates?: unknown }).candidates;
-  if (!Array.isArray(candidates)) {
-    return undefined;
-  }
-
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== 'object') {
-      continue;
-    }
-    const content = (candidate as { content?: { parts?: unknown } }).content;
-    const parts = content?.parts;
-    if (!Array.isArray(parts)) {
-      continue;
-    }
-    for (const part of parts) {
-      const bytes = decodeInlineImage(part);
-      if (bytes) {
-        return bytes;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function decodeInlineImage(part: unknown): Uint8Array | undefined {
-  if (!part || typeof part !== 'object') {
-    return undefined;
-  }
-  const record = part as Record<string, unknown>;
-  const inline =
-    asRecord(record.inlineData) ?? asRecord(record.inline_data);
-  const data = firstString(inline ?? {}, ['data']);
-  if (!data) {
-    return undefined;
-  }
-
-  const bytes = Buffer.from(data, 'base64');
-  return bytes.length ? new Uint8Array(bytes) : undefined;
-}
-
-function geminiBlockReason(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-
-  const promptFeedback = asRecord(
-    (payload as { promptFeedback?: unknown; prompt_feedback?: unknown })
-      .promptFeedback ??
-      (payload as { prompt_feedback?: unknown }).prompt_feedback,
-  );
-  const promptBlock = firstString(promptFeedback ?? {}, [
-    'blockReason',
-    'block_reason',
-  ]);
-  if (promptBlock) {
-    return promptBlock;
-  }
-
-  const candidates = (payload as { candidates?: unknown }).candidates;
-  if (!Array.isArray(candidates) || !candidates[0] || typeof candidates[0] !== 'object') {
-    return undefined;
-  }
-
-  const finishReason = firstString(candidates[0] as Record<string, unknown>, [
-    'finishReason',
-    'finish_reason',
-  ]);
-  if (finishReason && BLOCKED_FINISH_REASONS.has(finishReason.toUpperCase())) {
-    return finishReason;
-  }
-
-  return undefined;
-}
-
-function resolveImageMimeType(image: Uint8Array, contentType: string): string {
-  const normalized = contentType.trim().toLowerCase();
-  if (normalized === 'image/jpg') {
-    return 'image/jpeg';
-  }
-  if (IMAGE_MIME_TYPES.has(normalized)) {
-    return normalized;
-  }
-  return inferImageMimeType(image);
-}
-
-function inferImageMimeType(bytes: Uint8Array): string {
-  if (bytes.length >= 8 && PNG_MAGIC.equals(Buffer.from(bytes.subarray(0, 8)))) {
-    return 'image/png';
-  }
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return 'image/jpeg';
-  }
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  ) {
-    return 'image/webp';
-  }
-  return 'image/jpeg';
 }
 
 function mapReadError(error: unknown, objectKey: string): never {
@@ -531,26 +390,6 @@ function isPng(bytes: Uint8Array): boolean {
     return false;
   }
   return PNG_MAGIC.equals(Buffer.from(bytes.subarray(0, PNG_MAGIC.length)));
-}
-
-function firstString(
-  record: Record<string, unknown>,
-  keysToTry: string[],
-): string | undefined {
-  for (const key of keysToTry) {
-    const value = record[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
 }
 
 function toRetryable(error: unknown, fallback: string): RetryableProcessingError {
