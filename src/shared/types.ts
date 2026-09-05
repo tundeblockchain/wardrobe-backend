@@ -12,6 +12,16 @@ export type ClothingCategory = (typeof CLOTHING_CATEGORIES)[number];
 
 export type ProcessingStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
 
+export const PROCESS_WARDROBE_ITEM_JOB = 'PROCESS_WARDROBE_ITEM' as const;
+
+export interface ProcessWardrobeItemJob {
+  jobType: typeof PROCESS_WARDROBE_ITEM_JOB;
+  userId: string;
+  wardrobeId: string;
+  itemId: string;
+  originalImageKey: string;
+}
+
 export interface Wardrobe {
   wardrobeId: string;
   name: string;

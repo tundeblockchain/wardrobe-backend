@@ -230,18 +230,24 @@ function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   });
 }
 
-describe('items handler (WARDROBE-11)', () => {
+const PROCESSING_QUEUE_URL =
+  'https://sqs.eu-west-1.amazonaws.com/123456789012/wardrobe-item-processing-test';
+
+describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
+    process.env.PROCESSING_QUEUE_URL = PROCESSING_QUEUE_URL;
+    mockSqsSend.mockResolvedValue({ MessageId: 'msg-1' });
   });
 
   afterEach(() => {
     delete process.env.TABLE_NAME;
+    delete process.env.PROCESSING_QUEUE_URL;
   });
 
   describe('POST /wardrobes/{wardrobeId}/items', () => {
-    it('creates an item with Flutter ClothingItem shape and READY status', async () => {
+    it('creates an item with Flutter ClothingItem shape and PENDING status', async () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Put') {
           return {};
@@ -264,7 +270,7 @@ describe('items handler (WARDROBE-11)', () => {
         colours: ['BLACK'],
         brand: 'Nike',
         image: { originalKey: OWNER_IMAGE_KEY },
-        processingStatus: 'READY',
+        processingStatus: 'PENDING',
         createdAt: expect.stringMatching(ISO8601),
         updatedAt: expect.stringMatching(ISO8601),
       });
@@ -290,13 +296,13 @@ describe('items handler (WARDROBE-11)', () => {
           name: 'Black T-Shirt',
           category: 'TOP',
           originalKey: OWNER_IMAGE_KEY,
-          processingStatus: 'READY',
+          processingStatus: 'PENDING',
         }),
       );
       expect(put.input.Item).not.toHaveProperty('processedKey');
     });
 
-    it('does not enqueue an SQS processing job (WARDROBE-16 is later)', async () => {
+    it('enqueues PROCESS_WARDROBE_ITEM after writing Dynamo', async () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Put') {
           return {};
@@ -309,8 +315,50 @@ describe('items handler (WARDROBE-11)', () => {
       );
 
       expect(result.statusCode).toBe(201);
-      expect(mockSqsSend).not.toHaveBeenCalled();
-      expect(SendMessageCommand).not.toHaveBeenCalled();
+      const body = bodyOf(result) as ClothingItem;
+
+      const putOrder = mockSend.mock.invocationCallOrder.find((_, index) => {
+        return (mockSend.mock.calls[index][0] as Command)._op === 'Put';
+      });
+      const sqsOrder = mockSqsSend.mock.invocationCallOrder[0];
+      expect(putOrder).toBeDefined();
+      expect(sqsOrder).toBeGreaterThan(putOrder as number);
+
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: PROCESSING_QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: 'PROCESS_WARDROBE_ITEM',
+          userId: OWNER_ID,
+          wardrobeId: WARDROBE_ID,
+          itemId: body.itemId,
+          originalImageKey: OWNER_IMAGE_KEY,
+        }),
+      });
+      expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails the request and rolls back Dynamo when enqueue fails', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Put' || command._op === 'Delete') {
+          return {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+      mockSqsSend.mockRejectedValue(new Error('sqs unavailable'));
+
+      const result = asResult(
+        await handler(event({ method: 'POST', body: createBody() })),
+      );
+
+      expectEnvelope(result, 500, 'INTERNAL_ERROR');
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
+      ).toBe(true);
+      expect(
+        mockSend.mock.calls.some(
+          (call) => (call[0] as Command)._op === 'Delete',
+        ),
+      ).toBe(true);
     });
 
     it('ignores body userId and processingStatus from the client', async () => {
@@ -327,7 +375,7 @@ describe('items handler (WARDROBE-11)', () => {
             method: 'POST',
             body: createBody({
               userId: OTHER_ID,
-              processingStatus: 'PENDING',
+              processingStatus: 'READY',
             }),
           }),
         ),
@@ -335,14 +383,25 @@ describe('items handler (WARDROBE-11)', () => {
 
       expect(result.statusCode).toBe(201);
       const body = bodyOf(result) as ClothingItem;
-      expect(body.processingStatus).toBe('READY');
+      expect(body.processingStatus).toBe('PENDING');
 
       const put = mockSend.mock.calls.find(
         (call) => (call[0] as Command)._op === 'Put',
       )?.[0] as Command;
       expect(put.input.Item?.userId).toBe(OWNER_ID);
-      expect(put.input.Item?.processingStatus).toBe('READY');
+      expect(put.input.Item?.processingStatus).toBe('PENDING');
       expect(put.input.Item?.PK).toBe(`WARDROBE#${WARDROBE_ID}`);
+
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: PROCESSING_QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: 'PROCESS_WARDROBE_ITEM',
+          userId: OWNER_ID,
+          wardrobeId: WARDROBE_ID,
+          itemId: body.itemId,
+          originalImageKey: OWNER_IMAGE_KEY,
+        }),
+      });
     });
 
     it('accepts an owned non-uploads path as imageKey', async () => {
@@ -376,6 +435,7 @@ describe('items handler (WARDROBE-11)', () => {
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
       ).toBe(false);
+      expect(mockSqsSend).not.toHaveBeenCalled();
     });
 
     it('returns 404 WARDROBE_NOT_FOUND when the wardrobe belongs to another user', async () => {
@@ -396,6 +456,7 @@ describe('items handler (WARDROBE-11)', () => {
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
       ).toBe(false);
+      expect(mockSqsSend).not.toHaveBeenCalled();
     });
   });
 
@@ -800,6 +861,7 @@ describe('items handler (WARDROBE-11)', () => {
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
       ).toBe(false);
+      expect(mockSqsSend).not.toHaveBeenCalled();
     });
 
     it('returns 400 VALIDATION_ERROR when the create body is missing', async () => {
