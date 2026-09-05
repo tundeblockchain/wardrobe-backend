@@ -142,6 +142,14 @@ export class WardrobeStack extends cdk.Stack {
         removalPolicy,
       },
     );
+    // Optional placeholder — the default recommender is rule-based and
+    // does not call a vendor. Never commit AI keys.
+    const aiRecommenderSecret = new secretsmanager.Secret(this, 'AiRecommenderSecret', {
+      secretName: `wardrobe/${stage}/ai-recommender`,
+      description:
+        'Optional outfit-recommender API credentials. Store JSON { "apiKey", "endpoint" }. Unused by the default rule-based strategy. Never commit AI keys.',
+      removalPolicy,
+    });
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
@@ -179,6 +187,13 @@ export class WardrobeStack extends cdk.Stack {
       },
     });
     const outfitsFn = this.lambda('OutfitsFn', 'outfits', commonLambdaProps);
+    const recommendationsFn = this.lambda('RecommendationsFn', 'recommendations', {
+      ...commonLambdaProps,
+      environment: {
+        ...commonLambdaProps.environment,
+        AI_RECOMMENDER_SECRET_ARN: aiRecommenderSecret.secretArn,
+      },
+    });
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
     const processingFn = this.lambda('ProcessingFn', 'processing', {
       ...commonLambdaProps,
@@ -201,6 +216,9 @@ export class WardrobeStack extends cdk.Stack {
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
     table.grantReadWriteData(outfitsFn);
+    // Recommendations are derived and never persisted — read wardrobe + items only.
+    table.grantReadData(recommendationsFn);
+    aiRecommenderSecret.grantRead(recommendationsFn);
     // Worker reads the item then updates processingStatus / AI metadata.
     table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     mediaBucket.grantPut(uploadsFn);
@@ -312,6 +330,10 @@ export class WardrobeStack extends cdk.Stack {
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
     const itemsIntegration = new HttpLambdaIntegration('ItemsIntegration', itemsFn);
     const outfitsIntegration = new HttpLambdaIntegration('OutfitsIntegration', outfitsFn);
+    const recommendationsIntegration = new HttpLambdaIntegration(
+      'RecommendationsIntegration',
+      recommendationsFn,
+    );
     const uploadsIntegration = new HttpLambdaIntegration('UploadsIntegration', uploadsFn);
 
     httpApi.addRoutes({
@@ -375,6 +397,13 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/recommendations',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: recommendationsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
       path: '/uploads',
       methods: [apigwv2.HttpMethod.POST],
       integration: uploadsIntegration,
@@ -422,6 +451,12 @@ export class WardrobeStack extends cdk.Stack {
       value: aiColourDetectorSecret.secretName,
       description:
         'Secrets Manager secret for colour detection API credentials (placeholder until replaced)',
+    });
+
+    new cdk.CfnOutput(this, 'AiRecommenderSecretName', {
+      value: aiRecommenderSecret.secretName,
+      description:
+        'Optional Secrets Manager secret for an external outfit recommender (unused by the default rule-based strategy)',
     });
   }
 

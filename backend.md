@@ -1044,6 +1044,14 @@ PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
 ```
 
+### Recommendations
+
+```http
+GET /wardrobes/{wardrobeId}/recommendations
+```
+
+Owner-only. Returns suggested outfits as `{ recommendations: [ { name?, items: [{ itemId, slot }] } ] }`. Does not persist outfits.
+
 ### Uploads
 
 ```http
@@ -1058,6 +1066,12 @@ GET  /ai-profiles
 
 POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render
 GET  /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+```
+
+Outfit recommendations are implemented as:
+
+```http
+GET /wardrobes/{wardrobeId}/recommendations
 ```
 
 ---

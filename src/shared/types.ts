@@ -159,6 +159,16 @@ export interface Outfit {
   updatedAt: string;
 }
 
+/** Suggested outfit. Flutter Outfit item shape (`itemId` + `slot`) without persist. */
+export interface OutfitRecommendation {
+  name?: string;
+  items: OutfitItem[];
+}
+
+export interface OutfitRecommendationsResponse {
+  recommendations: OutfitRecommendation[];
+}
+
 export type EntityType = 'PROFILE' | 'WARDROBE' | 'ITEM' | 'OUTFIT';
 
 export interface DynamoItem {

@@ -9,12 +9,12 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, wardrobes, items, outfits, uploads, processing |
+| Lambda (domain handlers) | Health, wardrobes, items, outfits, recommendations, uploads, processing |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, background-removal API key, garment-classification and colour-detection credentials (placeholders) |
+| Secrets Manager | Firebase project ID, background-removal API key, garment-classification, colour-detection, and optional recommender credentials (placeholders) |
 
 Working in this first cut:
 
@@ -22,6 +22,7 @@ Working in this first cut:
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
+- Owner-only outfit recommendations (derived, never auto-saved)
 - `POST /uploads` (S3 pre-signed PUT URL)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
@@ -270,6 +271,37 @@ Create body (`name` and `items` required):
 
 Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Phase-1 outfits do not include AI or render fields.
 
+### Outfit recommendations
+
+Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must belong to that user. Suggestions are derived from READY clothing items and are **never written** as outfits — Flutter can `POST /wardrobes/{wardrobeId}/outfits` if the user saves one.
+
+```http
+GET /wardrobes/{wardrobeId}/recommendations
+```
+
+GET is used because this is a read of derived suggestions (no request body, no persist). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. An empty wardrobe, or READY items that cannot form a wearable look (`TOP`+`BOTTOM`, or `DRESS`), returns `200` with `{ "recommendations": [] }` — never `500`.
+
+Each suggestion uses the Flutter Outfit item shape (`itemId` + `slot` from `ClothingCategory`):
+
+```json
+{
+  "recommendations": [
+    {
+      "name": "Navy + Beige look",
+      "items": [
+        { "itemId": "item_...", "slot": "TOP" },
+        { "itemId": "item_...", "slot": "BOTTOM" },
+        { "itemId": "item_...", "slot": "SHOES" }
+      ]
+    }
+  ]
+}
+```
+
+Category and colour come from AI metadata when present (`ai.detectedCategory`, `ai.detectedColours`) and otherwise fall back to the user-set `category` / `colours`. PENDING / PROCESSING / FAILED items are ignored. The default strategy is rule-based (combinatorial silhouettes + colour compatibility) and is injectable so unit tests never call a live model.
+
+An optional Secrets Manager placeholder `wardrobe/{stage}/ai-recommender` exists for an external recommender (`JSON { "apiKey", "endpoint" }`). The default Lambda does **not** set `RECOMMENDER_STRATEGY=http` and does not require that secret. Never commit AI keys.
+
 ## Auth
 
 Identity always comes from the validated Firebase token (`sub` = Firebase UID). Clients must not send `userId` as proof of ownership.
@@ -304,6 +336,7 @@ src/functions/
   wardrobes/
   items/
   outfits/
+  recommendations/     owner-only derived outfits; injectable rule-based strategy
   uploads/
   processing/          handler, rembg, classify, colour-detect, pipeline, retry/poison errors
 src/shared/
@@ -371,5 +404,5 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 ## Next
 
-1. Phase-2: outfit recommendations (WARDROBE-23)
+1. Phase-2 smart filtering (WARDROBE-21) and outfit recommendations (`GET /wardrobes/{wardrobeId}/recommendations`) are live
 2. Pagination, download pre-signed URLs, and environment-specific alarms
