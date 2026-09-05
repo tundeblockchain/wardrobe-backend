@@ -1,5 +1,3 @@
-import { parseJsonObjectOrString } from '../../src/shared/secrets';
-
 const mockSend = jest.fn();
 
 jest.mock('@aws-sdk/client-secrets-manager', () => ({
@@ -9,7 +7,7 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
   })),
 }));
 
-import { getSecretString } from '../../src/shared/secrets';
+import { getSecretString, parseJsonObjectOrString } from '../../src/shared/secrets';
 
 describe('secrets helpers', () => {
   beforeEach(() => {

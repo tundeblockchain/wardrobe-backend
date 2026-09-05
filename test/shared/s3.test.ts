@@ -1,5 +1,3 @@
-import { MAX_UPLOAD_BYTES } from '../../src/shared/s3';
-
 const mockGetSignedUrl = jest.fn();
 const mockSend = jest.fn();
 
@@ -26,6 +24,7 @@ import {
   createPresignedPutUrl,
   extensionForContentType,
   getObjectBytes,
+  MAX_UPLOAD_BYTES,
   PRESIGNED_URL_EXPIRES_IN,
   processedImageObjectKey,
   putObjectBytes,
