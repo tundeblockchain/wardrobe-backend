@@ -70,7 +70,7 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // WARDROBE-15 queue + WARDROBE-16 enqueue + WARDROBE-17 worker +
-    // WARDROBE-18/26 Gemini bg-remove + WARDROBE-19 classify +
+    // WARDROBE-18/26 Gemini bg-remove + WARDROBE-19/27 Gemini classify +
     // WARDROBE-20 colour. Visibility must stay greater than the worker
     // timeout so an in-flight Gemini / vision invoke is not redelivered. After
     // maxReceiveCount: 3 SQS sends the message to the DLQ (alarmed
@@ -126,12 +126,23 @@ export class WardrobeStack extends cdk.Stack {
       process.env.GEMINI_ENDPOINT ??
       '';
 
-    // Placeholder only — replace the generated value with classifier
-    // credentials (apiKey + endpoint JSON). Never commit AI keys.
+    const geminiClassifierModel =
+      (this.node.tryGetContext('geminiClassifierModel') as string | undefined) ??
+      process.env.GEMINI_CLASSIFIER_MODEL ??
+      '';
+    const geminiClassifierEndpoint =
+      (this.node.tryGetContext('geminiClassifierEndpoint') as
+        | string
+        | undefined) ??
+      process.env.GEMINI_CLASSIFIER_ENDPOINT ??
+      '';
+
+    // Placeholder only — replace the generated value with a Gemini API
+    // key (plain string or JSON { apiKey, model, endpoint }). Never commit AI keys.
     const aiClassifierSecret = new secretsmanager.Secret(this, 'AiClassifierSecret', {
-      secretName: `wardrobe/${stage}/ai-classifier`,
+      secretName: `wardrobe/${stage}/gemini-classifier`,
       description:
-        'Placeholder garment-classification API credentials. Store JSON { "apiKey", "endpoint" }; never commit AI keys.',
+        'Gemini garment-classification credentials. Replace the generated value with a Gemini API key, or JSON { "apiKey", "model", "endpoint" }. Never commit the real key.',
       removalPolicy,
     });
     // Placeholder only — replace the generated value with colour-
@@ -215,6 +226,12 @@ export class WardrobeStack extends cdk.Stack {
         AI_COLOUR_DETECTOR_SECRET_ARN: aiColourDetectorSecret.secretArn,
         ...(geminiModel ? { GEMINI_MODEL: geminiModel } : {}),
         ...(geminiEndpoint ? { GEMINI_ENDPOINT: geminiEndpoint } : {}),
+        ...(geminiClassifierModel
+          ? { GEMINI_CLASSIFIER_MODEL: geminiClassifierModel }
+          : {}),
+        ...(geminiClassifierEndpoint
+          ? { GEMINI_CLASSIFIER_ENDPOINT: geminiClassifierEndpoint }
+          : {}),
       },
     });
     aiClassifierSecret.grantRead(processingFn);
@@ -451,7 +468,7 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AiClassifierSecretName', {
       value: aiClassifierSecret.secretName,
       description:
-        'Secrets Manager secret for garment classification API credentials (placeholder until replaced)',
+        'Secrets Manager secret for Gemini garment-classification credentials (API key, optional model/endpoint)',
     });
 
     new cdk.CfnOutput(this, 'AiColourDetectorSecretName', {

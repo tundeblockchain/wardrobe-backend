@@ -451,12 +451,12 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
   test('AI classifier credentials are a Secrets Manager placeholder granted to ProcessingFn', () => {
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
-      Name: 'wardrobe/dev/ai-classifier',
+      Name: 'wardrobe/dev/gemini-classifier',
     });
 
     template.hasOutput('AiClassifierSecretName', {
       Description:
-        'Secrets Manager secret for garment classification API credentials (placeholder until replaced)',
+        'Secrets Manager secret for Gemini garment-classification credentials (API key, optional model/endpoint)',
     });
 
     const functions = Object.values(
@@ -506,9 +506,18 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       expect.arrayContaining(['secretsmanager:GetSecretValue']),
     );
 
+    expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
+      'GEMINI_CLASSIFIER_MODEL',
+    );
+    expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
+      'GEMINI_API_KEY',
+    );
+
     const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toContain('wardrobe/dev/ai-classifier');
     expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
     expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
+    expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
   });
 
   test('AI colour detector credentials are a Secrets Manager placeholder granted to ProcessingFn', () => {

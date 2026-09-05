@@ -41,7 +41,7 @@ function context(): ProcessingContext {
   };
 }
 
-describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19 + WARDROBE-20)', () => {
+describe('processing pipeline hooks (WARDROBE-18/26 + WARDROBE-19/27 + WARDROBE-20)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockRunBackgroundRemoval.mockResolvedValue(PROCESSED_KEY);
