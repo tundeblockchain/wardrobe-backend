@@ -23,6 +23,7 @@ import { enqueueProcessWardrobeItem } from '../../shared/sqs';
 import {
   ClothingCategory,
   ClothingItem,
+  ClothingItemList,
   DynamoItem,
   ProcessingStatus,
 } from '../../shared/types';
@@ -33,6 +34,11 @@ import {
   requireNonEmptyString,
   requireOwnedImageKey,
 } from '../../shared/validation';
+import {
+  ItemListFilters,
+  itemMatchesFilters,
+  parseItemListFilters,
+} from './filters';
 
 interface CreateItemBody {
   name?: unknown;
@@ -73,7 +79,13 @@ export async function handler(
 
     if (!itemId) {
       if (method === 'GET') {
-        return ok({ items: await listItems(userId, wardrobeId) });
+        return ok(
+          await listItems(
+            userId,
+            wardrobeId,
+            parseItemListFilters(event.queryStringParameters),
+          ),
+        );
       }
       if (method === 'POST') {
         return created(await createItem(userId, wardrobeId, parseJsonBody(event)));
@@ -103,17 +115,21 @@ export async function handler(
 async function listItems(
   userId: string,
   wardrobeId: string,
-): Promise<ClothingItem[]> {
+  filters: ItemListFilters,
+): Promise<ClothingItemList> {
   await getOwnedWardrobe(userId, wardrobeId);
   const items = await queryByPk(keys.wardrobePk(wardrobeId), 'ITEM#');
-  return items
-    .filter(
-      (item) =>
-        item.entityType === 'ITEM' &&
-        item.userId === userId &&
-        item.wardrobeId === wardrobeId,
-    )
-    .map(toClothingItem);
+  return {
+    items: items
+      .filter(
+        (item) =>
+          item.entityType === 'ITEM' &&
+          item.userId === userId &&
+          item.wardrobeId === wardrobeId &&
+          itemMatchesFilters(item, filters),
+      )
+      .map(toClothingItem),
+  };
 }
 
 async function createItem(

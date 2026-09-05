@@ -1,12 +1,15 @@
 import {
   optionalInteger,
   optionalNonEmptyString,
+  optionalQueryString,
   optionalStringArray,
   requireCategory,
+  requireColour,
   requireNonEmptyString,
   requireOutfitItems,
   requireOwnedImageKey,
   requireSlot,
+  requireSubcategory,
 } from '../../src/shared/validation';
 import { AppError } from '../../src/shared/errors';
 
@@ -134,6 +137,46 @@ describe('validation', () => {
           'category must be one of: TOP, BOTTOM, DRESS, OUTERWEAR, SHOES, ACCESSORY, BAG.',
         );
       }
+    });
+  });
+
+  describe('requireColour', () => {
+    it('accepts each controlled colour token', () => {
+      expect(requireColour('BLACK')).toBe('BLACK');
+      expect(requireColour('MULTICOLOUR')).toBe('MULTICOLOUR');
+    });
+
+    it('rejects unknown colour tokens', () => {
+      expect(() => requireColour('TURQUOISE')).toThrow(AppError);
+      try {
+        requireColour('TURQUOISE');
+      } catch (err) {
+        const appErr = err as AppError;
+        expect(appErr.code).toBe('VALIDATION_ERROR');
+        expect(appErr.message).toContain('colour must be one of:');
+      }
+    });
+  });
+
+  describe('requireSubcategory', () => {
+    it('accepts a controlled subcategory token', () => {
+      expect(requireSubcategory('TSHIRT')).toBe('TSHIRT');
+    });
+
+    it('rejects unknown subcategory tokens', () => {
+      expect(() => requireSubcategory('CAP')).toThrow(AppError);
+    });
+  });
+
+  describe('optionalQueryString', () => {
+    it('returns undefined for missing or blank values', () => {
+      expect(optionalQueryString(undefined, 'colour')).toBeUndefined();
+      expect(optionalQueryString(null, 'colour')).toBeUndefined();
+      expect(optionalQueryString('', 'colour')).toBeUndefined();
+    });
+
+    it('returns a trimmed string when present', () => {
+      expect(optionalQueryString('  BLACK  ', 'colour')).toBe('BLACK');
     });
   });
 
