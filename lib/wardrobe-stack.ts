@@ -120,6 +120,15 @@ export class WardrobeStack extends cdk.Stack {
       (this.node.tryGetContext('backgroundRemovalEndpoint') as string | undefined) ??
       process.env.BACKGROUND_REMOVAL_ENDPOINT ??
       '';
+
+    // Placeholder only — replace the generated value with classifier
+    // credentials (apiKey + endpoint JSON). Never commit AI keys.
+    const aiClassifierSecret = new secretsmanager.Secret(this, 'AiClassifierSecret', {
+      secretName: `wardrobe/${stage}/ai-classifier`,
+      description:
+        'Placeholder garment-classification API credentials. Store JSON { "apiKey", "endpoint" }; never commit AI keys.',
+      removalPolicy,
+    });
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
@@ -166,11 +175,13 @@ export class WardrobeStack extends cdk.Stack {
         ...commonLambdaProps.environment,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
         BACKGROUND_REMOVAL_SECRET_ARN: backgroundRemovalSecret.secretArn,
+        AI_CLASSIFIER_SECRET_ARN: aiClassifierSecret.secretArn,
         ...(backgroundRemovalEndpoint
           ? { BACKGROUND_REMOVAL_ENDPOINT: backgroundRemovalEndpoint }
           : {}),
       },
     });
+    aiClassifierSecret.grantRead(processingFn);
 
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
@@ -384,6 +395,12 @@ export class WardrobeStack extends cdk.Stack {
       value: backgroundRemovalSecret.secretName,
       description:
         'Secrets Manager secret for the background-removal API key (and optional endpoint JSON)',
+    });
+
+    new cdk.CfnOutput(this, 'AiClassifierSecretName', {
+      value: aiClassifierSecret.secretName,
+      description:
+        'Secrets Manager secret for garment classification API credentials (placeholder until replaced)',
     });
   }
 

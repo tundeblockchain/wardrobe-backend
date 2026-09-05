@@ -1,5 +1,9 @@
 import { DynamoItem } from '../../shared/types';
 import { runBackgroundRemoval } from './background-removal';
+import {
+  classifyGarment as runClassifyGarment,
+  type ClassifyGarmentDeps,
+} from './classify';
 
 /**
  * Dynamo-validated work context. Callers must load the clothing item
@@ -18,14 +22,15 @@ export interface ProcessingContext {
  * Ordered clothing-item processing pipeline.
  *
  *   1. removeBackground        — WARDROBE-18 (S3 + injectable rembg client)
- *   2. classifyGarment         — WARDROBE-19 (no-op stub)
+ *   2. classifyGarment         — WARDROBE-19 (injectable classifier; `ai` only)
  *   3. detectColourAndCategory — WARDROBE-20 (no-op stub)
  */
 export async function runProcessingPipeline(
   context: ProcessingContext,
+  deps?: ClassifyGarmentDeps,
 ): Promise<void> {
   await removeBackground(context);
-  await classifyGarment(context);
+  await classifyGarment(context, deps);
   await detectColourAndCategory(context);
 }
 
@@ -33,14 +38,16 @@ export async function runProcessingPipeline(
 export async function removeBackground(
   context: ProcessingContext,
 ): Promise<void> {
-  await runBackgroundRemoval(context);
+  const processedKey = await runBackgroundRemoval(context);
+  rememberProcessedImage(context, processedKey);
 }
 
-/** WARDROBE-19: AI garment classification. No-op stub — no model calls. */
+/** WARDROBE-19: AI garment classification. Persists under `ai` only. */
 export async function classifyGarment(
-  _context: ProcessingContext,
+  context: ProcessingContext,
+  deps?: ClassifyGarmentDeps,
 ): Promise<void> {
-  // Intentionally empty. WARDROBE-19 persists detected category/subcategory.
+  await runClassifyGarment(context, deps);
 }
 
 /** WARDROBE-20: colour / category detection. No-op stub — no model calls. */
@@ -48,4 +55,21 @@ export async function detectColourAndCategory(
   _context: ProcessingContext,
 ): Promise<void> {
   // Intentionally empty. WARDROBE-20 persists detected colours / category.
+}
+
+function rememberProcessedImage(
+  context: ProcessingContext,
+  processedKey: string,
+): void {
+  context.item.processedKey = processedKey;
+  const existing = context.item.ai;
+  const base =
+    existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? { ...(existing as Record<string, unknown>) }
+      : {};
+  context.item.ai = {
+    ...base,
+    backgroundRemoved: true,
+    processedImageKey: processedKey,
+  };
 }
