@@ -47,7 +47,7 @@ describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19 + WARDROBE-20)', 
     mockRunBackgroundRemoval.mockResolvedValue(PROCESSED_KEY);
   });
 
-  it('delegates removeBackground to the injectable rembg hook', async () => {
+  it('delegates removeBackground to the injectable Gemini hook', async () => {
     const ctx = context();
     await expect(removeBackground(ctx)).resolves.toBeUndefined();
     expect(mockRunBackgroundRemoval).toHaveBeenCalledWith(ctx);
@@ -87,7 +87,7 @@ describe('processing pipeline hooks (WARDROBE-18 + WARDROBE-19 + WARDROBE-20)', 
     expect(mockRunBackgroundRemoval).not.toHaveBeenCalled();
   });
 
-  it('runs rembg, classify, then colour and prefers the processed image key', async () => {
+  it('runs Gemini bg-remove, classify, then colour and prefers the processed image key', async () => {
     const order: string[] = [];
     mockRunBackgroundRemoval.mockImplementation(async () => {
       order.push('removeBackground');

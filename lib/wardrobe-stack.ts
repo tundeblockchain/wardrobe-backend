@@ -70,9 +70,9 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // WARDROBE-15 queue + WARDROBE-16 enqueue + WARDROBE-17 worker +
-    // WARDROBE-18 rembg + WARDROBE-19 classify + WARDROBE-20 colour.
-    // Visibility must stay greater than the worker timeout so an
-    // in-flight rembg / vision invoke is not redelivered. After
+    // WARDROBE-18/26 Gemini bg-remove + WARDROBE-19 classify +
+    // WARDROBE-20 colour. Visibility must stay greater than the worker
+    // timeout so an in-flight Gemini / vision invoke is not redelivered. After
     // maxReceiveCount: 3 SQS sends the message to the DLQ (alarmed
     // below). No EventBridge.
     const processingLambdaTimeout = cdk.Duration.seconds(60);
@@ -111,15 +111,19 @@ export class WardrobeStack extends cdk.Stack {
       this,
       'BackgroundRemovalSecret',
       {
-        secretName: `wardrobe/${stage}/background-removal-api-key`,
+        secretName: `wardrobe/${stage}/gemini-background-removal`,
         description:
-          'Background-removal provider credential. Replace the generated value with an API key, or JSON { "apiKey", "endpoint" }. Never commit the real key.',
+          'Gemini background-removal credentials. Replace the generated value with a Gemini API key, or JSON { "apiKey", "model", "endpoint" }. Never commit the real key.',
         removalPolicy,
       },
     );
-    const backgroundRemovalEndpoint =
-      (this.node.tryGetContext('backgroundRemovalEndpoint') as string | undefined) ??
-      process.env.BACKGROUND_REMOVAL_ENDPOINT ??
+    const geminiModel =
+      (this.node.tryGetContext('geminiModel') as string | undefined) ??
+      process.env.GEMINI_MODEL ??
+      '';
+    const geminiEndpoint =
+      (this.node.tryGetContext('geminiEndpoint') as string | undefined) ??
+      process.env.GEMINI_ENDPOINT ??
       '';
 
     // Placeholder only — replace the generated value with classifier
@@ -205,9 +209,8 @@ export class WardrobeStack extends cdk.Stack {
         BACKGROUND_REMOVAL_SECRET_ARN: backgroundRemovalSecret.secretArn,
         AI_CLASSIFIER_SECRET_ARN: aiClassifierSecret.secretArn,
         AI_COLOUR_DETECTOR_SECRET_ARN: aiColourDetectorSecret.secretArn,
-        ...(backgroundRemovalEndpoint
-          ? { BACKGROUND_REMOVAL_ENDPOINT: backgroundRemovalEndpoint }
-          : {}),
+        ...(geminiModel ? { GEMINI_MODEL: geminiModel } : {}),
+        ...(geminiEndpoint ? { GEMINI_ENDPOINT: geminiEndpoint } : {}),
       },
     });
     aiClassifierSecret.grantRead(processingFn);
@@ -438,7 +441,7 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BackgroundRemovalSecretName', {
       value: backgroundRemovalSecret.secretName,
       description:
-        'Secrets Manager secret for the background-removal API key (and optional endpoint JSON)',
+        'Secrets Manager secret for Gemini background-removal credentials (API key, optional model/endpoint)',
     });
 
     new cdk.CfnOutput(this, 'AiClassifierSecretName', {

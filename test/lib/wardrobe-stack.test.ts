@@ -394,14 +394,15 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/firebase-adminsdk/);
   });
 
-  test('background-removal API key is a Secrets Manager placeholder (no real credentials)', () => {
+  test('Gemini background-removal credentials are a Secrets Manager placeholder (no real credentials)', () => {
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
-      Name: 'wardrobe/dev/background-removal-api-key',
+      Name: 'wardrobe/dev/gemini-background-removal',
     });
+    template.resourceCountIs('AWS::SecretsManager::Secret', 5);
 
     template.hasOutput('BackgroundRemovalSecretName', {
       Description:
-        'Secrets Manager secret for the background-removal API key (and optional endpoint JSON)',
+        'Secrets Manager secret for Gemini background-removal credentials (API key, optional model/endpoint)',
     });
 
     const functions = Object.values(
@@ -421,9 +422,17 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
       'BACKGROUND_REMOVAL_API_KEY',
     );
+    expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
+      'BACKGROUND_REMOVAL_ENDPOINT',
+    );
+    expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
+      'GEMINI_API_KEY',
+    );
 
     const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toContain('background-removal-api-key');
     expect(synthesized).not.toMatch(/sk_live_/);
+    expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
     expect(synthesized).not.toMatch(/remove\.bg\/[A-Za-z0-9]{10,}/);
   });
 
