@@ -69,12 +69,13 @@ export class WardrobeStack extends cdk.Stack {
       autoDeleteObjects: isDev,
     });
 
-    // WARDROBE-15 queue + WARDROBE-16 enqueue + WARDROBE-17 worker.
-    // Visibility must stay greater than the worker timeout so an
-    // in-flight invoke is not redelivered. After maxReceiveCount: 3
-    // SQS sends the message to the DLQ (alarmed below). No EventBridge.
-    const processingLambdaTimeout = cdk.Duration.seconds(30);
-    const processingVisibilityTimeout = cdk.Duration.seconds(60);
+    // WARDROBE-15 queue + WARDROBE-16 enqueue + WARDROBE-17 worker +
+    // WARDROBE-18 background removal. Visibility must stay greater
+    // than the worker timeout so an in-flight rembg invoke is not
+    // redelivered. After maxReceiveCount: 3 SQS sends the message
+    // to the DLQ (alarmed below). No EventBridge.
+    const processingLambdaTimeout = cdk.Duration.seconds(60);
+    const processingVisibilityTimeout = cdk.Duration.seconds(120);
 
     const processingDlq = new sqs.Queue(this, 'ItemProcessingDlq', {
       queueName: `wardrobe-item-processing-dlq-${stage}`,
@@ -105,6 +106,20 @@ export class WardrobeStack extends cdk.Stack {
         'Firebase project ID used to validate ID tokens. Replace the generated value with your Firebase project ID.',
       removalPolicy,
     });
+    const backgroundRemovalSecret = new secretsmanager.Secret(
+      this,
+      'BackgroundRemovalSecret',
+      {
+        secretName: `wardrobe/${stage}/background-removal-api-key`,
+        description:
+          'Background-removal provider credential. Replace the generated value with an API key, or JSON { "apiKey", "endpoint" }. Never commit the real key.',
+        removalPolicy,
+      },
+    );
+    const backgroundRemovalEndpoint =
+      (this.node.tryGetContext('backgroundRemovalEndpoint') as string | undefined) ??
+      process.env.BACKGROUND_REMOVAL_ENDPOINT ??
+      '';
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
@@ -150,17 +165,23 @@ export class WardrobeStack extends cdk.Stack {
       environment: {
         ...commonLambdaProps.environment,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+        BACKGROUND_REMOVAL_SECRET_ARN: backgroundRemovalSecret.secretArn,
+        ...(backgroundRemovalEndpoint
+          ? { BACKGROUND_REMOVAL_ENDPOINT: backgroundRemovalEndpoint }
+          : {}),
       },
     });
 
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
     table.grantReadWriteData(outfitsFn);
-    // Worker reads the item then updates processingStatus only.
+    // Worker reads the item then updates processingStatus / AI metadata.
     table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     mediaBucket.grantPut(uploadsFn);
-    // Read original images; WARDROBE-18 adds write for processed keys.
+    // Read original images and write processed.png. No delete — keep originals.
     mediaBucket.grantRead(processingFn);
+    mediaBucket.grantPut(processingFn);
+    backgroundRemovalSecret.grantRead(processingFn);
     processingQueue.grantSendMessages(itemsFn);
     processingQueue.grantConsumeMessages(processingFn);
 
@@ -357,6 +378,12 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'FirebaseProjectIdSecretName', {
       value: firebaseProjectIdSecret.secretName,
       description: 'Secrets Manager secret that must contain the Firebase project ID',
+    });
+
+    new cdk.CfnOutput(this, 'BackgroundRemovalSecretName', {
+      value: backgroundRemovalSecret.secretName,
+      description:
+        'Secrets Manager secret for the background-removal API key (and optional endpoint JSON)',
     });
   }
 

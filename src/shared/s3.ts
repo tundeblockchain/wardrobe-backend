@@ -1,4 +1,4 @@
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Errors } from './errors';
 
@@ -78,4 +78,44 @@ export async function createPresignedPutUrl(params: {
   );
 
   return { uploadUrl, expiresIn };
+}
+
+export function processedImageObjectKey(userId: string, itemId: string): string {
+  return `users/${userId}/items/${itemId}/processed.png`;
+}
+
+export async function getObjectBytes(objectKey: string): Promise<{
+  bytes: Uint8Array;
+  contentType?: string;
+}> {
+  const result = await s3.send(
+    new GetObjectCommand({
+      Bucket: bucketName(),
+      Key: objectKey,
+    }),
+  );
+
+  if (!result.Body) {
+    throw new Error(`S3 object ${objectKey} has no body.`);
+  }
+
+  return {
+    bytes: await result.Body.transformToByteArray(),
+    contentType: result.ContentType,
+  };
+}
+
+export async function putObjectBytes(params: {
+  objectKey: string;
+  body: Uint8Array;
+  contentType: string;
+}): Promise<void> {
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucketName(),
+      Key: params.objectKey,
+      Body: params.body,
+      ContentType: params.contentType,
+    }),
+  );
 }
