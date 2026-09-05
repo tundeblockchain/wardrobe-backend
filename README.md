@@ -23,10 +23,7 @@ Working in this first cut:
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
 - `POST /uploads` (S3 pre-signed PUT URL)
-
-Stubbed for the next pass:
-
-- Processing worker (logs the SQS message only)
+- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; AI hooks are no-op)
 
 ## Prerequisites
 
@@ -172,7 +169,28 @@ Create body (`name`, `category`, and `imageKey` required):
 
 `category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user.
 
-Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, `processingStatus: PENDING`, ISO 8601 timestamps). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List returns `{ "items": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`. The processing worker is still a no-op stub (WARDROBE-17).
+Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, `processingStatus: PENDING`, ISO 8601 timestamps). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List returns `{ "items": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+
+### Processing worker
+
+The processing Lambda consumes `wardrobe-item-processing`. DynamoDB is the source of truth: the worker reloads the clothing item and checks `userId`, `wardrobeId`, `itemId`, and `originalImageKey` before doing work. It does not trust the SQS body alone.
+
+Status machine:
+
+```text
+PENDING → PROCESSING → READY     stub pipeline success (WARDROBE-17)
+        → FAILED                 permanent / validation errors
+```
+
+Poison messages (invalid JSON, unknown `jobType`, missing item, owner mismatch) are acked and dropped. An `originalImageKey` mismatch sets `FAILED` then acks.
+
+Retries use the existing queue (WARDROBE-15): Lambda timeout 30s, visibility timeout 60s, `maxReceiveCount: 3`, then the DLQ + CloudWatch alarms. Retryable DynamoDB / transient errors are returned as SQS batch item failures so the message is redelivered.
+
+Pipeline hooks are ordered no-ops until later tickets replace them. This worker does not call RemBG, vision APIs, or other external models.
+
+1. Background removal (WARDROBE-18)
+2. AI classification (WARDROBE-19)
+3. Colour / category detection (WARDROBE-20)
 
 ### Outfits
 
@@ -237,7 +255,7 @@ src/functions/
   items/
   outfits/
   uploads/
-  processing/
+  processing/          handler, pipeline hooks, retry/poison errors
 src/shared/
   auth.ts
   dynamodb.ts
@@ -302,5 +320,5 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 ## Next
 
-1. Phase-2: worker processing-status updates (WARDROBE-17) and AI later
+1. Phase-2: background removal / AI classification / colour (WARDROBE-18–20)
 2. Pagination, download pre-signed URLs, and environment-specific alarms

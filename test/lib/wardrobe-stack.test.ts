@@ -267,6 +267,88 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(Object.keys(eventSources).length).toBe(1);
   });
 
+  test('ProcessingFn timeout stays below SQS visibility (retries / DLQ)', () => {
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: {
+        Timeout?: number;
+        MemorySize?: number;
+      };
+    }>;
+
+    const processing = functions.find(
+      (fn) => fn.Properties.Timeout === 30 && fn.Properties.MemorySize === 512,
+    );
+    expect(processing).toBeDefined();
+
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'wardrobe-item-processing-dev',
+      VisibilityTimeout: 60,
+      RedrivePolicy: {
+        maxReceiveCount: 3,
+        deadLetterTargetArn: {
+          'Fn::GetAtt': [
+            Match.stringLikeRegexp('ItemProcessingDlq'),
+            'Arn',
+          ],
+        },
+      },
+    });
+
+    expect(processing?.Properties.Timeout).toBeLessThan(60);
+  });
+
+  test('ProcessingFn IAM is least privilege for Get/Update and S3 read', () => {
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+            Effect?: string;
+          }>;
+        };
+      };
+    };
+
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+
+    const actionsFor = (fnId: string, prefix: string): string[] =>
+      policies
+        .filter((policy) => JSON.stringify(policy).includes(fnId))
+        .flatMap((policy) =>
+          policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+            const actions = statement.Action;
+            const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+            return list.filter((action) => action.startsWith(prefix));
+          }),
+        );
+
+    const dynamo = actionsFor('ProcessingFn', 'dynamodb:');
+    expect(dynamo).toEqual(
+      expect.arrayContaining(['dynamodb:GetItem', 'dynamodb:UpdateItem']),
+    );
+    expect(dynamo).not.toContain('dynamodb:PutItem');
+    expect(dynamo).not.toContain('dynamodb:DeleteItem');
+    expect(dynamo).not.toContain('dynamodb:Query');
+    expect(dynamo).not.toContain('dynamodb:Scan');
+    expect(dynamo).not.toContain('dynamodb:*');
+
+    const s3 = actionsFor('ProcessingFn', 's3:');
+    expect(s3.some((action) => action.startsWith('s3:Get'))).toBe(true);
+    expect(s3).not.toContain('s3:PutObject');
+    expect(s3).not.toContain('s3:DeleteObject');
+    expect(s3).not.toContain('s3:*');
+  });
+
+  test('stack does not introduce EventBridge', () => {
+    expect(template.findResources('AWS::Events::Rule')).toEqual({});
+    expect(template.findResources('AWS::Events::EventBus')).toEqual({});
+    expect(JSON.stringify(template.toJSON())).not.toMatch(/AWS::Events::/);
+  });
+
   test('stage suffix is applied to queue and alarm names', () => {
     const staging = synthTemplate('staging');
     staging.hasResourceProperties('AWS::SQS::Queue', {

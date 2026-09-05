@@ -69,9 +69,13 @@ export class WardrobeStack extends cdk.Stack {
       autoDeleteObjects: isDev,
     });
 
-    // WARDROBE-15 queue + WARDROBE-16 enqueue from ItemsFn. Real worker
-    // behavior (WARDROBE-17 / AI) is a later ticket. The worker Lambda
-    // below stays a no-op hook so the event source can be wired.
+    // WARDROBE-15 queue + WARDROBE-16 enqueue + WARDROBE-17 worker.
+    // Visibility must stay greater than the worker timeout so an
+    // in-flight invoke is not redelivered. After maxReceiveCount: 3
+    // SQS sends the message to the DLQ (alarmed below). No EventBridge.
+    const processingLambdaTimeout = cdk.Duration.seconds(30);
+    const processingVisibilityTimeout = cdk.Duration.seconds(60);
+
     const processingDlq = new sqs.Queue(this, 'ItemProcessingDlq', {
       queueName: `wardrobe-item-processing-dlq-${stage}`,
       retentionPeriod: cdk.Duration.days(14),
@@ -82,9 +86,7 @@ export class WardrobeStack extends cdk.Stack {
 
     const processingQueue = new sqs.Queue(this, 'ItemProcessingQueue', {
       queueName: `wardrobe-item-processing-${stage}`,
-      // Visibility > ProcessingFn timeout (30s) so in-flight work is not
-      // redelivered while the stub (and later worker) is still running.
-      visibilityTimeout: cdk.Duration.seconds(60),
+      visibilityTimeout: processingVisibilityTimeout,
       retentionPeriod: cdk.Duration.days(4),
       receiveMessageWaitTime: cdk.Duration.seconds(20),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
@@ -143,7 +145,7 @@ export class WardrobeStack extends cdk.Stack {
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
     const processingFn = this.lambda('ProcessingFn', 'processing', {
       ...commonLambdaProps,
-      timeout: cdk.Duration.seconds(30),
+      timeout: processingLambdaTimeout,
       memorySize: 512,
       environment: {
         ...commonLambdaProps.environment,
@@ -154,9 +156,11 @@ export class WardrobeStack extends cdk.Stack {
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
     table.grantReadWriteData(outfitsFn);
-    table.grantReadWriteData(processingFn);
+    // Worker reads the item then updates processingStatus only.
+    table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     mediaBucket.grantPut(uploadsFn);
-    mediaBucket.grantReadWrite(processingFn);
+    // Read original images; WARDROBE-18 adds write for processed keys.
+    mediaBucket.grantRead(processingFn);
     processingQueue.grantSendMessages(itemsFn);
     processingQueue.grantConsumeMessages(processingFn);
 
