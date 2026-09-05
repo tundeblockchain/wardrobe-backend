@@ -4,6 +4,10 @@ import {
   classifyGarment as runClassifyGarment,
   type ClassifyGarmentDeps,
 } from './classify';
+import {
+  detectColourAndCategory as runDetectColourAndCategory,
+  type DetectColourAndCategoryDeps,
+} from './colour-detect';
 
 /**
  * Dynamo-validated work context. Callers must load the clothing item
@@ -18,20 +22,25 @@ export interface ProcessingContext {
   item: DynamoItem;
 }
 
+export type ProcessingPipelineDeps = ClassifyGarmentDeps &
+  DetectColourAndCategoryDeps;
+
 /**
  * Ordered clothing-item processing pipeline.
  *
  *   1. removeBackground        — WARDROBE-18 (S3 + injectable rembg client)
  *   2. classifyGarment         — WARDROBE-19 (injectable classifier; `ai` only)
- *   3. detectColourAndCategory — WARDROBE-20 (no-op stub)
+ *   3. detectColourAndCategory — WARDROBE-20 (injectable detector; `ai` only)
+ *
+ * The worker sets processingStatus READY after this function returns.
  */
 export async function runProcessingPipeline(
   context: ProcessingContext,
-  deps?: ClassifyGarmentDeps,
+  deps?: ProcessingPipelineDeps,
 ): Promise<void> {
   await removeBackground(context);
   await classifyGarment(context, deps);
-  await detectColourAndCategory(context);
+  await detectColourAndCategory(context, deps);
 }
 
 /** WARDROBE-18: read original from S3, remove background, write processed.png. */
@@ -50,11 +59,12 @@ export async function classifyGarment(
   await runClassifyGarment(context, deps);
 }
 
-/** WARDROBE-20: colour / category detection. No-op stub — no model calls. */
+/** WARDROBE-20: colour / category detection. Persists under `ai` only. */
 export async function detectColourAndCategory(
-  _context: ProcessingContext,
+  context: ProcessingContext,
+  deps?: DetectColourAndCategoryDeps,
 ): Promise<void> {
-  // Intentionally empty. WARDROBE-20 persists detected colours / category.
+  await runDetectColourAndCategory(context, deps);
 }
 
 function rememberProcessedImage(

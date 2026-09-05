@@ -70,10 +70,11 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // WARDROBE-15 queue + WARDROBE-16 enqueue + WARDROBE-17 worker +
-    // WARDROBE-18 background removal. Visibility must stay greater
-    // than the worker timeout so an in-flight rembg invoke is not
-    // redelivered. After maxReceiveCount: 3 SQS sends the message
-    // to the DLQ (alarmed below). No EventBridge.
+    // WARDROBE-18 rembg + WARDROBE-19 classify + WARDROBE-20 colour.
+    // Visibility must stay greater than the worker timeout so an
+    // in-flight rembg / vision invoke is not redelivered. After
+    // maxReceiveCount: 3 SQS sends the message to the DLQ (alarmed
+    // below). No EventBridge.
     const processingLambdaTimeout = cdk.Duration.seconds(60);
     const processingVisibilityTimeout = cdk.Duration.seconds(120);
 
@@ -129,6 +130,18 @@ export class WardrobeStack extends cdk.Stack {
         'Placeholder garment-classification API credentials. Store JSON { "apiKey", "endpoint" }; never commit AI keys.',
       removalPolicy,
     });
+    // Placeholder only — replace the generated value with colour-
+    // detector credentials (apiKey + endpoint JSON). Never commit AI keys.
+    const aiColourDetectorSecret = new secretsmanager.Secret(
+      this,
+      'AiColourDetectorSecret',
+      {
+        secretName: `wardrobe/${stage}/ai-colour-detector`,
+        description:
+          'Placeholder colour-detection API credentials. Store JSON { "apiKey", "endpoint" }; never commit AI keys.',
+        removalPolicy,
+      },
+    );
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
@@ -176,12 +189,14 @@ export class WardrobeStack extends cdk.Stack {
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
         BACKGROUND_REMOVAL_SECRET_ARN: backgroundRemovalSecret.secretArn,
         AI_CLASSIFIER_SECRET_ARN: aiClassifierSecret.secretArn,
+        AI_COLOUR_DETECTOR_SECRET_ARN: aiColourDetectorSecret.secretArn,
         ...(backgroundRemovalEndpoint
           ? { BACKGROUND_REMOVAL_ENDPOINT: backgroundRemovalEndpoint }
           : {}),
       },
     });
     aiClassifierSecret.grantRead(processingFn);
+    aiColourDetectorSecret.grantRead(processingFn);
 
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
@@ -401,6 +416,12 @@ export class WardrobeStack extends cdk.Stack {
       value: aiClassifierSecret.secretName,
       description:
         'Secrets Manager secret for garment classification API credentials (placeholder until replaced)',
+    });
+
+    new cdk.CfnOutput(this, 'AiColourDetectorSecretName', {
+      value: aiColourDetectorSecret.secretName,
+      description:
+        'Secrets Manager secret for colour detection API credentials (placeholder until replaced)',
     });
   }
 

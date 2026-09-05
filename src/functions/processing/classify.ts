@@ -289,6 +289,9 @@ async function persistClassification(
       updatedAt: nowIso(),
     },
   );
+
+  // Keep in-memory ai in sync so later pipeline steps (colour) can merge.
+  context.item.ai = ai;
 }
 
 async function loadClassifierSecret(): Promise<ClassifierSecret> {

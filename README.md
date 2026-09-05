@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, background-removal API key, garment-classification credentials (placeholders) |
+| Secrets Manager | Firebase project ID, background-removal API key, garment-classification and colour-detection credentials (placeholders) |
 
 Working in this first cut:
 
@@ -23,7 +23,7 @@ Working in this first cut:
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
 - `POST /uploads` (S3 pre-signed PUT URL)
-- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification persists under `ai`)
+- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
 ## Prerequisites
 
@@ -68,6 +68,14 @@ Garment classification reads API credentials from Secrets Manager at runtime. Af
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/ai-classifier \
   --secret-string '{"apiKey":"your-classifier-api-key","endpoint":"https://your-classifier.example/classify"}'
+```
+
+Colour / category detection uses a separate Secrets Manager placeholder. After deploy, replace it (never commit the key):
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/ai-colour-detector \
+  --secret-string '{"apiKey":"your-colour-detector-api-key","endpoint":"https://your-colour-detector.example/detect"}'
 ```
 
 If this is the first CDK app in the account/region:
@@ -214,9 +222,11 @@ Pipeline hooks:
 
 1. Background removal (WARDROBE-18) — implemented
 2. AI classification (WARDROBE-19) — injectable classifier; persists `ai.detectedCategory` / `ai.detectedSubcategory` only (never overwrites user `category` / `subcategory`)
-3. Colour / category detection (WARDROBE-20) — no-op stub
+3. Colour / category detection (WARDROBE-20) — injectable detector; persists `ai.detectedColours` (controlled tokens such as `BLACK`, `WHITE`, `RED`, `BLUE`) and may refine `ai.detectedCategory` / `ai.detectedSubcategory`. Never overwrites user-owned `category`, `subcategory`, or `colours`.
 
-Classification uses the processed image key when present (including the key just written by rembg), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/ai-classifier`); unit tests inject a mock client and never call a live vision API. After deploy, replace the placeholder secret with JSON `{"apiKey":"...","endpoint":"https://..."}` — do not commit AI keys.
+Classification and colour detection both use the processed image key when present (including the key just written by rembg), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/ai-classifier` and `wardrobe/{stage}/ai-colour-detector`); unit tests inject mock clients and never call a live vision API. After deploy, replace the placeholder secrets with JSON `{"apiKey":"...","endpoint":"https://..."}` — do not commit AI keys.
+
+The worker still sets `processingStatus: READY` after the full pipeline returns successfully, or `FAILED` on `PermanentProcessingError`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
 
 ### Outfits
 
@@ -281,7 +291,7 @@ src/functions/
   items/
   outfits/
   uploads/
-  processing/          handler, rembg hook, pipeline stubs, retry/poison errors
+  processing/          handler, rembg, classify, colour-detect, pipeline, retry/poison errors
 src/shared/
   auth.ts
   dynamodb.ts
@@ -347,5 +357,5 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 ## Next
 
-1. Phase-2: background removal / AI classification / colour (WARDROBE-18–20)
+1. Phase-2: smart filtering / outfit recommendations (WARDROBE-21 / 23)
 2. Pagination, download pre-signed URLs, and environment-specific alarms

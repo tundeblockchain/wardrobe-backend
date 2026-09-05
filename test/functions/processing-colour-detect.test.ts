@@ -15,13 +15,14 @@ jest.mock('../../src/shared/dynamodb', () => ({
 }));
 
 import {
-  classifyGarment,
-  createHttpGarmentClassifier,
-  parseClassifierSecret,
-  resetClassifierSecretCache,
-  resolveClassificationImageKey,
-  toControlledClassification,
-} from '../../src/functions/processing/classify';
+  createHttpColourDetector,
+  detectColourAndCategory,
+  parseColourDetectorSecret,
+  resetColourDetectorSecretCache,
+  resolveColourDetectionImageKey,
+  toControlledColourDetection,
+  toControlledColours,
+} from '../../src/functions/processing/colour-detect';
 import { ProcessingContext } from '../../src/functions/processing/pipeline';
 
 const ORIGINAL_KEY = 'users/uid/uploads/photo.jpg';
@@ -38,6 +39,7 @@ function item(overrides: Partial<DynamoItem> = {}): DynamoItem {
     name: 'Black T-Shirt',
     category: 'BOTTOM',
     subcategory: 'JEANS',
+    colours: ['GREEN'],
     originalKey: ORIGINAL_KEY,
     processingStatus: 'PROCESSING',
     createdAt: '2026-09-03T18:45:00.000Z',
@@ -58,10 +60,10 @@ function context(overrides: Partial<ProcessingContext> = {}): ProcessingContext 
   };
 }
 
-describe('resolveClassificationImageKey', () => {
+describe('resolveColourDetectionImageKey', () => {
   it('prefers processedKey when WARDROBE-18 has already written it', () => {
     expect(
-      resolveClassificationImageKey(
+      resolveColourDetectionImageKey(
         context({ item: item({ processedKey: PROCESSED_KEY }) }),
       ),
     ).toBe(PROCESSED_KEY);
@@ -69,7 +71,7 @@ describe('resolveClassificationImageKey', () => {
 
   it('prefers ai.processedImageKey when top-level processedKey is absent', () => {
     expect(
-      resolveClassificationImageKey(
+      resolveColourDetectionImageKey(
         context({
           item: item({ ai: { processedImageKey: PROCESSED_KEY } }),
         }),
@@ -78,12 +80,12 @@ describe('resolveClassificationImageKey', () => {
   });
 
   it('falls back to the Dynamo-validated original image key', () => {
-    expect(resolveClassificationImageKey(context())).toBe(ORIGINAL_KEY);
+    expect(resolveColourDetectionImageKey(context())).toBe(ORIGINAL_KEY);
   });
 
   it('fails permanently when no image key is available', () => {
     expect(() =>
-      resolveClassificationImageKey(
+      resolveColourDetectionImageKey(
         context({
           originalImageKey: '',
           item: item({ originalKey: undefined }),
@@ -93,36 +95,57 @@ describe('resolveClassificationImageKey', () => {
   });
 });
 
-describe('toControlledClassification', () => {
-  it('accepts controlled category / subcategory pairs and aliases', () => {
+describe('toControlledColours / toControlledColourDetection', () => {
+  it('accepts controlled colour tokens, aliases, and de-duplicates', () => {
     expect(
-      toControlledClassification({
+      toControlledColours(['black', 'navy-blue', 'GRAY', 'BLACK', 'chartreuse']),
+    ).toEqual(['BLACK', 'NAVY', 'GREY']);
+  });
+
+  it('reads colours from detector-shaped objects', () => {
+    expect(
+      toControlledColourDetection({
+        detectedColours: ['white', 'red'],
         detectedCategory: 'top',
         detectedSubcategory: 't-shirt',
       }),
-    ).toEqual({ detectedCategory: 'TOP', detectedSubcategory: 'TSHIRT' });
+    ).toEqual({
+      detectedColours: ['WHITE', 'RED'],
+      detectedCategory: 'TOP',
+      detectedSubcategory: 'TSHIRT',
+    });
   });
 
-  it('rejects a subcategory that does not belong to the category', () => {
+  it('refines category-only when subcategory is missing or uncontrolled', () => {
     expect(
-      toControlledClassification({
-        category: 'TOP',
-        subcategory: 'JEANS',
+      toControlledColourDetection({
+        colours: ['BLUE'],
+        category: 'SHOES',
       }),
-    ).toBeUndefined();
+    ).toEqual({
+      detectedColours: ['BLUE'],
+      detectedCategory: 'SHOES',
+    });
   });
 
-  it('rejects unknown categories', () => {
+  it('keeps colours when category refinement is invalid', () => {
     expect(
-      toControlledClassification({
+      toControlledColourDetection({
+        colors: ['gold'],
         detectedCategory: 'HAT',
         detectedSubcategory: 'TSHIRT',
       }),
-    ).toBeUndefined();
+    ).toEqual({ detectedColours: ['GOLD'] });
+  });
+
+  it('rejects empty or uncontrolled colour lists', () => {
+    expect(toControlledColours([])).toBeUndefined();
+    expect(toControlledColours(['chartreuse', 'neon'])).toBeUndefined();
+    expect(toControlledColourDetection({ category: 'TOP' })).toBeUndefined();
   });
 });
 
-describe('classifyGarment (WARDROBE-19)', () => {
+describe('detectColourAndCategory (WARDROBE-20)', () => {
   const originalTable = process.env.TABLE_NAME;
 
   beforeEach(() => {
@@ -139,16 +162,15 @@ describe('classifyGarment (WARDROBE-19)', () => {
     }
   });
 
-  it('persists under ai only and does not overwrite user category / subcategory', async () => {
-    const classify = jest.fn().mockResolvedValue({
-      detectedCategory: 'TOP',
-      detectedSubcategory: 'TSHIRT',
+  it('persists under ai only and does not overwrite user category / subcategory / colours', async () => {
+    const detect = jest.fn().mockResolvedValue({
+      detectedColours: ['BLACK', 'WHITE'],
     });
     const ctx = context();
 
-    await classifyGarment(ctx, { classifier: { classify } });
+    await detectColourAndCategory(ctx, { detector: { detect } });
 
-    expect(classify).toHaveBeenCalledWith({
+    expect(detect).toHaveBeenCalledWith({
       imageKey: ORIGINAL_KEY,
       context: expect.objectContaining({ originalImageKey: ORIGINAL_KEY }),
     });
@@ -157,8 +179,7 @@ describe('classifyGarment (WARDROBE-19)', () => {
       'ITEM#item_1',
       expect.objectContaining({
         ai: {
-          detectedCategory: 'TOP',
-          detectedSubcategory: 'TSHIRT',
+          detectedColours: ['BLACK', 'WHITE'],
         },
       }),
     );
@@ -169,29 +190,37 @@ describe('classifyGarment (WARDROBE-19)', () => {
     >;
     expect(persisted).not.toHaveProperty('category');
     expect(persisted).not.toHaveProperty('subcategory');
+    expect(persisted).not.toHaveProperty('colours');
     expect(ctx.item.ai).toEqual({
-      detectedCategory: 'TOP',
-      detectedSubcategory: 'TSHIRT',
+      detectedColours: ['BLACK', 'WHITE'],
     });
+    expect(ctx.item.colours).toEqual(['GREEN']);
+    expect(ctx.item.category).toBe('BOTTOM');
   });
 
-  it('classifies the processed image when present and merges existing ai fields', async () => {
-    const classify = jest.fn().mockResolvedValue({
+  it('detects from the processed image and merges existing ai fields', async () => {
+    const detect = jest.fn().mockResolvedValue({
+      detectedColours: ['NAVY'],
       detectedCategory: 'OUTERWEAR',
       detectedSubcategory: 'COAT',
     });
 
-    await classifyGarment(
+    await detectColourAndCategory(
       context({
         item: item({
           processedKey: PROCESSED_KEY,
-          ai: { backgroundRemoved: true, detectedColours: ['BLACK'] },
+          ai: {
+            backgroundRemoved: true,
+            processedImageKey: PROCESSED_KEY,
+            detectedCategory: 'TOP',
+            detectedSubcategory: 'TSHIRT',
+          },
         }),
       }),
-      { classifier: { classify } },
+      { detector: { detect } },
     );
 
-    expect(classify).toHaveBeenCalledWith(
+    expect(detect).toHaveBeenCalledWith(
       expect.objectContaining({ imageKey: PROCESSED_KEY }),
     );
     expect(mockUpdateAttributes).toHaveBeenCalledWith(
@@ -200,22 +229,22 @@ describe('classifyGarment (WARDROBE-19)', () => {
       expect.objectContaining({
         ai: {
           backgroundRemoved: true,
-          detectedColours: ['BLACK'],
+          processedImageKey: PROCESSED_KEY,
           detectedCategory: 'OUTERWEAR',
           detectedSubcategory: 'COAT',
+          detectedColours: ['NAVY'],
         },
       }),
     );
   });
 
-  it('fails permanently when the classifier returns an uncontrolled pair', async () => {
+  it('fails permanently when the detector returns no controlled colours', async () => {
     await expect(
-      classifyGarment(context(), {
-        classifier: {
-          classify: async () =>
+      detectColourAndCategory(context(), {
+        detector: {
+          detect: async () =>
             ({
-              detectedCategory: 'TOP',
-              detectedSubcategory: 'JEANS',
+              detectedColours: [],
             }) as never,
         },
       }),
@@ -223,11 +252,11 @@ describe('classifyGarment (WARDROBE-19)', () => {
     expect(mockUpdateAttributes).not.toHaveBeenCalled();
   });
 
-  it('propagates PermanentProcessingError from the classifier', async () => {
+  it('propagates PermanentProcessingError from the detector', async () => {
     await expect(
-      classifyGarment(context(), {
-        classifier: {
-          classify: async () => {
+      detectColourAndCategory(context(), {
+        detector: {
+          detect: async () => {
             throw new PermanentProcessingError('unusable image');
           },
         },
@@ -236,11 +265,11 @@ describe('classifyGarment (WARDROBE-19)', () => {
     expect(mockUpdateAttributes).not.toHaveBeenCalled();
   });
 
-  it('propagates RetryableProcessingError from the classifier', async () => {
+  it('propagates RetryableProcessingError from the detector', async () => {
     await expect(
-      classifyGarment(context(), {
-        classifier: {
-          classify: async () => {
+      detectColourAndCategory(context(), {
+        detector: {
+          detect: async () => {
             throw new RetryableProcessingError('vision timeout');
           },
         },
@@ -248,11 +277,11 @@ describe('classifyGarment (WARDROBE-19)', () => {
     ).rejects.toBeInstanceOf(RetryableProcessingError);
   });
 
-  it('wraps unexpected classifier failures as retryable', async () => {
+  it('wraps unexpected detector failures as retryable', async () => {
     await expect(
-      classifyGarment(context(), {
-        classifier: {
-          classify: async () => {
+      detectColourAndCategory(context(), {
+        detector: {
+          detect: async () => {
             throw new Error('socket hang up');
           },
         },
@@ -266,11 +295,10 @@ describe('classifyGarment (WARDROBE-19)', () => {
     mockUpdateAttributes.mockRejectedValue(missing);
 
     await expect(
-      classifyGarment(context(), {
-        classifier: {
-          classify: async () => ({
-            detectedCategory: 'TOP',
-            detectedSubcategory: 'TSHIRT',
+      detectColourAndCategory(context(), {
+        detector: {
+          detect: async () => ({
+            detectedColours: ['RED'],
           }),
         },
       }),
@@ -283,11 +311,10 @@ describe('classifyGarment (WARDROBE-19)', () => {
     mockUpdateAttributes.mockRejectedValue(throttle);
 
     await expect(
-      classifyGarment(context(), {
-        classifier: {
-          classify: async () => ({
-            detectedCategory: 'BAG',
-            detectedSubcategory: 'TOTE',
+      detectColourAndCategory(context(), {
+        detector: {
+          detect: async () => ({
+            detectedColours: ['BEIGE'],
           }),
         },
       }),
@@ -295,15 +322,15 @@ describe('classifyGarment (WARDROBE-19)', () => {
   });
 });
 
-describe('HTTP garment classifier', () => {
-  const originalEndpoint = process.env.AI_CLASSIFIER_ENDPOINT;
+describe('HTTP colour detector', () => {
+  const originalEndpoint = process.env.AI_COLOUR_DETECTOR_ENDPOINT;
 
   afterEach(() => {
-    resetClassifierSecretCache();
+    resetColourDetectorSecretCache();
     if (originalEndpoint === undefined) {
-      delete process.env.AI_CLASSIFIER_ENDPOINT;
+      delete process.env.AI_COLOUR_DETECTOR_ENDPOINT;
     } else {
-      process.env.AI_CLASSIFIER_ENDPOINT = originalEndpoint;
+      process.env.AI_COLOUR_DETECTOR_ENDPOINT = originalEndpoint;
     }
   });
 
@@ -312,13 +339,17 @@ describe('HTTP garment classifier', () => {
       ok: true,
       status: 200,
       text: async () =>
-        JSON.stringify({ category: 'SHOES', subcategory: 'sneakers' }),
+        JSON.stringify({
+          colours: ['navy blue', 'cream'],
+          category: 'outerwear',
+          subcategory: 'coat',
+        }),
     });
 
-    const classifier = createHttpGarmentClassifier({
+    const detector = createHttpColourDetector({
       fetchSecret: async () => ({
         apiKey: 'test-key',
-        endpoint: 'https://classifier.example/v1/classify',
+        endpoint: 'https://colour.example/v1/detect',
       }),
       getImage: async () => ({
         bytes: new Uint8Array([1, 2, 3]),
@@ -328,14 +359,15 @@ describe('HTTP garment classifier', () => {
     });
 
     await expect(
-      classifier.classify({ imageKey: ORIGINAL_KEY, context: context() }),
+      detector.detect({ imageKey: ORIGINAL_KEY, context: context() }),
     ).resolves.toEqual({
-      detectedCategory: 'SHOES',
-      detectedSubcategory: 'SNEAKERS',
+      detectedColours: ['NAVY', 'CREAM'],
+      detectedCategory: 'OUTERWEAR',
+      detectedSubcategory: 'COAT',
     });
 
     expect(httpPost).toHaveBeenCalledWith(
-      'https://classifier.example/v1/classify',
+      'https://colour.example/v1/detect',
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
@@ -351,10 +383,10 @@ describe('HTTP garment classifier', () => {
   });
 
   it('treats HTTP 429 / 5xx as retryable', async () => {
-    const classifier = createHttpGarmentClassifier({
+    const detector = createHttpColourDetector({
       fetchSecret: async () => ({
         apiKey: 'test-key',
-        endpoint: 'https://classifier.example/v1/classify',
+        endpoint: 'https://colour.example/v1/detect',
       }),
       getImage: async () => ({
         bytes: new Uint8Array([1]),
@@ -368,15 +400,15 @@ describe('HTTP garment classifier', () => {
     });
 
     await expect(
-      classifier.classify({ imageKey: ORIGINAL_KEY, context: context() }),
+      detector.detect({ imageKey: ORIGINAL_KEY, context: context() }),
     ).rejects.toBeInstanceOf(RetryableProcessingError);
   });
 
   it('treats HTTP 400 and uncontrolled JSON as permanent', async () => {
-    const badRequest = createHttpGarmentClassifier({
+    const badRequest = createHttpColourDetector({
       fetchSecret: async () => ({
         apiKey: 'test-key',
-        endpoint: 'https://classifier.example/v1/classify',
+        endpoint: 'https://colour.example/v1/detect',
       }),
       getImage: async () => ({
         bytes: new Uint8Array([1]),
@@ -390,13 +422,13 @@ describe('HTTP garment classifier', () => {
     });
 
     await expect(
-      badRequest.classify({ imageKey: ORIGINAL_KEY, context: context() }),
+      badRequest.detect({ imageKey: ORIGINAL_KEY, context: context() }),
     ).rejects.toBeInstanceOf(PermanentProcessingError);
 
-    const uncontrolled = createHttpGarmentClassifier({
+    const uncontrolled = createHttpColourDetector({
       fetchSecret: async () => ({
         apiKey: 'test-key',
-        endpoint: 'https://classifier.example/v1/classify',
+        endpoint: 'https://colour.example/v1/detect',
       }),
       getImage: async () => ({
         bytes: new Uint8Array([1]),
@@ -405,38 +437,38 @@ describe('HTTP garment classifier', () => {
       httpPost: async () => ({
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ category: 'WIDGET' }),
+        text: async () => JSON.stringify({ colours: ['chartreuse'] }),
       }),
     });
 
     await expect(
-      uncontrolled.classify({ imageKey: ORIGINAL_KEY, context: context() }),
+      uncontrolled.detect({ imageKey: ORIGINAL_KEY, context: context() }),
     ).rejects.toBeInstanceOf(PermanentProcessingError);
   });
 
   it('parses JSON secrets and raw API keys with an endpoint env override', () => {
     expect(
-      parseClassifierSecret(
+      parseColourDetectorSecret(
         JSON.stringify({
           apiKey: 'k',
-          endpoint: 'https://classifier.example/classify',
+          endpoint: 'https://colour.example/detect',
         }),
       ),
     ).toEqual({
       apiKey: 'k',
-      endpoint: 'https://classifier.example/classify',
+      endpoint: 'https://colour.example/detect',
     });
 
-    process.env.AI_CLASSIFIER_ENDPOINT = 'https://classifier.example/from-env';
-    expect(parseClassifierSecret('plain-api-key')).toEqual({
+    process.env.AI_COLOUR_DETECTOR_ENDPOINT = 'https://colour.example/from-env';
+    expect(parseColourDetectorSecret('plain-api-key')).toEqual({
       apiKey: 'plain-api-key',
-      endpoint: 'https://classifier.example/from-env',
+      endpoint: 'https://colour.example/from-env',
     });
   });
 
   it('fails permanently when credentials are missing', () => {
-    expect(() => parseClassifierSecret('')).toThrow(PermanentProcessingError);
-    expect(() => parseClassifierSecret('plain-api-key')).toThrow(
+    expect(() => parseColourDetectorSecret('')).toThrow(PermanentProcessingError);
+    expect(() => parseColourDetectorSecret('plain-api-key')).toThrow(
       PermanentProcessingError,
     );
   });
