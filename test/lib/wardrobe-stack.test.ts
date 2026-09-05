@@ -4,10 +4,23 @@ import { WardrobeStack } from '../../lib/wardrobe-stack';
 
 jest.setTimeout(180_000);
 
-function synthTemplate(stage = 'dev'): Template {
-  const app = new cdk.App();
-  const stack = new WardrobeStack(app, `WardrobeStack-${stage}`, { stage });
-  return Template.fromStack(stack);
+function synthTemplate(
+  stage = 'dev',
+  context: Record<string, string> = {},
+): Template {
+  const previousStrategy = process.env.RECOMMENDER_STRATEGY;
+  delete process.env.RECOMMENDER_STRATEGY;
+  try {
+    const app = new cdk.App({ context });
+    const stack = new WardrobeStack(app, `WardrobeStack-${stage}`, { stage });
+    return Template.fromStack(stack);
+  } finally {
+    if (previousStrategy === undefined) {
+      delete process.env.RECOMMENDER_STRATEGY;
+    } else {
+      process.env.RECOMMENDER_STRATEGY = previousStrategy;
+    }
+  }
 }
 
 describe('WardrobeStack foundation (WARDROBE-4)', () => {
@@ -545,10 +558,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'wardrobe/dev/ai-recommender',
+      Description: Match.stringLikeRegexp(/OpenAI/),
     });
     template.hasOutput('AiRecommenderSecretName', {
       Description:
-        'Optional Secrets Manager secret for an external outfit recommender (unused by the default rule-based strategy)',
+        'Secrets Manager secret for OpenAI outfit-recommender credentials (placeholder until replaced)',
     });
 
     type PolicyResource = {
@@ -593,22 +607,49 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     const functions = Object.values(
       template.findResources('AWS::Lambda::Function'),
     ) as Array<{
-      Properties: { Environment?: { Variables?: Record<string, unknown> } };
+      Properties: {
+        Timeout?: number;
+        Environment?: { Variables?: Record<string, unknown> };
+      };
     }>;
     const recommendationsFn = functions.find(
       (fn) => fn.Properties.Environment?.Variables?.AI_RECOMMENDER_SECRET_ARN,
     );
     expect(recommendationsFn).toBeDefined();
+    expect(recommendationsFn?.Properties.Timeout).toBe(15);
+    expect(recommendationsFn?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        RECOMMENDER_STRATEGY: 'openai',
+        AI_RECOMMENDER_SECRET_ARN: expect.anything(),
+      }),
+    );
     expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
       'AI_RECOMMENDER_API_KEY',
     );
     expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
-      'RECOMMENDER_STRATEGY',
+      'OPENAI_API_KEY',
     );
 
     const synthesized = JSON.stringify(template.toJSON());
     expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
     expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
+  });
+
+  test('recommender strategy can be overridden to rules via CDK context', () => {
+    const rules = synthTemplate('dev-rules', { recommenderStrategy: 'rules' });
+    const functions = Object.values(
+      rules.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: { Environment?: { Variables?: Record<string, unknown> } };
+    }>;
+    const recommendationsFn = functions.find(
+      (fn) => fn.Properties.Environment?.Variables?.AI_RECOMMENDER_SECRET_ARN,
+    );
+    expect(recommendationsFn?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        RECOMMENDER_STRATEGY: 'rules',
+      }),
+    );
   });
 
   test('media bucket CORS stays PUT/GET only and is not a public website', () => {

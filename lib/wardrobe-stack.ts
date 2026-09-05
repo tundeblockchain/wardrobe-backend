@@ -146,12 +146,13 @@ export class WardrobeStack extends cdk.Stack {
         removalPolicy,
       },
     );
-    // Optional placeholder — the default recommender is rule-based and
-    // does not call a vendor. Never commit AI keys.
+    // OpenAI credentials for outfit recommendations (WARDROBE-28).
+    // Replace the generated placeholder after deploy. Never commit AI keys.
+    const recommenderStrategy = resolveRecommenderStrategy(this);
     const aiRecommenderSecret = new secretsmanager.Secret(this, 'AiRecommenderSecret', {
       secretName: `wardrobe/${stage}/ai-recommender`,
       description:
-        'Optional outfit-recommender API credentials. Store JSON { "apiKey", "endpoint" }. Unused by the default rule-based strategy. Never commit AI keys.',
+        'OpenAI outfit-recommender credentials. Store a raw API key, or JSON { "apiKey", "model?", "endpoint?" }. Used when RECOMMENDER_STRATEGY=openai. Never commit AI keys.',
       removalPolicy,
     });
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
@@ -193,8 +194,11 @@ export class WardrobeStack extends cdk.Stack {
     const outfitsFn = this.lambda('OutfitsFn', 'outfits', commonLambdaProps);
     const recommendationsFn = this.lambda('RecommendationsFn', 'recommendations', {
       ...commonLambdaProps,
+      // OpenAI chat + rule-based fallback needs headroom beyond the 10s default.
+      timeout: cdk.Duration.seconds(15),
       environment: {
         ...commonLambdaProps.environment,
+        RECOMMENDER_STRATEGY: recommenderStrategy,
         AI_RECOMMENDER_SECRET_ARN: aiRecommenderSecret.secretArn,
       },
     });
@@ -459,7 +463,7 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AiRecommenderSecretName', {
       value: aiRecommenderSecret.secretName,
       description:
-        'Optional Secrets Manager secret for an external outfit recommender (unused by the default rule-based strategy)',
+        'Secrets Manager secret for OpenAI outfit-recommender credentials (placeholder until replaced)',
     });
   }
 
@@ -480,4 +484,19 @@ export class WardrobeStack extends cdk.Stack {
       logGroup,
     });
   }
+}
+
+function resolveRecommenderStrategy(node: Construct): string {
+  const fromContext = node.node.tryGetContext('recommenderStrategy');
+  const raw =
+    (typeof fromContext === 'string' && fromContext.trim()
+      ? fromContext
+      : undefined) ??
+    process.env.RECOMMENDER_STRATEGY?.trim() ??
+    'openai';
+  const normalized = raw.toLowerCase();
+  if (normalized === 'http' || normalized === 'rules' || normalized === 'rule-based') {
+    return normalized === 'rule-based' ? 'rules' : normalized;
+  }
+  return 'openai';
 }

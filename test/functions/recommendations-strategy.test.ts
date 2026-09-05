@@ -2,6 +2,7 @@ import { DynamoItem } from '../../src/shared/types';
 import {
   colourCompatibility,
   createRuleBasedRecommender,
+  hasWearableCore,
   MAX_RECOMMENDATIONS,
   recommendFromReadyItems,
   RecommendableItem,
@@ -82,6 +83,20 @@ describe('toRecommendableItem / AI fallbacks (WARDROBE-23)', () => {
     expect(
       toRecommendableItem(dynamoItem({ category: 'HAT', ai: {} })),
     ).toBeUndefined();
+  });
+});
+
+describe('hasWearableCore', () => {
+  it('requires TOP+BOTTOM or DRESS', () => {
+    expect(hasWearableCore([])).toBe(false);
+    expect(hasWearableCore([item('item_top', 'TOP')])).toBe(false);
+    expect(hasWearableCore([item('item_top', 'TOP'), item('item_shoes', 'SHOES')])).toBe(
+      false,
+    );
+    expect(hasWearableCore([item('item_top', 'TOP'), item('item_bottom', 'BOTTOM')])).toBe(
+      true,
+    );
+    expect(hasWearableCore([item('item_dress', 'DRESS')])).toBe(true);
   });
 });
 

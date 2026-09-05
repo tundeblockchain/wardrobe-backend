@@ -5,11 +5,14 @@ import { Errors } from '../../shared/errors';
 import { errorResponse, ok } from '../../shared/http';
 import { OutfitRecommendationsResponse } from '../../shared/types';
 import { createHttpOutfitRecommender } from './http-recommender';
+import { createOpenAiOutfitRecommender } from './openai-recommender';
 import {
   createRuleBasedRecommender,
   OutfitRecommender,
   toRecommendableItem,
 } from './strategy';
+
+export type RecommenderStrategy = 'openai' | 'http' | 'rules';
 
 export interface RecommendationsHandlerDeps {
   recommender?: OutfitRecommender;
@@ -75,11 +78,32 @@ async function listRecommendations(
 }
 
 /**
- * Default is rule-based so production and CI work without a vendor.
- * Set RECOMMENDER_STRATEGY=http to use the optional Secrets Manager hook.
+ * Production Lambda sets RECOMMENDER_STRATEGY=openai (WARDROBE-28).
+ * Unset / rules keeps the combinatorial fallback so tests never need a vendor.
+ * Set RECOMMENDER_STRATEGY=http for the generic Secrets Manager HTTP hook.
+ *
+ * OpenAI soft failures (HTTP, parse, missing/placeholder secret, timeout)
+ * fall back to rule-based and still return 200 — never 500 the app.
  */
+export function resolveRecommenderStrategy(
+  value = process.env.RECOMMENDER_STRATEGY,
+): RecommenderStrategy {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'openai') {
+    return 'openai';
+  }
+  if (normalized === 'http') {
+    return 'http';
+  }
+  return 'rules';
+}
+
 export function createDefaultRecommender(): OutfitRecommender {
-  if (process.env.RECOMMENDER_STRATEGY === 'http') {
+  const strategy = resolveRecommenderStrategy();
+  if (strategy === 'openai') {
+    return createOpenAiOutfitRecommender();
+  }
+  if (strategy === 'http') {
     return createHttpOutfitRecommender();
   }
   return createRuleBasedRecommender();

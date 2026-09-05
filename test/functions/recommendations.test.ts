@@ -38,6 +38,7 @@ import {
   createDefaultRecommender,
   handleRecommendations,
   handler,
+  resolveRecommenderStrategy,
 } from '../../src/functions/recommendations/handler';
 
 const OWNER_ID = 'firebase-uid-owner';
@@ -265,6 +266,23 @@ describe('recommendations handler (WARDROBE-23)', () => {
       expect(bodyOf(result)).toEqual({ recommendations: [] });
     });
 
+    it('returns 200 with an empty list when OpenAI is selected but items are insufficient', async () => {
+      process.env.RECOMMENDER_STRATEGY = 'openai';
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoClothingItem(TOP_ITEM_ID, { category: 'TOP' })],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event()));
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ recommendations: [] });
+    });
+
     it('returns 200 with an empty list when items are insufficient for an outfit', async () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Query') {
@@ -390,10 +408,23 @@ describe('recommendations handler (WARDROBE-23)', () => {
   });
 
   describe('createDefaultRecommender', () => {
-    it('defaults to the rule-based strategy', async () => {
+    it('defaults to the rule-based strategy when the flag is unset', async () => {
+      expect(resolveRecommenderStrategy()).toBe('rules');
       const recommender = createDefaultRecommender();
       const recommendations = await recommender.recommend([]);
       expect(recommendations).toEqual([]);
+    });
+
+    it('selects OpenAI when RECOMMENDER_STRATEGY=openai without calling a vendor for empty items', async () => {
+      process.env.RECOMMENDER_STRATEGY = 'openai';
+      expect(resolveRecommenderStrategy()).toBe('openai');
+      const recommender = createDefaultRecommender();
+      await expect(recommender.recommend([])).resolves.toEqual([]);
+    });
+
+    it('selects the HTTP hook when RECOMMENDER_STRATEGY=http', () => {
+      process.env.RECOMMENDER_STRATEGY = 'http';
+      expect(resolveRecommenderStrategy()).toBe('http');
     });
   });
 });
