@@ -296,7 +296,7 @@ describe('items handler (WARDROBE-11)', () => {
       expect(put.input.Item).not.toHaveProperty('processedKey');
     });
 
-    it('does not enqueue an SQS processing job in Phase-1', async () => {
+    it('does not enqueue an SQS processing job (WARDROBE-16 is later)', async () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Put') {
           return {};

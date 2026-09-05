@@ -99,12 +99,190 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     });
   });
 
-  test('Phase-2 SQS processing hook exists without expanding worker behavior', () => {
+  test('SQS processing queue and DLQ meet WARDROBE-15 hardening', () => {
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'wardrobe-item-processing-dev',
+      VisibilityTimeout: 60,
+      MessageRetentionPeriod: 345600,
+      ReceiveMessageWaitTimeSeconds: 20,
+      SqsManagedSseEnabled: true,
+      RedrivePolicy: {
+        maxReceiveCount: 3,
+        deadLetterTargetArn: {
+          'Fn::GetAtt': [
+            Match.stringLikeRegexp('ItemProcessingDlq'),
+            'Arn',
+          ],
+        },
+      },
     });
+
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'wardrobe-item-processing-dlq-dev',
+      MessageRetentionPeriod: 1209600,
+      SqsManagedSseEnabled: true,
+      RedrivePolicy: Match.absent(),
+    });
+
+    const queuePolicies = Object.values(
+      template.findResources('AWS::SQS::QueuePolicy'),
+    ) as Array<{
+      Properties: { PolicyDocument: { Statement: Array<{ Effect?: string }> } };
+    }>;
+    expect(queuePolicies.length).toBeGreaterThanOrEqual(2);
+    for (const policy of queuePolicies) {
+      expect(policy.Properties.PolicyDocument.Statement).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            Effect: 'Deny',
+            Action: 'sqs:*',
+            Condition: {
+              Bool: { 'aws:SecureTransport': 'false' },
+            },
+          }),
+        ]),
+      );
+    }
+  });
+
+  test('CloudWatch alarms cover DLQ depth, queue depth, and oldest message age', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'wardrobe-item-processing-dlq-dev',
+      AlarmDescription: 'Processing dead-letter queue contains messages',
+      MetricName: 'ApproximateNumberOfMessagesVisible',
+      Namespace: 'AWS/SQS',
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'wardrobe-item-processing-depth-dev',
+      AlarmDescription: 'Processing queue approximate depth is high',
+      MetricName: 'ApproximateNumberOfMessagesVisible',
+      Namespace: 'AWS/SQS',
+      Threshold: 25,
+      EvaluationPeriods: 5,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'wardrobe-item-processing-oldest-dev',
+      AlarmDescription: 'Oldest message in the processing queue exceeds age threshold',
+      MetricName: 'ApproximateAgeOfOldestMessage',
+      Namespace: 'AWS/SQS',
+      Threshold: 300,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('SQS is not exposed on the HTTP API to Flutter', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{ Properties: { RouteKey: string } }>;
+    expect(routes.length).toBeGreaterThan(0);
+    for (const route of routes) {
+      expect(route.Properties.RouteKey).not.toMatch(/sqs|queue|processing/i);
+    }
+
+    const integrations = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Integration'),
+    ) as Array<{
+      Properties: { IntegrationUri?: string; IntegrationType?: string };
+    }>;
+    expect(integrations.length).toBeGreaterThan(0);
+    for (const integration of integrations) {
+      expect(JSON.stringify(integration)).not.toMatch(/sqs/i);
+    }
+
+    template.hasOutput('ProcessingQueueUrl', {
+      Description: 'Item processing queue URL',
+    });
+    const outputs = template.toJSON().Outputs as Record<
+      string,
+      { Export?: unknown }
+    >;
+    expect(outputs.ProcessingQueueUrl?.Export).toBeUndefined();
+  });
+
+  test('SQS IAM stays least privilege: items send, worker consume, APIs do not', () => {
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+            Effect?: string;
+            Resource?: unknown;
+          }>;
+        };
+        Roles?: unknown[];
+      };
+    };
+
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+
+    const sqsActions = (policy: PolicyResource): string[] =>
+      policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+        const actions = statement.Action;
+        const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+        return list.filter((action) => action.startsWith('sqs:'));
+      });
+
+    const sqsActionsFor = (fnId: string): string[] =>
+      policies
+        .filter((policy) => JSON.stringify(policy).includes(fnId))
+        .flatMap(sqsActions);
+
+    const itemsSqs = sqsActionsFor('ItemsFn');
+    const processingSqs = sqsActionsFor('ProcessingFn');
+
+    expect(itemsSqs).toEqual(expect.arrayContaining(['sqs:SendMessage']));
+    expect(itemsSqs).not.toContain('sqs:ReceiveMessage');
+    expect(itemsSqs).not.toContain('sqs:DeleteMessage');
+    expect(itemsSqs).not.toContain('sqs:*');
+
+    expect(processingSqs).toEqual(
+      expect.arrayContaining([
+        'sqs:ReceiveMessage',
+        'sqs:DeleteMessage',
+        'sqs:ChangeMessageVisibility',
+        'sqs:GetQueueAttributes',
+        'sqs:GetQueueUrl',
+      ]),
+    );
+    expect(processingSqs).not.toContain('sqs:SendMessage');
+    expect(processingSqs).not.toContain('sqs:*');
+
+    for (const fnId of ['HealthFn', 'WardrobesFn', 'OutfitsFn', 'UploadsFn', 'AuthorizerFn']) {
+      expect(sqsActionsFor(fnId)).toEqual([]);
+    }
+
+    const eventSources = template.findResources('AWS::Lambda::EventSourceMapping');
+    expect(Object.keys(eventSources).length).toBe(1);
+  });
+
+  test('stage suffix is applied to queue and alarm names', () => {
+    const staging = synthTemplate('staging');
+    staging.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'wardrobe-item-processing-staging',
+    });
+    staging.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'wardrobe-item-processing-dlq-staging',
+    });
+    staging.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'wardrobe-item-processing-dlq-staging',
+    });
+    staging.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'wardrobe-item-processing-depth-staging',
+    });
+    staging.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'wardrobe-item-processing-oldest-staging',
     });
   });
 
