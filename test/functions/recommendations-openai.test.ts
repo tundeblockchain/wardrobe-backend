@@ -248,7 +248,10 @@ describe('createOpenAiOutfitRecommender', () => {
         }),
       }),
     );
-    const body = JSON.parse((httpPost.mock.calls[0][1] as { body: string }).body) as {
+    const posted = (
+      httpPost.mock.calls as unknown as Array<[string, { body?: string }]>
+    )[0]?.[1];
+    const body = JSON.parse(posted?.body ?? '{}') as {
       model: string;
       messages: Array<{ role: string }>;
       response_format: { type: string };

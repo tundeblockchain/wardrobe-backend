@@ -558,7 +558,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'wardrobe/dev/ai-recommender',
-      Description: Match.stringLikeRegexp(/OpenAI/),
+      Description: Match.stringLikeRegexp('OpenAI'),
     });
     template.hasOutput('AiRecommenderSecretName', {
       Description:
