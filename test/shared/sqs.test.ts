@@ -14,6 +14,7 @@ jest.mock('@aws-sdk/client-sqs', () => ({
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import {
   enqueueProcessWardrobeItem,
+  parseProcessWardrobeItemJob,
   processingQueueUrl,
 } from '../../src/shared/sqs';
 
@@ -52,6 +53,39 @@ describe('sqs helpers (WARDROBE-16)', () => {
         expect(appError.code).toBe('INTERNAL_ERROR');
         expect(appError.statusCode).toBe(500);
       }
+    });
+  });
+
+  describe('parseProcessWardrobeItemJob', () => {
+    const valid = {
+      jobType: PROCESS_WARDROBE_ITEM_JOB,
+      userId: 'firebase-uid-123',
+      wardrobeId: 'wd_abc123xyz0',
+      itemId: 'item_xyz123abcd',
+      originalImageKey: 'users/firebase-uid-123/uploads/photo.jpg',
+    };
+
+    it('parses the architecture payload', () => {
+      expect(parseProcessWardrobeItemJob(JSON.stringify(valid))).toEqual(valid);
+    });
+
+    it('returns undefined for invalid JSON, wrong job type, or missing fields', () => {
+      expect(parseProcessWardrobeItemJob('not-json')).toBeUndefined();
+      expect(parseProcessWardrobeItemJob(JSON.stringify([]))).toBeUndefined();
+      expect(
+        parseProcessWardrobeItemJob(JSON.stringify({ ...valid, jobType: 'OTHER' })),
+      ).toBeUndefined();
+      expect(
+        parseProcessWardrobeItemJob(JSON.stringify({ ...valid, itemId: '   ' })),
+      ).toBeUndefined();
+      expect(
+        parseProcessWardrobeItemJob(
+          JSON.stringify({
+            jobType: PROCESS_WARDROBE_ITEM_JOB,
+            userId: valid.userId,
+          }),
+        ),
+      ).toBeUndefined();
     });
   });
 

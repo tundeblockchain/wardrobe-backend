@@ -6,6 +6,55 @@ import {
   ProcessWardrobeItemJob,
 } from './types';
 
+function requiredJobField(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Parse an SQS body as PROCESS_WARDROBE_ITEM. Returns undefined for
+ * poison payloads (invalid JSON, wrong job type, missing fields).
+ */
+export function parseProcessWardrobeItemJob(
+  body: string,
+): ProcessWardrobeItemJob | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const raw = parsed as Record<string, unknown>;
+  if (raw.jobType !== PROCESS_WARDROBE_ITEM_JOB) {
+    return undefined;
+  }
+
+  const userId = requiredJobField(raw.userId);
+  const wardrobeId = requiredJobField(raw.wardrobeId);
+  const itemId = requiredJobField(raw.itemId);
+  const originalImageKey = requiredJobField(raw.originalImageKey);
+
+  if (!userId || !wardrobeId || !itemId || !originalImageKey) {
+    return undefined;
+  }
+
+  return {
+    jobType: PROCESS_WARDROBE_ITEM_JOB,
+    userId,
+    wardrobeId,
+    itemId,
+    originalImageKey,
+  };
+}
+
 const sqs = new SQSClient({});
 
 export function processingQueueUrl(): string {
