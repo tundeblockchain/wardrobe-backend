@@ -18,6 +18,8 @@ import {
   parseJsonBody,
 } from '../../shared/http';
 import { newItemId, nowIso } from '../../shared/ids';
+import { logger } from '../../shared/logger';
+import { enqueueProcessWardrobeItem } from '../../shared/sqs';
 import {
   ClothingCategory,
   ClothingItem,
@@ -54,7 +56,7 @@ interface UpdateItemBody {
   processingStatus?: unknown;
 }
 
-const PHASE_1_PROCESSING_STATUS: ProcessingStatus = 'READY';
+const CREATE_PROCESSING_STATUS: ProcessingStatus = 'PENDING';
 
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -131,7 +133,6 @@ async function createItem(
   const itemId = newItemId();
   const timestamp = nowIso();
 
-  // Phase-1: persist READY and do not enqueue SQS (Phase-2 AI worker).
   const item: DynamoItem = {
     PK: keys.wardrobePk(wardrobeId),
     SK: keys.itemSk(itemId),
@@ -145,12 +146,38 @@ async function createItem(
     colours,
     brand,
     originalKey: imageKey,
-    processingStatus: PHASE_1_PROCESSING_STATUS,
+    processingStatus: CREATE_PROCESSING_STATUS,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
 
+  // Write first, then enqueue. If SendMessage fails, roll the item back so
+  // the client can retry create without an orphaned PENDING record.
   await putItem(item);
+
+  try {
+    await enqueueProcessWardrobeItem({
+      userId,
+      wardrobeId,
+      itemId,
+      originalImageKey: imageKey,
+    });
+  } catch (error) {
+    try {
+      await deleteItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
+    } catch (compensateError) {
+      logger.error('Failed to roll back item after enqueue failure', {
+        itemId,
+        wardrobeId,
+        error:
+          compensateError instanceof Error
+            ? compensateError.message
+            : 'unknown',
+      });
+    }
+    throw error;
+  }
+
   return toClothingItem(item);
 }
 

@@ -69,9 +69,9 @@ export class WardrobeStack extends cdk.Stack {
       autoDeleteObjects: isDev,
     });
 
-    // WARDROBE-15: processing queue + DLQ only. Enqueue (WARDROBE-16) and
-    // real worker behavior (WARDROBE-17 / AI) are later tickets. The worker
-    // Lambda below stays a no-op hook so the event source can be wired.
+    // WARDROBE-15 queue + WARDROBE-16 enqueue from ItemsFn. Real worker
+    // behavior (WARDROBE-17 / AI) is a later ticket. The worker Lambda
+    // below stays a no-op hook so the event source can be wired.
     const processingDlq = new sqs.Queue(this, 'ItemProcessingDlq', {
       queueName: `wardrobe-item-processing-dlq-${stage}`,
       retentionPeriod: cdk.Duration.days(14),
@@ -136,7 +136,6 @@ export class WardrobeStack extends cdk.Stack {
       ...commonLambdaProps,
       environment: {
         ...commonLambdaProps.environment,
-        // Present for WARDROBE-16 enqueue. Item create does not send yet.
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
       },
     });

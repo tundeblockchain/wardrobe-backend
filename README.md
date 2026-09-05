@@ -20,7 +20,7 @@ Working in this first cut:
 
 - `GET /health` (no auth)
 - Wardrobe CRUD
-- Clothing item CRUD (nested under a wardrobe)
+- Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
 - `POST /uploads` (S3 pre-signed PUT URL)
 
@@ -172,7 +172,7 @@ Create body (`name`, `category`, and `imageKey` required):
 
 `category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user.
 
-Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, `processingStatus`, ISO 8601 timestamps). Phase-1 always sets `processingStatus` to `READY` and does **not** enqueue SQS. List returns `{ "items": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, `processingStatus: PENDING`, ISO 8601 timestamps). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List returns `{ "items": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`. The processing worker is still a no-op stub (WARDROBE-17).
 
 ### Outfits
 
@@ -246,6 +246,7 @@ src/shared/
   ids.ts
   logger.ts
   s3.ts
+  sqs.ts
   types.ts
   validation.ts
 ```
@@ -301,5 +302,5 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 ## Next
 
-1. Phase-2: enqueue SQS on item create and worker processing-status updates (AI later)
+1. Phase-2: worker processing-status updates (WARDROBE-17) and AI later
 2. Pagination, download pre-signed URLs, and environment-specific alarms
