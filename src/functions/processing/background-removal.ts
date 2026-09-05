@@ -39,24 +39,6 @@ export { DEFAULT_GEMINI_API_BASE, geminiGenerateContentUrl };
 const BACKGROUND_REMOVAL_PROMPT =
   'Remove the background from this clothing item. Return a PNG image with a fully transparent background. Keep the garment shape, colour, texture, and details unchanged. Do not add, restyle, crop, or replace the clothing.';
 
-const IMAGE_MIME_TYPES = new Set([
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'image/webp',
-  'image/heic',
-  'image/heif',
-  'image/gif',
-]);
-
-const BLOCKED_FINISH_REASONS = new Set([
-  'SAFETY',
-  'IMAGE_SAFETY',
-  'BLOCKLIST',
-  'PROHIBITED_CONTENT',
-  'RECITATION',
-]);
-
 export interface BackgroundRemovalClient {
   removeBackground(image: Uint8Array, contentType: string): Promise<Uint8Array>;
 }

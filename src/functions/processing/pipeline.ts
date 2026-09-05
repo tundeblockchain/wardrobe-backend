@@ -30,7 +30,7 @@ export type ProcessingPipelineDeps = ClassifyGarmentDeps &
  *
  *   1. removeBackground        — WARDROBE-18/26 (S3 + injectable Gemini client)
  *   2. classifyGarment         — WARDROBE-19/27 (injectable Gemini classifier; `ai` only)
- *   3. detectColourAndCategory — WARDROBE-20 (injectable detector; `ai` only)
+ *   3. detectColourAndCategory — WARDROBE-20/29 (injectable Gemini detector; `ai` only)
  *
  * The worker sets processingStatus READY after this function returns.
  */
@@ -59,7 +59,7 @@ export async function classifyGarment(
   await runClassifyGarment(context, deps);
 }
 
-/** WARDROBE-20: colour / category detection. Persists under `ai` only. */
+/** WARDROBE-20/29: Gemini colour / category detection. Persists under `ai` only. */
 export async function detectColourAndCategory(
   context: ProcessingContext,
   deps?: DetectColourAndCategoryDeps,

@@ -522,12 +522,12 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
   test('AI colour detector credentials are a Secrets Manager placeholder granted to ProcessingFn', () => {
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
-      Name: 'wardrobe/dev/ai-colour-detector',
+      Name: 'wardrobe/dev/gemini-colour',
     });
 
     template.hasOutput('AiColourDetectorSecretName', {
       Description:
-        'Secrets Manager secret for colour detection API credentials (placeholder until replaced)',
+        'Secrets Manager secret for Gemini colour-detection credentials (API key, optional model/endpoint)',
     });
 
     const functions = Object.values(
@@ -545,13 +545,21 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(
       processing?.Properties.Environment?.Variables?.AI_COLOUR_DETECTOR_SECRET_ARN,
     ).toBeDefined();
+    expect(processing?.Properties.Environment?.Variables?.COLOUR_DETECTOR_STRATEGY).toBe(
+      'gemini',
+    );
     expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
       'AI_COLOUR_DETECTOR_API_KEY',
     );
+    expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
+      'GEMINI_API_KEY',
+    );
 
     const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toContain('ai-colour-detector');
     expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
     expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
+    expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
   });
 
   test('recommendations route is owner-auth and uses a dedicated read-only Lambda', () => {
