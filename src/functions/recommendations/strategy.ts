@@ -12,6 +12,16 @@ import {
 export const MAX_RECOMMENDATIONS = 8;
 export const MAX_ITEMS_PER_SLOT = 6;
 
+/** Wearable core: TOP+BOTTOM, or DRESS. Used to skip vendor calls and empty lists. */
+export function hasWearableCore(
+  items: Array<{ slot: ClothingCategory }>,
+): boolean {
+  const hasDress = items.some((item) => item.slot === 'DRESS');
+  const hasTop = items.some((item) => item.slot === 'TOP');
+  const hasBottom = items.some((item) => item.slot === 'BOTTOM');
+  return hasDress || (hasTop && hasBottom);
+}
+
 export interface RecommendableItem {
   itemId: string;
   name: string;

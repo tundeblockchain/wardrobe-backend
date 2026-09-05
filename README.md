@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Gemini background-removal, garment-classification, colour-detection, and optional recommender credentials (placeholders) |
+| Secrets Manager | Firebase project ID, Gemini background-removal, garment-classification, colour-detection, and OpenAI recommender credentials (placeholders) |
 
 Working in this first cut:
 
@@ -87,6 +87,21 @@ Colour / category detection uses a separate Secrets Manager placeholder. After d
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/ai-colour-detector \
   --secret-string '{"apiKey":"your-colour-detector-api-key","endpoint":"https://your-colour-detector.example/detect"}'
+```
+
+Outfit recommendations (WARDROBE-28) default to OpenAI chat (`RECOMMENDER_STRATEGY=openai` on the recommendations Lambda). After deploy, replace the generated placeholder (never commit the key). A raw API key is enough; JSON may also set `model` / `endpoint`:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/ai-recommender \
+  --secret-string '{"apiKey":"sk-your-openai-key","model":"gpt-4o-mini"}'
+```
+
+```bash
+# raw key also works — model defaults to gpt-4o-mini, endpoint to OpenAI chat completions
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/ai-recommender \
+  --secret-string "sk-your-openai-key"
 ```
 
 If this is the first CDK app in the account/region:
@@ -308,9 +323,28 @@ Each suggestion uses the Flutter Outfit item shape (`itemId` + `slot` from `Clot
 }
 ```
 
-Category and colour come from AI metadata when present (`ai.detectedCategory`, `ai.detectedColours`) and otherwise fall back to the user-set `category` / `colours`. PENDING / PROCESSING / FAILED items are ignored. The default strategy is rule-based (combinatorial silhouettes + colour compatibility) and is injectable so unit tests never call a live model.
+Category and colour come from AI metadata when present (`ai.detectedCategory`, `ai.detectedColours`) and otherwise fall back to the user-set `category` / `colours`. PENDING / PROCESSING / FAILED items are ignored.
 
-An optional Secrets Manager placeholder `wardrobe/{stage}/ai-recommender` exists for an external recommender (`JSON { "apiKey", "endpoint" }`). The default Lambda does **not** set `RECOMMENDER_STRATEGY=http` and does not require that secret. Never commit AI keys.
+**Strategy (`RECOMMENDER_STRATEGY`):**
+
+| Value | Behaviour |
+| --- | --- |
+| `openai` (deployed default) | OpenAI chat completions via `wardrobe/{stage}/ai-recommender`. Invented item IDs are dropped. |
+| `rules` (unset / tests) | Combinatorial silhouettes + colour compatibility. No vendor call. |
+| `http` | Optional generic HTTP hook (`JSON { "apiKey", "endpoint" }`). |
+
+The recommendations Lambda sets `RECOMMENDER_STRATEGY=openai`. Override at synth/deploy with CDK context `recommenderStrategy` or env `RECOMMENDER_STRATEGY` (`openai` / `rules` / `http`).
+
+**OpenAI secret** `wardrobe/{stage}/ai-recommender`:
+
+- raw API key, or
+- JSON `{ "apiKey", "model?", "endpoint?" }` (`api_key` / `key` / `openaiApiKey` also accepted)
+
+Defaults when omitted: model `gpt-4o-mini`, endpoint `https://api.openai.com/v1/chat/completions`. Never commit AI keys.
+
+**Soft-failure policy:** OpenAI HTTP errors, timeouts, parse failures, missing/placeholder credentials, or an unusable response do **not** 500 the app. The handler falls back to the rule-based recommender and still returns `200`. Empty / insufficient READY items skip the vendor and return `{ "recommendations": [] }`.
+
+Unit tests inject `fetchSecret` / `httpPost` (or the rule-based strategy) — no live OpenAI calls in CI.
 
 ## Auth
 
@@ -346,7 +380,7 @@ src/functions/
   wardrobes/
   items/
   outfits/
-  recommendations/     owner-only derived outfits; injectable rule-based strategy
+  recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
   processing/          handler, Gemini bg-remove, classify, colour-detect, pipeline, retry/poison errors
 src/shared/
