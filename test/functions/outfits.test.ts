@@ -1068,13 +1068,16 @@ describe('outfits handler (WARDROBE-7)', () => {
             return { Item: options?.personal };
           }
           if (command.input.Key.PK === 'AIPROFILE#GENERIC_MODEL') {
+            if (command.input.Key.SK !== `AIPROFILE#${PROFILE_ID}`) {
+              return {};
+            }
             return { Item: options?.profile ?? dynamoGenericProfile() };
           }
           return {};
         }
         if (command._op === 'Update') {
           return {
-            Attributes: dynamoOutfit({
+            Attributes: dynamoOutfit(OWNER_ID, {
               render: {
                 status: 'PENDING',
                 aiProfileId:
@@ -1224,7 +1227,7 @@ describe('outfits handler (WARDROBE-7)', () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
           return {
-            Item: dynamoOutfit({
+            Item: dynamoOutfit(OWNER_ID, {
               render: {
                 status: 'READY',
                 aiProfileId: PROFILE_ID,

@@ -102,7 +102,7 @@ describe('loadTryOnConfig', () => {
     await expect(loadTryOnConfig(async () => 'plain-key')).resolves.toEqual({
       apiKey: 'plain-key',
       model: 'gemini-override',
-      endpoint: geminiGenerateContentUrl('gemini-override'),
+      endpoint: geminiGenerateContentUrl(DEFAULT_GEMINI_MODEL),
     });
   });
 });
@@ -198,9 +198,13 @@ describe('createGeminiTryOnClient', () => {
         },
       }),
     );
-    const body = JSON.parse(
-      (fetchImpl.mock.calls[0][1] as { body: string }).body,
-    ) as { contents: Array<{ parts: unknown[] }> };
+    const fetchCall = fetchImpl.mock.calls[0] as unknown as [
+      string,
+      { body?: string },
+    ];
+    const body = JSON.parse(fetchCall[1]?.body ?? '{}') as {
+      contents: Array<{ parts: unknown[] }>;
+    };
     expect(body.contents[0].parts.length).toBe(5);
   });
 
