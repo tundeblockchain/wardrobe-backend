@@ -293,6 +293,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'UploadsFn',
       'AuthorizerFn',
       'AiProfilesFn',
+      'GenericModelSeedFn',
     ]) {
       expect(sqsActionsFor(fnId)).toEqual([]);
     }
@@ -383,6 +384,56 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       expect.arrayContaining(['secretsmanager:GetSecretValue']),
     );
     expect(secrets).not.toContain('secretsmanager:*');
+  });
+
+  test('deploys an idempotent GENERIC_MODEL catalog seed (WARDROBE-45)', () => {
+    template.hasOutput('GenericModelCatalogIds', {
+      Description: Match.stringLikeRegexp('GENERIC_MODEL'),
+    });
+
+    const customResources = Object.values(
+      template.findResources('AWS::CloudFormation::CustomResource'),
+    ) as Array<{
+      Properties: { CatalogVersion?: string; TableName?: unknown };
+    }>;
+    const seed = customResources.find(
+      (resource) => resource.Properties.CatalogVersion === '1',
+    );
+    expect(seed).toBeDefined();
+    expect(seed?.Properties.TableName).toBeDefined();
+
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+          }>;
+        };
+      };
+    };
+
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+
+    const dynamo = policies
+      .filter((policy) => JSON.stringify(policy).includes('GenericModelSeedFn'))
+      .flatMap((policy) =>
+        policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+          const actions = statement.Action;
+          return Array.isArray(actions) ? actions : actions ? [actions] : [];
+        }),
+      )
+      .filter((action) => action.startsWith('dynamodb:'));
+
+    expect(dynamo).toEqual(
+      expect.arrayContaining(['dynamodb:PutItem', 'dynamodb:GetItem']),
+    );
+    expect(dynamo).not.toContain('dynamodb:*');
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).toContain('profile_generic_01');
+    expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
   });
 
   test('AiProfilesFn can PutObject for PERSONAL reference-image presign', () => {

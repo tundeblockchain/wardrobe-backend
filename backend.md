@@ -922,7 +922,7 @@ DynamoDB metadata updated
 
 ## 23. AI Profile / Avatar Entity (WARDROBE-43)
 
-The virtual try-on feature is a separate domain area. CRUD + Dynamo model shipped in WARDROBE-43. Reference-image upload, generic-model seeding, and try-on inference are later tickets.
+The virtual try-on feature is a separate domain area. CRUD + Dynamo model shipped in WARDROBE-43. Reference-image upload shipped in WARDROBE-44. Generic-model seeding shipped in WARDROBE-45. Try-on inference is WARDROBE-47.
 
 Entity:
 
@@ -968,9 +968,11 @@ POST   /ai-profiles/{aiProfileId}/uploads
 POST   /ai-profiles/{aiProfileId}/reference-images
 ```
 
-`POST` creates `PERSONAL` for the caller (`status: READY` when `referenceImages` is empty). Users cannot create or delete `GENERIC_MODEL` rows — those are seeded (WARDROBE-45) under `PK=AIPROFILE#GENERIC_MODEL` with sparse GSI1 `TYPE#GENERIC_MODEL`. Flutter DTOs omit `PK` / `SK`.
+`POST` creates `PERSONAL` for the caller (`status: READY` when `referenceImages` is empty). Users cannot create or delete `GENERIC_MODEL` rows — those are seeded (WARDROBE-45) under `PK=AIPROFILE#GENERIC_MODEL` with sparse GSI1 `TYPE#GENERIC_MODEL`. Flutter DTOs omit `PK` / `SK`. Seeded generic models expose optional `label` and placeholder `referenceImages` under `shared/ai-profiles/generic/`.
 
 Reference photos (WARDROBE-44) use the same presigned-S3 pattern as clothing items. Keys must be under `users/{uid}/ai-profiles/{aiProfileId}/`. Upload and attach are owner-`PERSONAL` only (`GENERIC_MODEL` is `403`). Confirming keys appends them to `referenceImages` and sets `status: READY`. A future `PROCESS_AI_PROFILE` worker may later use `PENDING` → `PROCESSING` → `READY`.
+
+WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`04`) via `buildGenericModelProfile()` plus an idempotent seed Lambda / `npm run seed:generic-models`. Image bytes stay out of git — Tunde uploads them to the documented S3 keys after deploy.
 
 ---
 

@@ -450,6 +450,35 @@ describe('ai-profiles handler (WARDROBE-43)', () => {
       const command = mockSend.mock.calls[0][0] as Command;
       expect(command.input.IndexName).toBe('GSI1');
     });
+
+    it('returns seeded catalog labels and shared placeholder keys', async () => {
+      const seeded = buildGenericModelProfile({
+        aiProfileId: 'profile_generic_01',
+        label: 'Alex',
+        referenceImages: ['shared/ai-profiles/generic/alex/front.jpg'],
+        status: 'READY',
+        createdAt: '2026-09-06T00:00:00.000Z',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+      });
+      mockSend.mockResolvedValue({ Items: [seeded] });
+
+      const result = asResult(await handler(event({ method: 'GET', models: true })));
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        aiProfiles: [
+          {
+            aiProfileId: 'profile_generic_01',
+            type: 'GENERIC_MODEL',
+            label: 'Alex',
+            referenceImages: ['shared/ai-profiles/generic/alex/front.jpg'],
+            status: 'READY',
+            createdAt: '2026-09-06T00:00:00.000Z',
+            updatedAt: '2026-09-06T00:00:00.000Z',
+          },
+        ],
+      });
+    });
   });
 
   describe('GET /ai-profiles/{aiProfileId}', () => {

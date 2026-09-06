@@ -25,7 +25,7 @@ Working in this first cut:
 - Outfit CRUD (nested under a wardrobe)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
-- AI Profile CRUD plus PERSONAL reference-image presign/attach (no try-on inference)
+- AI Profile CRUD plus PERSONAL reference-image presign/attach and seeded GENERIC_MODEL catalog (no try-on inference)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
 ## Prerequisites
@@ -411,9 +411,9 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
-## AI profiles (WARDROBE-43 / WARDROBE-44)
+## AI profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45)
 
-Phase-3 foundation. Separate from wardrobe CRUD. **No try-on inference** — generic-model seeding is WARDROBE-45, outfit render is WARDROBE-47.
+Phase-3 foundation. Separate from wardrobe CRUD. **No try-on inference** — outfit render is WARDROBE-47.
 
 Identity comes from the Firebase authorizer (`getUserId`). Body/query/path `userId` is ignored.
 
@@ -433,7 +433,7 @@ POST   /ai-profiles/{aiProfileId}/reference-images
 | --- | --- |
 | `POST /ai-profiles` | Create a `PERSONAL` profile for the token UID. Body is optional. Starts `READY` with `referenceImages: []` (nothing to process yet). |
 | `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). |
-| `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile. |
+| `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). |
 | `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). |
 | `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
 | `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. |
@@ -448,7 +448,7 @@ Create body (all fields optional):
 }
 ```
 
-- `type` — omit or `PERSONAL`. `GENERIC_MODEL` is rejected (`400`); those rows are seeded later (WARDROBE-45).
+- `type` — omit or `PERSONAL`. `GENERIC_MODEL` is rejected (`400`); those rows are seeded (WARDROBE-45).
 - `referenceImages` — omit or `[]` on create. If sent, each key must be under `users/{uid}/`. Prefer the presign + attach flow below.
 - Body `userId` / `status` are ignored.
 
@@ -464,6 +464,8 @@ Flutter `AiProfile` DTO (`201` / `200`) — never includes Dynamo `PK` / `SK` / 
   "updatedAt": "2026-09-06T08:00:00.000Z"
 }
 ```
+
+Seeded generic models also include optional `label` (picker display name). PERSONAL rows omit it.
 
 List / models (`200`):
 
@@ -580,11 +582,117 @@ Future PROCESS_AI_PROFILE worker (not shipped):
 
 This ticket does **not** enqueue `PROCESS_AI_PROFILE`. The clothing-item worker only accepts `PROCESS_WARDROBE_ITEM` and would drop any other job type as poison. The in-repo hook is `statusAfterReferenceImagesAttached()` (returns `READY`) plus `buildProcessAiProfileJob()`. A later worker ticket can flip attach to `PENDING` and enqueue that job.
 
+### Generic models (WARDROBE-45)
+
+Four `READY` `GENERIC_MODEL` profiles are written at deploy by a CDK custom resource (`GenericModelSeedFn`). IDs are stable so Flutter can cache them. Users still cannot `POST` or `DELETE` generic models (`400` / `403`). Account wipe never touches the catalog.
+
+| `aiProfileId` | `label` | Placeholder S3 key |
+| --- | --- | --- |
+| `profile_generic_01` | Alex | `shared/ai-profiles/generic/alex/front.jpg` |
+| `profile_generic_02` | Jordan | `shared/ai-profiles/generic/jordan/front.jpg` |
+| `profile_generic_03` | Sam | `shared/ai-profiles/generic/sam/front.jpg` |
+| `profile_generic_04` | Riley | `shared/ai-profiles/generic/riley/front.jpg` |
+
+List (same payload from either route):
+
+```http
+GET /ai-profiles/models
+GET /ai-profiles?type=GENERIC_MODEL
+```
+
+```json
+{
+  "aiProfiles": [
+    {
+      "aiProfileId": "profile_generic_01",
+      "type": "GENERIC_MODEL",
+      "label": "Alex",
+      "referenceImages": ["shared/ai-profiles/generic/alex/front.jpg"],
+      "status": "READY",
+      "createdAt": "2026-09-06T00:00:00.000Z",
+      "updatedAt": "2026-09-06T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+The seed writes Dynamo rows only. It does **not** upload image bytes. Keys above are documented placeholders under a shared prefix — never commit model photos or API keys.
+
+#### After deploy — Tunde uploads real model images
+
+1. Note `MediaBucketName` and `GenericModelCatalogIds` from the stack outputs.
+2. Upload one full-body photo per model (JPEG/PNG/WebP/HEIC) to the exact placeholder key. Example:
+
+```bash
+BUCKET=$(aws cloudformation describe-stacks \
+  --stack-name WardrobeStack-prod \
+  --query "Stacks[0].Outputs[?OutputKey=='MediaBucketName'].OutputValue" \
+  --output text)
+
+aws s3 cp ./alex-front.jpg \
+  "s3://$BUCKET/shared/ai-profiles/generic/alex/front.jpg" \
+  --content-type image/jpeg
+
+aws s3 cp ./jordan-front.jpg \
+  "s3://$BUCKET/shared/ai-profiles/generic/jordan/front.jpg" \
+  --content-type image/jpeg
+
+aws s3 cp ./sam-front.jpg \
+  "s3://$BUCKET/shared/ai-profiles/generic/sam/front.jpg" \
+  --content-type image/jpeg
+
+aws s3 cp ./riley-front.jpg \
+  "s3://$BUCKET/shared/ai-profiles/generic/riley/front.jpg" \
+  --content-type image/jpeg
+```
+
+3. Confirm the picker (Firebase ID token required):
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/ai-profiles/models"
+```
+
+Replacing an image in place (same key) does not require re-seeding. Adding a fifth model means editing `src/functions/ai-profiles/catalog.ts` (`GENERIC_MODEL_CATALOG_VERSION`) and redeploying, or putting a matching Dynamo row by hand.
+
+#### Re-run the seed (CLI)
+
+Idempotent. Preserves `createdAt`. Safe after a failed deploy or a manual row delete.
+
+```bash
+# uses TABLE_NAME when set; otherwise wardrobe-app-$STAGE (default stage=dev)
+TABLE_NAME=wardrobe-app-prod npm run seed:generic-models
+STAGE=prod npm run seed:generic-models
+```
+
+Requires AWS credentials that can `GetItem` / `PutItem` on `wardrobe-app-{stage}`.
+
+#### Console fallback (no CLI)
+
+In DynamoDB table `wardrobe-app-{stage}`, put an item:
+
+```text
+PK              AIPROFILE#GENERIC_MODEL
+SK              AIPROFILE#profile_generic_01
+GSI1PK          TYPE#GENERIC_MODEL
+GSI1SK          AIPROFILE#profile_generic_01
+entityType      AIPROFILE
+userId          SYSTEM
+aiProfileId     profile_generic_01
+type            GENERIC_MODEL
+label           Alex
+status          READY
+referenceImages ["shared/ai-profiles/generic/alex/front.jpg"]
+createdAt       2026-09-06T00:00:00.000Z
+updatedAt       2026-09-06T00:00:00.000Z
+```
+
+Repeat for `02`–`04`. `referenceImages` is a Dynamo string set or list of strings (this stack writes a list).
+
 ### Later-ticket hooks
 
 | Ticket | Hook |
 | --- | --- |
-| WARDROBE-45 | `buildGenericModelProfile()` writes `PK=AIPROFILE#GENERIC_MODEL` + sparse `GSI1PK=TYPE#GENERIC_MODEL`. |
 | WARDROBE-47 | Reserved secret id `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT`. Not created in this stack. Try-on inference is out of scope. |
 
 ## DynamoDB keys
@@ -621,6 +729,7 @@ lib/wardrobe-pipeline-stack.ts
 lib/wardrobe-stage.ts
 cdk.json.example
 scripts/ensure-cdk-json.js
+scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDROBE-45)
 src/functions/
   health/
   me/                  owner-only clear-content + delete-account (WARDROBE-36)
@@ -629,7 +738,7 @@ src/functions/
   outfits/
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
-  ai-profiles/         CRUD + PERSONAL reference-image presign/attach (WARDROBE-43/44)
+  ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45)
   processing/          handler, Gemini helpers, bg-remove, classify, colour-detect, pipeline, retry/poison errors
   support/             WARDROBE-38 outbound contact/bug + Resend client + Svix verify
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
@@ -699,7 +808,7 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 ## Next
 
 1. Phase-2 smart filtering (WARDROBE-21) and outfit recommendations (`GET /wardrobes/{wardrobeId}/recommendations`) are live
-2. Phase-3 AI profiles (WARDROBE-43) are live; next: reference-image upload (44), generic-model seed (45), try-on render (47)
+2. Phase-3 AI profiles (WARDROBE-43/44/45) are live; next: try-on render (47)
 3. Pagination, download pre-signed URLs, and environment-specific alarms
 
 ## Support mail (WARDROBE-38)

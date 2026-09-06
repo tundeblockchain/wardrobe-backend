@@ -39,6 +39,7 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
   it('builds a GENERIC_MODEL catalog row with GSI1 keys for WARDROBE-45', () => {
     const item = buildGenericModelProfile({
       aiProfileId: 'profile_model',
+      label: 'Alex',
       createdAt: '2026-09-06T07:00:00.000Z',
       updatedAt: '2026-09-06T07:00:00.000Z',
     });
@@ -49,6 +50,7 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     expect(item.GSI1SK).toBe('AIPROFILE#profile_model');
     expect(item.userId).toBe(SYSTEM_AI_PROFILE_OWNER);
     expect(item.type).toBe('GENERIC_MODEL');
+    expect(item.label).toBe('Alex');
   });
 
   it('maps Dynamo items to Flutter DTOs without PK/SK', () => {

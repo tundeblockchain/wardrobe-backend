@@ -2,7 +2,7 @@
  * Phase-3 hooks. WARDROBE-43/44 do not call inference.
  *
  * WARDROBE-44 — reference-image upload + PROCESS_AI_PROFILE job shape
- * WARDROBE-45 — seed GENERIC_MODEL rows via `buildGenericModelProfile`
+ * WARDROBE-45 — seed GENERIC_MODEL rows via `buildGenericModelProfile` + catalog
  * WARDROBE-47 — try-on / outfit render worker using this secret id
  */
 
