@@ -9,12 +9,12 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (clear content / delete account), wardrobes, items, outfits, recommendations, uploads, AI profiles, processing |
+| Lambda (domain handlers) | Health, me (clear content / delete account), wardrobes, items, outfits, recommendations, uploads, AI profiles, processing, outfit-render |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
-| SQS + DLQ | Async clothing-item processing pipeline |
+| SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, and OpenAI recommender credentials (placeholders) |
+| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, and OpenAI recommender credentials (placeholders) |
 
 Working in this first cut:
 
@@ -22,10 +22,11 @@ Working in this first cut:
 - `DELETE /me/content` and `DELETE /me` (clear content / delete account data)
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
-- Outfit CRUD (nested under a wardrobe)
+- Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
-- AI Profile CRUD plus PERSONAL reference-image presign/attach and seeded GENERIC_MODEL catalog (no try-on inference)
+- AI Profile CRUD plus PERSONAL reference-image presign/attach and seeded GENERIC_MODEL catalog
+- Outfit try-on worker (Gemini `generateContent` image; writes `users/{uid}/outfits/{outfitId}/render.png`)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
 ## Prerequisites
@@ -125,6 +126,24 @@ aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/ai-recommender \
   --secret-string "sk-your-openai-key"
 ```
+
+Virtual try-on / outfit render (WARDROBE-47) uses **Google Gemini** (`generateContent` image). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash-image`); JSON can override `model` and `endpoint`. Never commit the key.
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/gemini-try-on \
+  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash-image"}'
+```
+
+A raw key string also works:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/gemini-try-on \
+  --secret-string "your-gemini-api-key"
+```
+
+Optional CDK context / env `geminiTryOnModel` / `GEMINI_TRY_ON_MODEL` and `geminiTryOnEndpoint` / `GEMINI_TRY_ON_ENDPOINT` override the try-on secret when you need a different Gemini image model or a proxy URL. The outfit-render Lambda reads `GEMINI_TRY_ON_SECRET_ARN` at runtime. Do not reuse `GEMINI_MODEL` here — that override is for background-removal.
 
 If this is the first CDK app in the account/region:
 
@@ -334,6 +353,8 @@ GET    /wardrobes/{wardrobeId}/outfits
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}
 PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/render
 ```
 
 Create body (`name` and `items` required):
@@ -350,7 +371,94 @@ Create body (`name` and `items` required):
 
 `name` is trimmed, 1–100 characters. `items` must contain at least one entry. `slot` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `ACCESSORY` may appear more than once; other slots may appear only once. Duplicate `itemId` values are rejected.
 
-Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Phase-1 outfits do not include AI or render fields.
+Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Create / PATCH never accept a client-supplied `render` object.
+
+### Outfit try-on / render (WARDROBE-47)
+
+Identity comes from the Firebase authorizer (`getUserId`). Body / query / path `userId` is ignored. The outfit must belong to that user. The AI profile must be `READY` and readable: owner `PERSONAL`, or any authenticated user for shared `GENERIC_MODEL`.
+
+```http
+POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+GET  /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+```
+
+Request body (`aiProfileId` required). Optional `items` replaces the outfit item set for this render (same `{itemId, slot}` shape as create). Optional `itemIds` selects a subset of the outfit's existing items (must already be on the outfit; use `items` to change slots):
+
+```json
+{
+  "aiProfileId": "profile_generic_01",
+  "items": [
+    { "itemId": "item_...", "slot": "TOP" },
+    { "itemId": "item_...", "slot": "BOTTOM" }
+  ]
+}
+```
+
+```text
+POST /render
+  → outfit.render.status = PENDING
+  → SQS RENDER_OUTFIT
+  → worker: PROCESSING → READY | FAILED
+GET /render  (Flutter poll)
+GET /wardrobes/{wardrobeId}/outfits/{outfitId}  (same render object)
+```
+
+POST returns `202` with the Flutter `Outfit` DTO including `render`. GET `/render` returns the Flutter `OutfitRender` record. GET outfit includes `render` when one has been requested. List includes `render` without `imageUrl` (use GET outfit or GET `/render` for the presigned URL).
+
+```json
+{
+  "status": "READY",
+  "aiProfileId": "profile_generic_01",
+  "imageKey": "users/uid/outfits/outfit_xyz123ab/render.png",
+  "imageUrl": "https://...presigned GetObject..."
+}
+```
+
+| Field | When present |
+| --- | --- |
+| `status` | Always: `PENDING` \| `PROCESSING` \| `READY` \| `FAILED` |
+| `aiProfileId` | Profile used for this request |
+| `imageKey` | `READY` — S3 object `users/{uid}/outfits/{outfitId}/render.png` |
+| `imageUrl` | `READY` on GET outfit / GET `/render` — 15-minute presigned GET |
+| `error` | `FAILED` — human-readable reason (Gemini block, missing image, profile not READY, …) |
+
+AuthZ / validation:
+
+| Case | Response |
+| --- | --- |
+| Missing token | `401 UNAUTHENTICATED` |
+| Other-user / missing wardrobe | `404 WARDROBE_NOT_FOUND` |
+| Other-user / missing outfit | `404 OUTFIT_NOT_FOUND` |
+| Unknown / other-user PERSONAL profile | `404 AI_PROFILE_NOT_FOUND` |
+| Profile not `READY`, no reference images, item has no photo | `400 VALIDATION_ERROR` |
+| GET `/render` before any POST | `404 RENDER_NOT_FOUND` |
+
+The clothing-item worker is unchanged (`PROCESS_WARDROBE_ITEM` only). Try-on uses a dedicated queue `wardrobe-outfit-render-{stage}` + `OutfitRenderFn` so item-processing poison handling stays isolated.
+
+**Worker:** Dynamo is the source of truth. It reloads the outfit (owner check), the profile (`getReadableAiProfile` + `READY` + reference images), and each garment (prefer `processedKey`, else `originalKey`). Gemini `generateContent` (image) writes `render.png`. Permanent Gemini / missing-image / profile errors set `FAILED` with `render.error` and ack. Transient errors are SQS batch failures (`maxReceiveCount: 3` then DLQ). Poison messages (invalid JSON, wrong `jobType`, missing fields) are acked.
+
+**Secret** `wardrobe/{stage}/gemini-try-on` (stack output `GeminiTryOnSecretName`):
+
+- raw API key, or
+- JSON `{ "apiKey", "model?", "endpoint?" }` (`api_key` / `key` also accepted)
+
+Default model `gemini-2.5-flash-image`. Never commit AI keys.
+
+#### After deploy — Tunde console / secret steps
+
+1. Deploy the stack (`npm run deploy` or the pipeline). Note `ApiUrl`, `MediaBucketName`, `GeminiTryOnSecretName`, `OutfitRenderQueueUrl`.
+2. Populate the try-on secret (same Gemini key as background-removal is fine):
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/gemini-try-on \
+  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash-image"}'
+```
+
+CDK creates the secret as a placeholder. IAM: `OutfitRenderFn` may `secretsmanager:GetSecretValue` on this secret only. `OutfitsFn` may `sqs:SendMessage` on the try-on queue. The worker may consume the queue, `GetItem` / `Query` / `UpdateItem` on the table, and S3 read + put (no delete). No extra IAM console steps if you deploy via CDK.
+3. Upload GENERIC_MODEL full-body photos if you have not already (WARDROBE-45 keys under `shared/ai-profiles/generic/{slug}/front.jpg`). A missing model photo marks the render `FAILED` with `Image not found: shared/ai-profiles/generic/...`.
+4. Confirm: `POST .../outfits/{outfitId}/render` with `{ "aiProfileId": "profile_generic_01" }`, then poll `GET .../render` until `READY` or `FAILED`.
+5. If messages land on `wardrobe-outfit-render-dlq-{stage}`, check CloudWatch alarm `wardrobe-outfit-render-dlq-{stage}` and the worker logs. After filling the secret, redrive or have Flutter retry POST.
 
 ### Outfit recommendations
 
@@ -413,7 +521,7 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 
 ## AI profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45)
 
-Phase-3 foundation. Separate from wardrobe CRUD. **No try-on inference** — outfit render is WARDROBE-47.
+Phase-3 foundation. Separate from wardrobe CRUD. Outfit try-on / render is WARDROBE-47.
 
 Identity comes from the Firebase authorizer (`getUserId`). Body/query/path `userId` is ignored.
 
@@ -693,7 +801,7 @@ Repeat for `02`–`04`. `referenceImages` is a Dynamo string set or list of stri
 
 | Ticket | Hook |
 | --- | --- |
-| WARDROBE-47 | Reserved secret id `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT`. Not created in this stack. Try-on inference is out of scope. |
+| WARDROBE-47 | Secret `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT` on the dedicated outfit-render queue. See **Outfit try-on / render** above. |
 
 ## DynamoDB keys
 
@@ -735,11 +843,12 @@ src/functions/
   me/                  owner-only clear-content + delete-account (WARDROBE-36)
   wardrobes/
   items/
-  outfits/
+  outfits/             CRUD + POST/GET render (WARDROBE-47)
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
   ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45)
-  processing/          handler, Gemini helpers, bg-remove, classify, colour-detect, pipeline, retry/poison errors
+  processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline
+  outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47)
   support/             WARDROBE-38 outbound contact/bug + Resend client + Svix verify
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
 src/shared/
@@ -808,8 +917,8 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 ## Next
 
 1. Phase-2 smart filtering (WARDROBE-21) and outfit recommendations (`GET /wardrobes/{wardrobeId}/recommendations`) are live
-2. Phase-3 AI profiles (WARDROBE-43/44/45) are live; next: try-on render (47)
-3. Pagination, download pre-signed URLs, and environment-specific alarms
+2. Phase-3 AI profiles (WARDROBE-43/44/45) and try-on render (WARDROBE-47) are live
+3. Pagination and environment-specific alarms
 
 ## Support mail (WARDROBE-38)
 

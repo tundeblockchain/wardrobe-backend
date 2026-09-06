@@ -91,6 +91,34 @@ export function processedImageObjectKey(userId: string, itemId: string): string 
   return `users/${userId}/items/${itemId}/processed.png`;
 }
 
+/** Architecture §24: users/{uid}/outfits/{outfitId}/render.png */
+export function outfitRenderObjectKey(userId: string, outfitId: string): string {
+  const uid = userId.trim();
+  const id = outfitId.trim();
+  if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
+    throw Errors.internal(
+      'Refusing to build an outfit render key for an invalid id.',
+    );
+  }
+  return `users/${uid}/outfits/${id}/render.png`;
+}
+
+export async function createPresignedGetUrl(params: {
+  objectKey: string;
+  expiresIn?: number;
+}): Promise<{ imageUrl: string; expiresIn: number }> {
+  const expiresIn = params.expiresIn ?? PRESIGNED_URL_EXPIRES_IN;
+  const imageUrl = await getSignedUrl(
+    s3,
+    new GetObjectCommand({
+      Bucket: bucketName(),
+      Key: params.objectKey,
+    }),
+    { expiresIn },
+  );
+  return { imageUrl, expiresIn };
+}
+
 function isSafeObjectKeySegment(value: string): boolean {
   return (
     value.length > 0 &&

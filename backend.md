@@ -173,7 +173,7 @@ The MVP requires four primary application entities:
 - Clothing Item
 - Outfit
 
-Phase-3 adds AI profiles (WARDROBE-43 CRUD; inference comes later). AI render jobs remain a later ticket (WARDROBE-47).
+Phase-3 adds AI profiles (WARDROBE-43 CRUD; WARDROBE-44/45 upload + seed). AI render jobs are WARDROBE-47.
 
 ---
 
@@ -976,9 +976,9 @@ WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`
 
 ---
 
-## 24. Future Outfit Render Data
+## 24. Outfit Render Data
 
-An outfit can later include an AI-rendering section.
+An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47).
 
 Example:
 
@@ -1101,7 +1101,7 @@ POST   /ai-profiles/{aiProfileId}/uploads
 POST   /ai-profiles/{aiProfileId}/reference-images
 ```
 
-Future APIs may include:
+Outfit try-on / render (WARDROBE-47):
 
 ```http
 POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render

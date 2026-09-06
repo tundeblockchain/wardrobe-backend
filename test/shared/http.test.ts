@@ -76,6 +76,18 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps RENDER_NOT_FOUND to a 404 envelope', () => {
+    const result = asResult(errorResponse(Errors.renderNotFound()));
+
+    expect(result.statusCode).toBe(404);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'RENDER_NOT_FOUND',
+        message: 'No render has been requested for this outfit.',
+      },
+    });
+  });
+
   it('maps OUTFIT_NOT_FOUND to a 404 envelope', () => {
     const result = asResult(errorResponse(Errors.outfitNotFound()));
 

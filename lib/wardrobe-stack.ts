@@ -19,6 +19,7 @@ import {
   GENERIC_MODEL_CATALOG_VERSION,
   genericModelIds,
 } from '../src/functions/ai-profiles/catalog';
+import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { addSupportMail } from './support-mail';
 
 export interface WardrobeStackProps extends cdk.StackProps {
@@ -118,6 +119,31 @@ export class WardrobeStack extends cdk.Stack {
       },
     });
 
+    // WARDROBE-47 try-on queue. Same Phase-2 pattern (enqueue → worker →
+    // DLQ after 3 receives). Dedicated so PROCESS_WARDROBE_ITEM poison
+    // handling and item-processing alarms stay isolated.
+    const tryOnDlq = new sqs.Queue(this, 'OutfitRenderDlq', {
+      queueName: `wardrobe-outfit-render-dlq-${stage}`,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      removalPolicy,
+    });
+
+    const tryOnQueue = new sqs.Queue(this, 'OutfitRenderQueue', {
+      queueName: `wardrobe-outfit-render-${stage}`,
+      visibilityTimeout: processingVisibilityTimeout,
+      retentionPeriod: cdk.Duration.days(4),
+      receiveMessageWaitTime: cdk.Duration.seconds(20),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      removalPolicy,
+      deadLetterQueue: {
+        queue: tryOnDlq,
+        maxReceiveCount: 3,
+      },
+    });
+
     const firebaseSecretName = `wardrobe/${stage}/firebase-project-id`;
     const firebaseProjectIdSecret = new secretsmanager.Secret(this, 'FirebaseProjectIdSecret', {
       secretName: firebaseSecretName,
@@ -198,6 +224,21 @@ export class WardrobeStack extends cdk.Stack {
         'OpenAI outfit-recommender credentials. Store a raw API key, or JSON { "apiKey", "model?", "endpoint?" }. Used when RECOMMENDER_STRATEGY=openai. Never commit AI keys.',
       removalPolicy,
     });
+    // Placeholder only — replace after deploy. Never commit the Gemini key.
+    const tryOnSecret = new secretsmanager.Secret(this, 'GeminiTryOnSecret', {
+      secretName: tryOnSecretName(stage),
+      description:
+        'Gemini virtual try-on / outfit-render credentials. Replace the generated value with a Gemini API key, or JSON { "apiKey", "model", "endpoint" }. Never commit the real key.',
+      removalPolicy,
+    });
+    const geminiTryOnModel =
+      (this.node.tryGetContext('geminiTryOnModel') as string | undefined) ??
+      process.env.GEMINI_TRY_ON_MODEL ??
+      '';
+    const geminiTryOnEndpoint =
+      (this.node.tryGetContext('geminiTryOnEndpoint') as string | undefined) ??
+      process.env.GEMINI_TRY_ON_ENDPOINT ??
+      '';
     const commonLambdaProps: Partial<NodejsFunctionProps> = {
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
@@ -239,7 +280,13 @@ export class WardrobeStack extends cdk.Stack {
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
       },
     });
-    const outfitsFn = this.lambda('OutfitsFn', 'outfits', commonLambdaProps);
+    const outfitsFn = this.lambda('OutfitsFn', 'outfits', {
+      ...commonLambdaProps,
+      environment: {
+        ...commonLambdaProps.environment,
+        TRY_ON_QUEUE_URL: tryOnQueue.queueUrl,
+      },
+    });
     const recommendationsFn = this.lambda('RecommendationsFn', 'recommendations', {
       ...commonLambdaProps,
       // OpenAI chat + rule-based fallback needs headroom beyond the 10s default.
@@ -252,8 +299,8 @@ export class WardrobeStack extends cdk.Stack {
     });
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
     // WARDROBE-43 CRUD + WARDROBE-44 PERSONAL reference-image presign/attach.
-    // WARDROBE-47 will add wardrobe/{stage}/gemini-try-on and grant it to the
-    // try-on worker — not this Lambda. PROCESS_AI_PROFILE is not enqueued here.
+    // Try-on secret is granted to OutfitRenderFn only — not this Lambda.
+    // PROCESS_AI_PROFILE is not enqueued here.
     const aiProfilesFn = this.lambda('AiProfilesFn', 'ai-profiles', commonLambdaProps);
 
     // WARDROBE-45: deploy-time seed of READY GENERIC_MODEL catalog rows.
@@ -313,6 +360,21 @@ export class WardrobeStack extends cdk.Stack {
     aiClassifierSecret.grantRead(processingFn);
     aiColourDetectorSecret.grantRead(processingFn);
 
+    const outfitRenderFn = this.lambda('OutfitRenderFn', 'outfit-render', {
+      ...commonLambdaProps,
+      timeout: processingLambdaTimeout,
+      memorySize: 512,
+      environment: {
+        ...commonLambdaProps.environment,
+        TRY_ON_QUEUE_URL: tryOnQueue.queueUrl,
+        GEMINI_TRY_ON_SECRET_ARN: tryOnSecret.secretArn,
+        ...(geminiTryOnModel ? { GEMINI_TRY_ON_MODEL: geminiTryOnModel } : {}),
+        ...(geminiTryOnEndpoint
+          ? { GEMINI_TRY_ON_ENDPOINT: geminiTryOnEndpoint }
+          : {}),
+      },
+    });
+
     table.grantReadWriteData(meFn);
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
@@ -335,9 +397,26 @@ export class WardrobeStack extends cdk.Stack {
     backgroundRemovalSecret.grantRead(processingFn);
     processingQueue.grantSendMessages(itemsFn);
     processingQueue.grantConsumeMessages(processingFn);
+    // Try-on: outfits enqueue RENDER_OUTFIT; worker consumes + reads Gemini secret.
+    tryOnQueue.grantSendMessages(outfitsFn);
+    tryOnQueue.grantConsumeMessages(outfitRenderFn);
+    tryOnSecret.grantRead(outfitRenderFn);
+    // Worker reloads outfit, items, and READY profiles (PERSONAL + GSI1 GENERIC_MODEL).
+    table.grantReadData(outfitRenderFn);
+    table.grant(outfitRenderFn, 'dynamodb:UpdateItem');
+    mediaBucket.grantRead(outfitRenderFn);
+    mediaBucket.grantPut(outfitRenderFn);
+    // Presigned GET for render.imageUrl on GET outfit / GET render.
+    mediaBucket.grantRead(outfitsFn);
 
     processingFn.addEventSource(
       new SqsEventSource(processingQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      }),
+    );
+    outfitRenderFn.addEventSource(
+      new SqsEventSource(tryOnQueue, {
         batchSize: 1,
         reportBatchItemFailures: true,
       }),
@@ -371,6 +450,42 @@ export class WardrobeStack extends cdk.Stack {
       alarmName: `wardrobe-item-processing-oldest-${stage}`,
       alarmDescription: 'Oldest message in the processing queue exceeds age threshold',
       metric: processingQueue.metricApproximateAgeOfOldestMessage({
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 300,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'OutfitRenderDlqAlarm', {
+      alarmName: `wardrobe-outfit-render-dlq-${stage}`,
+      alarmDescription: 'Outfit render dead-letter queue contains messages',
+      metric: tryOnDlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'OutfitRenderQueueDepthAlarm', {
+      alarmName: `wardrobe-outfit-render-depth-${stage}`,
+      alarmDescription: 'Outfit render queue approximate depth is high',
+      metric: tryOnQueue.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 25,
+      evaluationPeriods: 5,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'OutfitRenderQueueOldestMessageAlarm', {
+      alarmName: `wardrobe-outfit-render-oldest-${stage}`,
+      alarmDescription: 'Oldest message in the outfit render queue exceeds age threshold',
+      metric: tryOnQueue.metricApproximateAgeOfOldestMessage({
         period: cdk.Duration.minutes(1),
       }),
       threshold: 300,
@@ -523,6 +638,13 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/outfits/{outfitId}/render',
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: outfitsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/recommendations',
       methods: [apigwv2.HttpMethod.GET],
       integration: recommendationsIntegration,
@@ -598,6 +720,17 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ProcessingQueueUrl', {
       value: processingQueue.queueUrl,
       description: 'Item processing queue URL',
+    });
+
+    new cdk.CfnOutput(this, 'OutfitRenderQueueUrl', {
+      value: tryOnQueue.queueUrl,
+      description: 'Outfit try-on / render queue URL',
+    });
+
+    new cdk.CfnOutput(this, 'GeminiTryOnSecretName', {
+      value: tryOnSecret.secretName,
+      description:
+        'Secrets Manager secret for Gemini try-on credentials (API key, optional model/endpoint)',
     });
 
     new cdk.CfnOutput(this, 'FirebaseProjectIdSecretName', {

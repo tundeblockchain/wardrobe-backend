@@ -7,6 +7,7 @@ import {
 } from '../../src/functions/ai-profiles/model';
 import {
   buildProcessAiProfileJob,
+  buildRenderOutfitJob,
   FUTURE_JOB_TYPES,
   statusAfterReferenceImagesAttached,
   tryOnSecretName,
@@ -75,10 +76,19 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     expect(dto).not.toHaveProperty('userId');
   });
 
-  it('reserves the WARDROBE-47 try-on secret id without creating it', () => {
+  it('documents the WARDROBE-47 try-on secret id and RENDER_OUTFIT job', () => {
     expect(tryOnSecretName('prod')).toBe('wardrobe/prod/gemini-try-on');
     expect(FUTURE_JOB_TYPES.processAiProfile).toBe('PROCESS_AI_PROFILE');
     expect(FUTURE_JOB_TYPES.renderOutfit).toBe('RENDER_OUTFIT');
+    expect(
+      buildRenderOutfitJob('uid-1', 'wd_1', 'outfit_1', 'profile_generic_01'),
+    ).toEqual({
+      jobType: 'RENDER_OUTFIT',
+      userId: 'uid-1',
+      wardrobeId: 'wd_1',
+      outfitId: 'outfit_1',
+      aiProfileId: 'profile_generic_01',
+    });
   });
 
   it('keeps attach status READY and documents the PROCESS_AI_PROFILE job hook', () => {

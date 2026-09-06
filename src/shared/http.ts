@@ -27,6 +27,10 @@ export function created<T>(body: T): APIGatewayProxyResultV2 {
   return json(201, body);
 }
 
+export function accepted<T>(body: T): APIGatewayProxyResultV2 {
+  return json(202, body);
+}
+
 export function noContent(): APIGatewayProxyResultV2 {
   return {
     statusCode: 204,

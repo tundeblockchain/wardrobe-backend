@@ -4,6 +4,8 @@ import { logger } from './logger';
 import {
   PROCESS_WARDROBE_ITEM_JOB,
   ProcessWardrobeItemJob,
+  RENDER_OUTFIT_JOB,
+  RenderOutfitJob,
 } from './types';
 
 function requiredJobField(value: unknown): string | undefined {
@@ -96,5 +98,87 @@ export async function enqueueProcessWardrobeItem(job: {
       wardrobeId: job.wardrobeId,
     });
     throw Errors.internal('Failed to enqueue clothing-item processing job.');
+  }
+}
+
+/**
+ * Parse an SQS body as RENDER_OUTFIT. Returns undefined for poison
+ * payloads (invalid JSON, wrong job type, missing fields).
+ */
+export function parseRenderOutfitJob(body: string): RenderOutfitJob | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const raw = parsed as Record<string, unknown>;
+  if (raw.jobType !== RENDER_OUTFIT_JOB) {
+    return undefined;
+  }
+
+  const userId = requiredJobField(raw.userId);
+  const wardrobeId = requiredJobField(raw.wardrobeId);
+  const outfitId = requiredJobField(raw.outfitId);
+  const aiProfileId = requiredJobField(raw.aiProfileId);
+
+  if (!userId || !wardrobeId || !outfitId || !aiProfileId) {
+    return undefined;
+  }
+
+  return {
+    jobType: RENDER_OUTFIT_JOB,
+    userId,
+    wardrobeId,
+    outfitId,
+    aiProfileId,
+  };
+}
+
+export function tryOnQueueUrl(): string {
+  const url = process.env.TRY_ON_QUEUE_URL;
+  if (!url) {
+    throw Errors.internal('TRY_ON_QUEUE_URL is not configured.');
+  }
+  return url;
+}
+
+export async function enqueueRenderOutfit(job: {
+  userId: string;
+  wardrobeId: string;
+  outfitId: string;
+  aiProfileId: string;
+}): Promise<void> {
+  const message: RenderOutfitJob = {
+    jobType: RENDER_OUTFIT_JOB,
+    userId: job.userId,
+    wardrobeId: job.wardrobeId,
+    outfitId: job.outfitId,
+    aiProfileId: job.aiProfileId,
+  };
+
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: tryOnQueueUrl(),
+        MessageBody: JSON.stringify(message),
+      }),
+    );
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    logger.error('Failed to enqueue outfit render job', {
+      outfitId: job.outfitId,
+      wardrobeId: job.wardrobeId,
+      aiProfileId: job.aiProfileId,
+    });
+    throw Errors.internal('Failed to enqueue outfit render job.');
   }
 }

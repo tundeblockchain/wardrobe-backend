@@ -2,6 +2,8 @@ import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-l
 import { DynamoItem, Outfit } from '../../src/shared/types';
 
 const mockSend = jest.fn();
+const mockSqsSend = jest.fn();
+const mockGetSignedUrl = jest.fn();
 
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({})),
@@ -33,6 +35,30 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
   })),
 }));
 
+jest.mock('@aws-sdk/client-sqs', () => ({
+  SQSClient: jest.fn(() => ({ send: mockSqsSend })),
+  SendMessageCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'SendMessage',
+    input,
+  })),
+}));
+
+jest.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
+}));
+
+jest.mock('@aws-sdk/client-s3', () => ({
+  S3Client: jest.fn(() => ({})),
+  GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'GetObject',
+    input,
+  })),
+  PutObjectCommand: jest.fn(),
+  ListObjectsV2Command: jest.fn(),
+  DeleteObjectsCommand: jest.fn(),
+}));
+
+import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { handler } from '../../src/functions/outfits/handler';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -47,6 +73,8 @@ const SHOES_ITEM_ID = 'item_sho789ijkl';
 const ACCESSORY_A_ID = 'item_acc111mnop';
 const ACCESSORY_B_ID = 'item_acc222qrst';
 const FOREIGN_ITEM_ID = 'item_foreign000';
+const PROFILE_ID = 'profile_generic_01';
+const PERSONAL_PROFILE_ID = 'profile_abc123xyz0';
 
 interface Command {
   _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
@@ -117,6 +145,7 @@ function dynamoClothingItem(
     itemId,
     name: itemId,
     category: 'TOP',
+    originalKey: `users/${userId}/uploads/${itemId}.jpg`,
     processingStatus: 'READY',
     createdAt: '2026-09-03T18:45:00.000Z',
     updatedAt: '2026-09-03T18:45:00.000Z',
@@ -147,6 +176,7 @@ function event(options: {
   method: string;
   wardrobeId?: string;
   outfitId?: string;
+  render?: boolean;
   body?: unknown;
   rawBody?: string;
   sub?: string | null;
@@ -159,12 +189,16 @@ function event(options: {
           lambda: { sub: options.sub ?? OWNER_ID },
         };
 
-  const rawPath = options.outfitId
-    ? `/wardrobes/${wardrobeId}/outfits/${options.outfitId}`
-    : `/wardrobes/${wardrobeId}/outfits`;
-  const routeKey = options.outfitId
-    ? `${options.method} /wardrobes/{wardrobeId}/outfits/{outfitId}`
-    : `${options.method} /wardrobes/{wardrobeId}/outfits`;
+  const rawPath = options.render && options.outfitId
+    ? `/wardrobes/${wardrobeId}/outfits/${options.outfitId}/render`
+    : options.outfitId
+      ? `/wardrobes/${wardrobeId}/outfits/${options.outfitId}`
+      : `/wardrobes/${wardrobeId}/outfits`;
+  const routeKey = options.render && options.outfitId
+    ? `${options.method} /wardrobes/{wardrobeId}/outfits/{outfitId}/render`
+    : options.outfitId
+      ? `${options.method} /wardrobes/{wardrobeId}/outfits/{outfitId}`
+      : `${options.method} /wardrobes/{wardrobeId}/outfits`;
 
   return {
     version: '2.0',
@@ -265,10 +299,17 @@ describe('outfits handler (WARDROBE-7)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
+    process.env.TRY_ON_QUEUE_URL =
+      'https://sqs.eu-west-1.amazonaws.com/123/wardrobe-outfit-render-test';
+    process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
+    mockSqsSend.mockResolvedValue({ MessageId: 'msg-1' });
+    mockGetSignedUrl.mockResolvedValue('https://signed.example/render.png');
   });
 
   afterEach(() => {
     delete process.env.TABLE_NAME;
+    delete process.env.TRY_ON_QUEUE_URL;
+    delete process.env.MEDIA_BUCKET_NAME;
   });
 
   describe('POST /wardrobes/{wardrobeId}/outfits', () => {
@@ -976,6 +1017,251 @@ describe('outfits handler (WARDROBE-7)', () => {
           message: 'At least one field is required.',
         },
       });
+    });
+  });
+
+  describe('POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render', () => {
+    function dynamoGenericProfile(): DynamoItem {
+      return {
+        PK: 'AIPROFILE#GENERIC_MODEL',
+        SK: `AIPROFILE#${PROFILE_ID}`,
+        entityType: 'AIPROFILE',
+        userId: 'SYSTEM',
+        aiProfileId: PROFILE_ID,
+        type: 'GENERIC_MODEL',
+        referenceImages: ['shared/ai-profiles/generic/alex/front.jpg'],
+        status: 'READY',
+        createdAt: '2026-09-06T00:00:00.000Z',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+      };
+    }
+
+    function dynamoPersonalProfile(
+      userId = OWNER_ID,
+      overrides: Partial<DynamoItem> = {},
+    ): DynamoItem {
+      return {
+        PK: `USER#${userId}`,
+        SK: `AIPROFILE#${PERSONAL_PROFILE_ID}`,
+        entityType: 'AIPROFILE',
+        userId,
+        aiProfileId: PERSONAL_PROFILE_ID,
+        type: 'PERSONAL',
+        referenceImages: [`users/${userId}/ai-profiles/${PERSONAL_PROFILE_ID}/front.jpg`],
+        status: 'READY',
+        createdAt: '2026-09-06T08:00:00.000Z',
+        updatedAt: '2026-09-06T08:00:00.000Z',
+        ...overrides,
+      };
+    }
+
+    function mockRenderLookups(options?: {
+      profile?: DynamoItem | undefined;
+      personal?: DynamoItem | undefined;
+    }) {
+      mockOwnedItemsThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('AIPROFILE#')) {
+          if (command.input.Key.PK === `USER#${OWNER_ID}`) {
+            return { Item: options?.personal };
+          }
+          if (command.input.Key.PK === 'AIPROFILE#GENERIC_MODEL') {
+            return { Item: options?.profile ?? dynamoGenericProfile() };
+          }
+          return {};
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoOutfit({
+              render: {
+                status: 'PENDING',
+                aiProfileId:
+                  (command.input.ExpressionAttributeValues?.[':render'] as { aiProfileId?: string })
+                    ?.aiProfileId ?? PROFILE_ID,
+              },
+              items: command.input.ExpressionAttributeValues?.[':items'] ?? dynamoOutfit().items,
+              updatedAt: '2026-09-06T09:00:00.000Z',
+            }),
+          };
+        }
+        return {};
+      });
+    }
+
+    it('sets PENDING, enqueues RENDER_OUTFIT, and returns 202 with the outfit', async () => {
+      mockRenderLookups();
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PROFILE_ID, userId: OTHER_ID },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(202);
+      const body = bodyOf(result) as Outfit;
+      expect(body.render).toEqual({
+        status: 'PENDING',
+        aiProfileId: PROFILE_ID,
+      });
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: process.env.TRY_ON_QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: 'RENDER_OUTFIT',
+          userId: OWNER_ID,
+          wardrobeId: WARDROBE_ID,
+          outfitId: OUTFIT_ID,
+          aiProfileId: PROFILE_ID,
+        }),
+      });
+    });
+
+    it('accepts a READY owned PERSONAL profile', async () => {
+      mockRenderLookups({ personal: dynamoPersonalProfile() });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PERSONAL_PROFILE_ID },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(202);
+      expect((bodyOf(result) as Outfit).render?.aiProfileId).toBe(PERSONAL_PROFILE_ID);
+    });
+
+    it('rejects a profile that is not READY', async () => {
+      mockRenderLookups({
+        personal: dynamoPersonalProfile(OWNER_ID, { status: 'PENDING' }),
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PERSONAL_PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 AI_PROFILE_NOT_FOUND for another user PERSONAL profile', async () => {
+      mockRenderLookups({ profile: undefined, personal: undefined });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PERSONAL_PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'AI_PROFILE_NOT_FOUND');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 OUTFIT_NOT_FOUND for another user outfit', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return {};
+        }
+        throw new Error('must not continue');
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PROFILE_ID },
+            sub: OTHER_ID,
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
+    });
+
+    it('returns 400 when aiProfileId is missing', async () => {
+      mockRenderLookups();
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: {},
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+    });
+  });
+
+  describe('GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render', () => {
+    it('returns the render record with a presigned imageUrl when READY', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return {
+            Item: dynamoOutfit({
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: `users/${OWNER_ID}/outfits/${OUTFIT_ID}/render.png`,
+              },
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', outfitId: OUTFIT_ID, render: true })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        status: 'READY',
+        aiProfileId: PROFILE_ID,
+        imageKey: `users/${OWNER_ID}/outfits/${OUTFIT_ID}/render.png`,
+        imageUrl: 'https://signed.example/render.png',
+      });
+    });
+
+    it('returns 404 RENDER_NOT_FOUND when no render was requested', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', outfitId: OUTFIT_ID, render: true })),
+      );
+
+      expectEnvelope(result, 404, 'RENDER_NOT_FOUND');
     });
   });
 
