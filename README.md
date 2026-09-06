@@ -306,7 +306,41 @@ Create body (`name`, `category`, and `imageKey` required):
 
 `category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user.
 
-Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, `processingStatus: PENDING`, ISO 8601 timestamps). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List returns `{ "items": [...] }` (Flutter `ItemListResponse`). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+
+#### Clothing-item image URLs (WARDROBE-54)
+
+The media bucket stays private. Create / list / get / PATCH return short-lived **presigned GET** URLs so Flutter can display photos without constructing S3 URLs. Existing `image.originalKey` / `image.processedKey` stay on the payload.
+
+```json
+{
+  "itemId": "item_xyz123abcd",
+  "wardrobeId": "wd_abc123xyz0",
+  "name": "Black T-Shirt",
+  "category": "TOP",
+  "subcategory": "TSHIRT",
+  "colours": ["BLACK"],
+  "brand": "Nike",
+  "image": {
+    "originalKey": "users/{uid}/uploads/....jpg",
+    "processedKey": "users/{uid}/items/{itemId}/processed.png"
+  },
+  "originalImageUrl": "https://...presigned GetObject for originalKey...",
+  "processedImageUrl": "https://...presigned GetObject for processedKey...",
+  "processingStatus": "READY",
+  "createdAt": "2026-09-03T18:45:00.000Z",
+  "updatedAt": "2026-09-03T18:45:00.000Z"
+}
+```
+
+| Field | When present |
+| --- | --- |
+| `image.originalKey` | Whenever an original object key is stored |
+| `originalImageUrl` | Whenever `originalKey` exists (`PENDING` / `PROCESSING` / `READY` / `FAILED`) — 15-minute (`expiresIn` **900**) presigned GET via `createPresignedGetUrl` |
+| `image.processedKey` | After background removal writes `processed.png` (typically `READY`) |
+| `processedImageUrl` | Whenever `processedKey` exists — same 900s presigned GET. Both URLs are returned when both keys exist so Flutter can prefer processed |
+
+URLs are never written to Dynamo. A presign failure is logged and the URL is omitted; the rest of the item still returns `200` / `201`. Same TTL as `POST /uploads` (`expiresIn: 900`) and outfit `render.imageUrl`.
 
 ### Processing worker
 

@@ -173,6 +173,11 @@ export interface Wardrobe {
   updatedAt: string;
 }
 
+/**
+ * Flutter `ClothingItem`. S3 keys stay on `image.*`.
+ * `originalImageUrl` / `processedImageUrl` are short-lived presigned GETs
+ * (WARDROBE-54) — never persisted in Dynamo.
+ */
 export interface ClothingItem {
   itemId: string;
   wardrobeId: string;
@@ -185,6 +190,10 @@ export interface ClothingItem {
     originalKey: string;
     processedKey?: string;
   };
+  /** Presigned GET for `image.originalKey`. Present whenever that key exists. */
+  originalImageUrl?: string;
+  /** Presigned GET for `image.processedKey`. Present when a processed object exists. */
+  processedImageUrl?: string;
   processingStatus: ProcessingStatus;
   createdAt: string;
   updatedAt: string;

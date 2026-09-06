@@ -19,6 +19,7 @@ import {
 } from '../../shared/http';
 import { newItemId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
+import { createPresignedGetUrl } from '../../shared/s3';
 import { enqueueProcessWardrobeItem } from '../../shared/sqs';
 import {
   ClothingCategory,
@@ -94,7 +95,7 @@ export async function handler(
     }
 
     if (method === 'GET') {
-      return ok(toClothingItem(await getOwnedItem(userId, wardrobeId, itemId)));
+      return ok(await toClothingItem(await getOwnedItem(userId, wardrobeId, itemId)));
     }
 
     if (method === 'PATCH') {
@@ -120,15 +121,17 @@ async function listItems(
   await getOwnedWardrobe(userId, wardrobeId);
   const items = await queryByPk(keys.wardrobePk(wardrobeId), 'ITEM#');
   return {
-    items: items
-      .filter(
-        (item) =>
-          item.entityType === 'ITEM' &&
-          item.userId === userId &&
-          item.wardrobeId === wardrobeId &&
-          itemMatchesFilters(item, filters),
-      )
-      .map(toClothingItem),
+    items: await Promise.all(
+      items
+        .filter(
+          (item) =>
+            item.entityType === 'ITEM' &&
+            item.userId === userId &&
+            item.wardrobeId === wardrobeId &&
+            itemMatchesFilters(item, filters),
+        )
+        .map(toClothingItem),
+    ),
   };
 }
 
@@ -252,7 +255,7 @@ async function removeItem(
   await deleteItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
 }
 
-function toClothingItem(item: DynamoItem): ClothingItem {
+async function toClothingItem(item: DynamoItem): Promise<ClothingItem> {
   const dto: ClothingItem = {
     itemId: String(item.itemId),
     wardrobeId: String(item.wardrobeId),
@@ -282,5 +285,44 @@ function toClothingItem(item: DynamoItem): ClothingItem {
     };
   }
 
+  // WARDROBE-54: Flutter reads top-level HTTPS URLs. Soft-fail so a
+  // presign error cannot 500 create / list / get.
+  const originalImageUrl = await signedItemImageUrl(
+    item.originalKey,
+    'original',
+  );
+  if (originalImageUrl) {
+    dto.originalImageUrl = originalImageUrl;
+  }
+
+  const processedImageUrl = await signedItemImageUrl(
+    item.processedKey,
+    'processed',
+  );
+  if (processedImageUrl) {
+    dto.processedImageUrl = processedImageUrl;
+  }
+
   return dto;
+}
+
+async function signedItemImageUrl(
+  objectKey: unknown,
+  kind: 'original' | 'processed',
+): Promise<string | undefined> {
+  if (typeof objectKey !== 'string' || !objectKey.trim()) {
+    return undefined;
+  }
+
+  try {
+    const { imageUrl } = await createPresignedGetUrl({ objectKey });
+    return imageUrl;
+  } catch (error) {
+    logger.warn('Failed to presign clothing-item image GET URL', {
+      kind,
+      objectKey,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return undefined;
+  }
 }
