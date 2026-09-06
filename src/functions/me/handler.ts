@@ -9,11 +9,12 @@ import { DynamoItem, EntityType, UserWipeResult } from '../../shared/types';
 /**
  * Owner-only account APIs.
  *
- * DELETE /me/content — wipe wardrobes, items, outfits, and S3 under users/{uid}/.
- *                      Firebase Auth user and session stay.
+ * DELETE /me/content — wipe wardrobes, items, outfits, personal AI profiles,
+ *                      and S3 under users/{uid}/. Firebase Auth user stays.
  * DELETE /me         — same Dynamo + S3 wipe (plus PROFILE if present), then
  *                      return OK so Flutter can delete the Firebase Auth user
  *                      client-side. This backend does not call Firebase Admin.
+ *                      Seeded GENERIC_MODEL catalog rows are never deleted.
  *
  * Identity always comes from the Firebase authorizer (`getUserId`).
  */
@@ -64,6 +65,7 @@ async function wipeUser(
     deletedWardrobes: countEntity(rows, 'WARDROBE'),
     deletedItems: countEntity(rows, 'ITEM'),
     deletedOutfits: countEntity(rows, 'OUTFIT'),
+    deletedAiProfiles: countEntity(rows, 'AIPROFILE'),
     deletedS3Objects: s3.deleted,
     s3Failures: s3.failed,
   };
@@ -90,6 +92,15 @@ async function collectOwnedRows(
     seen.add(id);
     rows.push({ pk, sk, entityType });
   };
+
+  const personalProfiles = (
+    await queryByPk(keys.userPk(userId), 'AIPROFILE#')
+  ).filter(
+    (item) => item.entityType === 'AIPROFILE' && item.userId === userId,
+  );
+  for (const profile of personalProfiles) {
+    add(profile.PK, profile.SK, 'AIPROFILE');
+  }
 
   const wardrobes = (await queryByPk(keys.userPk(userId), 'WARDROBE#')).filter(
     (item) => item.entityType === 'WARDROBE' && item.userId === userId,

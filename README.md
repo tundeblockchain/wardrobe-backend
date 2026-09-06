@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (clear content / delete account), wardrobes, items, outfits, recommendations, uploads, processing |
+| Lambda (domain handlers) | Health, me (clear content / delete account), wardrobes, items, outfits, recommendations, uploads, AI profiles, processing |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
@@ -25,6 +25,7 @@ Working in this first cut:
 - Outfit CRUD (nested under a wardrobe)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - `POST /uploads` (S3 pre-signed PUT URL)
+- AI Profile CRUD (`PERSONAL` / `GENERIC_MODEL`; no try-on inference)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
 ## Prerequisites
@@ -172,7 +173,7 @@ DELETE /me/content
 DELETE /me
 ```
 
-Both wipe the caller's wardrobes, items, and outfits in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads and processed images). Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`.
+Both wipe the caller's wardrobes, items, outfits, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`.
 
 | Endpoint | Keeps Firebase Auth user | Flutter next step |
 | --- | --- | --- |
@@ -187,6 +188,7 @@ Success body (`200`):
   "deletedWardrobes": 1,
   "deletedItems": 2,
   "deletedOutfits": 1,
+  "deletedAiProfiles": 1,
   "deletedS3Objects": 3,
   "s3Failures": 0
 }
@@ -409,16 +411,108 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
+## AI profiles (WARDROBE-43)
+
+Phase-3 foundation. Separate from wardrobe CRUD. **No try-on inference** in this ticket — reference-image upload is WARDROBE-44, generic-model seeding is WARDROBE-45, outfit render is WARDROBE-47.
+
+Identity comes from the Firebase authorizer (`getUserId`). Body/query/path `userId` is ignored.
+
+```http
+POST   /ai-profiles
+GET    /ai-profiles
+GET    /ai-profiles?type=PERSONAL
+GET    /ai-profiles?type=GENERIC_MODEL
+GET    /ai-profiles/models
+GET    /ai-profiles/{aiProfileId}
+DELETE /ai-profiles/{aiProfileId}
+```
+
+| Route | Behaviour |
+| --- | --- |
+| `POST /ai-profiles` | Create a `PERSONAL` profile for the token UID. Body is optional. Starts `READY` with `referenceImages: []` (nothing to process yet). |
+| `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). |
+| `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile. |
+| `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). |
+| `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
+
+Create body (all fields optional):
+
+```json
+{
+  "type": "PERSONAL",
+  "referenceImages": []
+}
+```
+
+- `type` — omit or `PERSONAL`. `GENERIC_MODEL` is rejected (`400`); those rows are seeded later (WARDROBE-45).
+- `referenceImages` — omit or `[]` on create. If sent, each key must be under `users/{uid}/`. Upload + attach is WARDROBE-44.
+- Body `userId` / `status` are ignored.
+
+Flutter `AiProfile` DTO (`201` / `200`) — never includes Dynamo `PK` / `SK` / `GSI1*` / `userId`:
+
+```json
+{
+  "aiProfileId": "profile_abc123xyz0",
+  "type": "PERSONAL",
+  "referenceImages": [],
+  "status": "READY",
+  "createdAt": "2026-09-06T08:00:00.000Z",
+  "updatedAt": "2026-09-06T08:00:00.000Z"
+}
+```
+
+List / models (`200`):
+
+```json
+{
+  "aiProfiles": [
+    {
+      "aiProfileId": "profile_abc123xyz0",
+      "type": "PERSONAL",
+      "referenceImages": [],
+      "status": "READY",
+      "createdAt": "2026-09-06T08:00:00.000Z",
+      "updatedAt": "2026-09-06T08:00:00.000Z"
+    }
+  ]
+}
+```
+
+`type` is `PERSONAL` \| `GENERIC_MODEL`. `status` is `PENDING` \| `PROCESSING` \| `READY` \| `FAILED`. Create with empty refs uses `READY`; WARDROBE-44 may set `PENDING` after an upload.
+
+Missing or other-user personal profiles return `404 AI_PROFILE_NOT_FOUND`. Missing tokens return `401 UNAUTHENTICATED`. Delete of a generic model returns `403 UNAUTHORIZED`.
+
+### Later-ticket hooks
+
+| Ticket | Hook |
+| --- | --- |
+| WARDROBE-44 | Optional `referenceImages` on create (owned keys). Upload purpose still `WARDROBE_ITEM` only. Job type `PROCESS_AI_PROFILE`. |
+| WARDROBE-45 | `buildGenericModelProfile()` writes `PK=AIPROFILE#GENERIC_MODEL` + sparse `GSI1PK=TYPE#GENERIC_MODEL`. |
+| WARDROBE-47 | Reserved secret id `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT`. Not created in this stack. |
+
 ## DynamoDB keys
 
 ```text
-PK                         SK
+PK                         SK                         GSI1PK                GSI1SK
+USER#{uid}                 PROFILE
 USER#{uid}                 WARDROBE#{wardrobeId}
+USER#{uid}                 AIPROFILE#{aiProfileId}    (omitted — sparse)
 WARDROBE#{wardrobeId}      ITEM#{itemId}
 WARDROBE#{wardrobeId}      OUTFIT#{outfitId}
+AIPROFILE#GENERIC_MODEL    AIPROFILE#{aiProfileId}    TYPE#GENERIC_MODEL    AIPROFILE#{aiProfileId}
 ```
 
-API responses never expose `PK` / `SK`.
+Access patterns:
+
+```text
+List caller's PERSONAL profiles     Query PK=USER#{uid} begins_with SK=AIPROFILE#
+Get caller's PERSONAL profile       Get USER#{uid} / AIPROFILE#{id}
+List GENERIC_MODEL (picker)         Query GSI1 PK=TYPE#GENERIC_MODEL
+                                    (fallback: Query PK=AIPROFILE#GENERIC_MODEL)
+Get GENERIC_MODEL                   Get AIPROFILE#GENERIC_MODEL / AIPROFILE#{id}
+```
+
+API responses never expose `PK` / `SK` / `GSI1PK` / `GSI1SK`.
 
 ## Project layout
 
@@ -438,6 +532,7 @@ src/functions/
   outfits/
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
+  ai-profiles/         PERSONAL / GENERIC_MODEL CRUD (WARDROBE-43); seed + try-on hooks
   processing/          handler, Gemini helpers, bg-remove, classify, colour-detect, pipeline, retry/poison errors
   support/             WARDROBE-38 outbound contact/bug + Resend client + Svix verify
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
@@ -507,7 +602,8 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 ## Next
 
 1. Phase-2 smart filtering (WARDROBE-21) and outfit recommendations (`GET /wardrobes/{wardrobeId}/recommendations`) are live
-2. Pagination, download pre-signed URLs, and environment-specific alarms
+2. Phase-3 AI profiles (WARDROBE-43) are live; next: reference-image upload (44), generic-model seed (45), try-on render (47)
+3. Pagination, download pre-signed URLs, and environment-specific alarms
 
 ## Support mail (WARDROBE-38)
 

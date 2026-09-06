@@ -12,6 +12,10 @@ export function newOutfitId(): string {
   return `outfit_${nanoid(12)}`;
 }
 
+export function newAiProfileId(): string {
+  return `profile_${nanoid(12)}`;
+}
+
 export function newUploadId(): string {
   return nanoid(16);
 }

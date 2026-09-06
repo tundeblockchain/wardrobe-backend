@@ -173,7 +173,7 @@ The MVP requires four primary application entities:
 - Clothing Item
 - Outfit
 
-AI profiles and AI render jobs can be added later.
+Phase-3 adds AI profiles (WARDROBE-43 CRUD; inference comes later). AI render jobs remain a later ticket (WARDROBE-47).
 
 ---
 
@@ -606,12 +606,14 @@ A single-table DynamoDB design is recommended once the access patterns are under
 Example:
 
 ```text
-PK                         SK
+PK                         SK                         GSI1PK                GSI1SK
 ----------------------------------------------------
 USER#123                   PROFILE
 
 USER#123                   WARDROBE#wd1
 USER#123                   WARDROBE#wd2
+
+USER#123                   AIPROFILE#profile1         (sparse — PERSONAL)
 
 WARDROBE#wd1               ITEM#item1
 WARDROBE#wd1               ITEM#item2
@@ -619,6 +621,8 @@ WARDROBE#wd1               ITEM#item3
 
 WARDROBE#wd1               OUTFIT#outfit1
 WARDROBE#wd1               OUTFIT#outfit2
+
+AIPROFILE#GENERIC_MODEL    AIPROFILE#profileG         TYPE#GENERIC_MODEL    AIPROFILE#profileG
 ```
 
 Example wardrobe record:
@@ -680,6 +684,14 @@ Get a specific clothing item
 Get all outfits in a wardrobe
 
 Get a specific outfit
+
+List PERSONAL AI profiles for a user
+
+Get a PERSONAL AI profile (owner-only)
+
+List GENERIC_MODEL AI profiles (try-on picker; GSI1 `TYPE#GENERIC_MODEL`)
+
+Get a GENERIC_MODEL AI profile (any authenticated user)
 ```
 
 These should drive the DynamoDB key design.
@@ -908,11 +920,11 @@ DynamoDB metadata updated
 
 ---
 
-## 23. Future AI Profile / Avatar Entity
+## 23. AI Profile / Avatar Entity (WARDROBE-43)
 
-The virtual try-on feature should be treated as a separate domain area.
+The virtual try-on feature is a separate domain area. CRUD + Dynamo model shipped in WARDROBE-43. Reference-image upload, generic-model seeding, and try-on inference are later tickets.
 
-Possible entity:
+Entity:
 
 ```json
 {
@@ -942,6 +954,19 @@ GENERIC_MODEL
 `PERSONAL` represents an AI version of the user.
 
 `GENERIC_MODEL` represents a generated or predefined model.
+
+Authenticated APIs (identity from `getUserId` only):
+
+```http
+POST   /ai-profiles
+GET    /ai-profiles
+GET    /ai-profiles?type=GENERIC_MODEL
+GET    /ai-profiles/models
+GET    /ai-profiles/{aiProfileId}
+DELETE /ai-profiles/{aiProfileId}
+```
+
+`POST` creates `PERSONAL` for the caller (`status: READY` when `referenceImages` is empty). Users cannot create or delete `GENERIC_MODEL` rows — those are seeded (WARDROBE-45) under `PK=AIPROFILE#GENERIC_MODEL` with sparse GSI1 `TYPE#GENERIC_MODEL`. Flutter DTOs omit `PK` / `SK`.
 
 ---
 
@@ -1058,12 +1083,19 @@ Owner-only. Returns suggested outfits as `{ recommendations: [ { name?, items: [
 POST /uploads
 ```
 
+### AI Profiles
+
+```http
+POST   /ai-profiles
+GET    /ai-profiles
+GET    /ai-profiles/models
+GET    /ai-profiles/{aiProfileId}
+DELETE /ai-profiles/{aiProfileId}
+```
+
 Future APIs may include:
 
 ```http
-POST /ai-profiles
-GET  /ai-profiles
-
 POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render
 GET  /wardrobes/{wardrobeId}/outfits/{outfitId}/render
 ```
@@ -1100,6 +1132,7 @@ VALIDATION_ERROR
 WARDROBE_NOT_FOUND
 ITEM_NOT_FOUND
 OUTFIT_NOT_FOUND
+AI_PROFILE_NOT_FOUND
 UPLOAD_INVALID
 PROCESSING_FAILED
 INTERNAL_ERROR

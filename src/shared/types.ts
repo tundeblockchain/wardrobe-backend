@@ -109,6 +109,58 @@ export interface ProcessWardrobeItemJob {
   originalImageKey: string;
 }
 
+/** Phase-3 AI profile types (WARDROBE-43). Flutter try-on picker uses these. */
+export const AI_PROFILE_TYPES = ['PERSONAL', 'GENERIC_MODEL'] as const;
+export type AiProfileType = (typeof AI_PROFILE_TYPES)[number];
+
+/** Same status machine as clothing-item processing — no inference in this ticket. */
+export const AI_PROFILE_STATUSES = [
+  'PENDING',
+  'PROCESSING',
+  'READY',
+  'FAILED',
+] as const;
+export type AiProfileStatus = (typeof AI_PROFILE_STATUSES)[number];
+
+/**
+ * Flutter `AiProfile` DTO. Never expose Dynamo `PK` / `SK` / `GSI1*`.
+ *
+ * `referenceImages` may be empty on create; WARDROBE-44 attaches uploads.
+ */
+export interface AiProfile {
+  aiProfileId: string;
+  type: AiProfileType;
+  referenceImages: string[];
+  status: AiProfileStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Flutter `AiProfileListResponse` for list / models picker. */
+export interface AiProfileList {
+  aiProfiles: AiProfile[];
+}
+
+/** WARDROBE-44 hook — enqueue after reference-image upload. Not used here. */
+export const PROCESS_AI_PROFILE_JOB = 'PROCESS_AI_PROFILE' as const;
+
+export interface ProcessAiProfileJob {
+  jobType: typeof PROCESS_AI_PROFILE_JOB;
+  userId: string;
+  aiProfileId: string;
+}
+
+/** WARDROBE-47 hook — outfit try-on / render. Not used here. */
+export const RENDER_OUTFIT_JOB = 'RENDER_OUTFIT' as const;
+
+export interface RenderOutfitJob {
+  jobType: typeof RENDER_OUTFIT_JOB;
+  userId: string;
+  wardrobeId: string;
+  outfitId: string;
+  aiProfileId: string;
+}
+
 export interface Wardrobe {
   wardrobeId: string;
   name: string;
@@ -180,11 +232,12 @@ export interface UserWipeResult {
   deletedWardrobes: number;
   deletedItems: number;
   deletedOutfits: number;
+  deletedAiProfiles: number;
   deletedS3Objects: number;
   s3Failures: number;
 }
 
-export type EntityType = 'PROFILE' | 'WARDROBE' | 'ITEM' | 'OUTFIT';
+export type EntityType = 'PROFILE' | 'WARDROBE' | 'ITEM' | 'OUTFIT' | 'AIPROFILE';
 
 export interface DynamoItem {
   PK: string;

@@ -33,12 +33,24 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       AttributeDefinitions: Match.arrayWith([
         { AttributeName: 'PK', AttributeType: 'S' },
         { AttributeName: 'SK', AttributeType: 'S' },
+        { AttributeName: 'GSI1PK', AttributeType: 'S' },
+        { AttributeName: 'GSI1SK', AttributeType: 'S' },
       ]),
       KeySchema: [
         { AttributeName: 'PK', KeyType: 'HASH' },
         { AttributeName: 'SK', KeyType: 'RANGE' },
       ],
       SSESpecification: { SSEEnabled: true },
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: 'GSI1',
+          KeySchema: [
+            { AttributeName: 'GSI1PK', KeyType: 'HASH' },
+            { AttributeName: 'GSI1SK', KeyType: 'RANGE' },
+          ],
+          Projection: { ProjectionType: 'ALL' },
+        }),
+      ]),
     });
   });
 
@@ -280,6 +292,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'RecommendationsFn',
       'UploadsFn',
       'AuthorizerFn',
+      'AiProfilesFn',
     ]) {
       expect(sqsActionsFor(fnId)).toEqual([]);
     }
@@ -774,6 +787,14 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     );
   });
 
+  test('does not create the WARDROBE-47 try-on secret in this ticket', () => {
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toContain('gemini-try-on');
+    expect(synthesized).not.toContain('AI_TRYON_SECRET');
+    expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
+    expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
+  });
+
   test('protected routes use the Firebase Lambda authorizer; /health stays public', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
       Name: 'firebase-dev',
@@ -810,6 +831,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /wardrobes/{wardrobeId}/recommendations',
       'DELETE /me',
       'DELETE /me/content',
+      'GET /ai-profiles',
+      'POST /ai-profiles',
+      'GET /ai-profiles/models',
+      'GET /ai-profiles/{aiProfileId}',
+      'DELETE /ai-profiles/{aiProfileId}',
     ]) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');

@@ -2,6 +2,7 @@ import {
   newWardrobeId,
   newItemId,
   newOutfitId,
+  newAiProfileId,
   newUploadId,
   nowIso,
 } from '../../src/shared/ids';
@@ -39,6 +40,18 @@ describe('ids', () => {
 
     it('should generate unique IDs', () => {
       const ids = new Set(Array.from({ length: 100 }, () => newOutfitId()));
+      expect(ids.size).toBe(100);
+    });
+  });
+
+  describe('newAiProfileId', () => {
+    it('should return a string prefixed with "profile_"', () => {
+      const id = newAiProfileId();
+      expect(id).toMatch(/^profile_[A-Za-z0-9_-]{12}$/);
+    });
+
+    it('should generate unique IDs', () => {
+      const ids = new Set(Array.from({ length: 100 }, () => newAiProfileId()));
       expect(ids.size).toBe(100);
     });
   });

@@ -1,5 +1,7 @@
 import { Errors } from './errors';
 import {
+  AI_PROFILE_TYPES,
+  AiProfileType,
   CLOTHING_CATEGORIES,
   CLOTHING_COLOURS,
   CLOTHING_SUBCATEGORIES,
@@ -156,8 +158,12 @@ export function optionalStringArray(
   );
 }
 
-export function requireOwnedImageKey(value: unknown, userId: string): string {
-  const imageKey = requireNonEmptyString(value, 'imageKey', 1024);
+export function requireOwnedImageKey(
+  value: unknown,
+  userId: string,
+  field = 'imageKey',
+): string {
+  const imageKey = requireNonEmptyString(value, field, 1024);
 
   if (
     imageKey.includes('..') ||
@@ -166,22 +172,83 @@ export function requireOwnedImageKey(value: unknown, userId: string): string {
     imageKey.includes('\\') ||
     imageKey.includes('\0')
   ) {
-    throw Errors.validation('imageKey is not a valid object key.');
+    throw Errors.validation(`${field} is not a valid object key.`);
   }
 
   const ownedPrefix = `users/${userId}/`;
   if (!imageKey.startsWith(ownedPrefix)) {
-    throw Errors.validation('imageKey must belong to the authenticated user.');
+    throw Errors.validation(`${field} must belong to the authenticated user.`);
   }
 
   const remainder = imageKey.slice(ownedPrefix.length);
   if (!remainder || remainder.endsWith('/')) {
     throw Errors.validation(
-      'imageKey must be under users/{userId}/uploads/ or another owned path.',
+      `${field} must be under users/{userId}/uploads/ or another owned path.`,
     );
   }
 
   return imageKey;
+}
+
+export function requireAiProfileType(
+  value: unknown,
+  field = 'type',
+): AiProfileType {
+  const type = requireNonEmptyString(value, field, 32);
+  if (!(AI_PROFILE_TYPES as readonly string[]).includes(type)) {
+    throw Errors.validation(
+      `${field} must be one of: ${AI_PROFILE_TYPES.join(', ')}.`,
+    );
+  }
+  return type as AiProfileType;
+}
+
+export function optionalAiProfileType(
+  value: unknown,
+  field = 'type',
+): AiProfileType | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  return requireAiProfileType(value, field);
+}
+
+/** POST /ai-profiles only creates PERSONAL. GENERIC_MODEL is seeded later. */
+export function requireCreatePersonalType(value: unknown): 'PERSONAL' {
+  const type = optionalAiProfileType(value) ?? 'PERSONAL';
+  if (type !== 'PERSONAL') {
+    throw Errors.validation(
+      'type must be PERSONAL. GENERIC_MODEL profiles are seeded (WARDROBE-45).',
+    );
+  }
+  return 'PERSONAL';
+}
+
+export const MAX_AI_PROFILE_REFERENCE_IMAGES = 10;
+
+/**
+ * Optional on create (WARDROBE-43). WARDROBE-44 will attach uploads.
+ * Each key must belong to the authenticated user.
+ */
+export function optionalReferenceImages(
+  value: unknown,
+  userId: string,
+): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw Errors.validation('referenceImages must be an array of strings.');
+  }
+  if (value.length > MAX_AI_PROFILE_REFERENCE_IMAGES) {
+    throw Errors.validation(
+      `referenceImages must contain ${MAX_AI_PROFILE_REFERENCE_IMAGES} items or fewer.`,
+    );
+  }
+
+  return value.map((entry, index) =>
+    requireOwnedImageKey(entry, userId, `referenceImages[${index}]`),
+  );
 }
 
 export function optionalInteger(
