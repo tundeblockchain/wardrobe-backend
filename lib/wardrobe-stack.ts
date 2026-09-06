@@ -395,6 +395,9 @@ export class WardrobeStack extends cdk.Stack {
     mediaBucket.grantRead(processingFn);
     mediaBucket.grantPut(processingFn);
     backgroundRemovalSecret.grantRead(processingFn);
+    // Presigned GET for ClothingItem.originalImageUrl / processedImageUrl
+    // (WARDROBE-54). Same helper and TTL as outfit render.imageUrl.
+    mediaBucket.grantRead(itemsFn);
     processingQueue.grantSendMessages(itemsFn);
     processingQueue.grantConsumeMessages(processingFn);
     // Try-on: outfits enqueue RENDER_OUTFIT; worker consumes + reads Gemini secret.

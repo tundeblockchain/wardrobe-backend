@@ -401,6 +401,38 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(secrets).not.toContain('secretsmanager:*');
   });
 
+  test('ItemsFn can presign GetObject for clothing-item image URLs (WARDROBE-54)', () => {
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+            Effect?: string;
+          }>;
+        };
+      };
+    };
+
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+
+    const s3 = policies
+      .filter((policy) => JSON.stringify(policy).includes('ItemsFn'))
+      .flatMap((policy) =>
+        policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+          const actions = statement.Action;
+          const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+          return list.filter((action) => action.startsWith('s3:'));
+        }),
+      );
+
+    expect(s3.some((action) => action.startsWith('s3:Get'))).toBe(true);
+    expect(s3).not.toContain('s3:DeleteObject');
+    expect(s3).not.toContain('s3:PutObject');
+    expect(s3).not.toContain('s3:*');
+  });
+
   test('deploys an idempotent GENERIC_MODEL catalog seed (WARDROBE-45)', () => {
     template.hasOutput('GenericModelCatalogIds', {
       Description: Match.stringLikeRegexp('GENERIC_MODEL'),

@@ -3,6 +3,7 @@ import { ClothingItem, DynamoItem } from '../../src/shared/types';
 
 const mockSend = jest.fn();
 const mockSqsSend = jest.fn();
+const mockGetSignedUrl = jest.fn();
 
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({})),
@@ -42,6 +43,21 @@ jest.mock('@aws-sdk/client-sqs', () => ({
   })),
 }));
 
+jest.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
+}));
+
+jest.mock('@aws-sdk/client-s3', () => ({
+  S3Client: jest.fn(() => ({})),
+  GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'GetObject',
+    input,
+  })),
+  PutObjectCommand: jest.fn(),
+  ListObjectsV2Command: jest.fn(),
+  DeleteObjectsCommand: jest.fn(),
+}));
+
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { handler } from '../../src/functions/items/handler';
 
@@ -51,6 +67,9 @@ const OTHER_ID = 'firebase-uid-other';
 const WARDROBE_ID = 'wd_abc123xyz0';
 const ITEM_ID = 'item_xyz123abcd';
 const OWNER_IMAGE_KEY = `users/${OWNER_ID}/uploads/photo.jpg`;
+const OWNER_PROCESSED_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/processed.png`;
+const ORIGINAL_IMAGE_URL = 'https://signed.example/original.jpg';
+const PROCESSED_IMAGE_URL = 'https://signed.example/processed.png';
 
 interface Command {
   _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
@@ -88,6 +107,7 @@ function itemDto(overrides: Partial<ClothingItem> = {}): ClothingItem {
     colours: ['BLACK'],
     brand: 'Nike',
     image: { originalKey: OWNER_IMAGE_KEY },
+    originalImageUrl: ORIGINAL_IMAGE_URL,
     processingStatus: 'READY',
     createdAt: '2026-09-03T18:45:00.000Z',
     updatedAt: '2026-09-03T18:45:00.000Z',
@@ -242,17 +262,27 @@ function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
 const PROCESSING_QUEUE_URL =
   'https://sqs.eu-west-1.amazonaws.com/123456789012/wardrobe-item-processing-test';
 
-describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
+describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
     process.env.PROCESSING_QUEUE_URL = PROCESSING_QUEUE_URL;
+    process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
     mockSqsSend.mockResolvedValue({ MessageId: 'msg-1' });
+    mockGetSignedUrl.mockImplementation(
+      async (_client: unknown, command: { input?: { Key?: string } }) => {
+        const key = command.input?.Key ?? '';
+        return key.includes('processed')
+          ? PROCESSED_IMAGE_URL
+          : ORIGINAL_IMAGE_URL;
+      },
+    );
   });
 
   afterEach(() => {
     delete process.env.TABLE_NAME;
     delete process.env.PROCESSING_QUEUE_URL;
+    delete process.env.MEDIA_BUCKET_NAME;
   });
 
   describe('POST /wardrobes/{wardrobeId}/items', () => {
@@ -279,6 +309,7 @@ describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
         colours: ['BLACK'],
         brand: 'Nike',
         image: { originalKey: OWNER_IMAGE_KEY },
+        originalImageUrl: ORIGINAL_IMAGE_URL,
         processingStatus: 'PENDING',
         createdAt: expect.stringMatching(ISO8601),
         updatedAt: expect.stringMatching(ISO8601),
@@ -309,6 +340,8 @@ describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
         }),
       );
       expect(put.input.Item).not.toHaveProperty('processedKey');
+      expect(put.input.Item).not.toHaveProperty('originalImageUrl');
+      expect(put.input.Item).not.toHaveProperty('processedImageUrl');
     });
 
     it('enqueues PROCESS_WARDROBE_ITEM after writing Dynamo', async () => {
@@ -492,6 +525,12 @@ describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
 
       expect(result.statusCode).toBe(200);
       expect(bodyOf(result)).toEqual({ items: [itemDto()] });
+      expect((bodyOf(result) as { items: ClothingItem[] }).items[0]).toEqual(
+        expect.objectContaining({
+          originalImageUrl: ORIGINAL_IMAGE_URL,
+          image: { originalKey: OWNER_IMAGE_KEY },
+        }),
+      );
 
       const query = mockSend.mock.calls.find(
         (call) => (call[0] as Command)._op === 'Query',
@@ -500,6 +539,53 @@ describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
         ':pk': `WARDROBE#${WARDROBE_ID}`,
         ':sk': 'ITEM#',
       });
+    });
+
+    it('keeps listing other items when one presign fails', async () => {
+      const processed = dynamoItem(OWNER_ID, {
+        itemId: 'item_ready00001',
+        SK: 'ITEM#item_ready00001',
+        processedKey: `users/${OWNER_ID}/items/item_ready00001/processed.png`,
+      });
+      mockGetSignedUrl.mockImplementation(
+        async (_client: unknown, command: { input?: { Key?: string } }) => {
+          const key = command.input?.Key ?? '';
+          if (key === OWNER_IMAGE_KEY) {
+            throw new Error('presign unavailable');
+          }
+          return key.includes('processed')
+            ? PROCESSED_IMAGE_URL
+            : ORIGINAL_IMAGE_URL;
+        },
+      );
+
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [dynamoItem(), processed] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as { items: ClothingItem[] };
+      expect(body.items).toHaveLength(2);
+      const listedWithoutUrl = itemDto();
+      delete listedWithoutUrl.originalImageUrl;
+      expect(body.items[0]).toEqual(listedWithoutUrl);
+      expect(body.items[0]).not.toHaveProperty('originalImageUrl');
+      const readyWithoutOriginalUrl = itemDto({
+        itemId: 'item_ready00001',
+        image: {
+          originalKey: OWNER_IMAGE_KEY,
+          processedKey: `users/${OWNER_ID}/items/item_ready00001/processed.png`,
+        },
+        processedImageUrl: PROCESSED_IMAGE_URL,
+      });
+      delete readyWithoutOriginalUrl.originalImageUrl;
+      expect(body.items[1]).toEqual(readyWithoutOriginalUrl);
+      expect(body.items[1]).not.toHaveProperty('originalImageUrl');
     });
 
     it('returns an empty items array when the wardrobe has none', async () => {
@@ -772,7 +858,7 @@ describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
           return {
             Item: dynamoItem(OWNER_ID, {
-              processedKey: 'users/firebase-uid-owner/items/item_xyz123abcd/processed.png',
+              processedKey: OWNER_PROCESSED_KEY,
             }),
           };
         }
@@ -788,11 +874,67 @@ describe('items handler (WARDROBE-11 / WARDROBE-16)', () => {
         itemDto({
           image: {
             originalKey: OWNER_IMAGE_KEY,
-            processedKey:
-              'users/firebase-uid-owner/items/item_xyz123abcd/processed.png',
+            processedKey: OWNER_PROCESSED_KEY,
           },
+          processedImageUrl: PROCESSED_IMAGE_URL,
         }),
       );
+    });
+
+    it('includes originalImageUrl while PROCESSING and both URLs when processed', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return {
+            Item: dynamoItem(OWNER_ID, { processingStatus: 'PROCESSING' }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const processing = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID })),
+      );
+
+      expect(processing.statusCode).toBe(200);
+      expect(bodyOf(processing)).toEqual(
+        itemDto({
+          processingStatus: 'PROCESSING',
+          originalImageUrl: ORIGINAL_IMAGE_URL,
+        }),
+      );
+      expect(bodyOf(processing)).not.toHaveProperty('processedImageUrl');
+    });
+
+    it('omits image URLs and still returns 200 when presign fails', async () => {
+      mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return {
+            Item: dynamoItem(OWNER_ID, { processedKey: OWNER_PROCESSED_KEY }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as ClothingItem;
+      expect(body.image).toEqual({
+        originalKey: OWNER_IMAGE_KEY,
+        processedKey: OWNER_PROCESSED_KEY,
+      });
+      expect(body).not.toHaveProperty('originalImageUrl');
+      expect(body).not.toHaveProperty('processedImageUrl');
+      expect(body.itemId).toBe(ITEM_ID);
     });
 
     it('returns 404 ITEM_NOT_FOUND when the item is missing', async () => {
