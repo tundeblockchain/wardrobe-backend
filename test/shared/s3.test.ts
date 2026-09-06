@@ -11,6 +11,14 @@ jest.mock('@aws-sdk/client-s3', () => ({
     _op: 'GetObject',
     input,
   })),
+  ListObjectsV2Command: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'ListObjectsV2',
+    input,
+  })),
+  DeleteObjectsCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'DeleteObjects',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
@@ -22,12 +30,14 @@ import {
   assertUploadContentLength,
   bucketName,
   createPresignedPutUrl,
+  deleteObjectsUnderUserPrefix,
   extensionForContentType,
   getObjectBytes,
   MAX_UPLOAD_BYTES,
   PRESIGNED_URL_EXPIRES_IN,
   processedImageObjectKey,
   putObjectBytes,
+  userMediaPrefix,
 } from '../../src/shared/s3';
 
 describe('s3 helpers (WARDROBE-8)', () => {
@@ -156,6 +166,104 @@ describe('s3 helpers (WARDROBE-8)', () => {
       expect(processedImageObjectKey('uid-1', 'item_abc')).toBe(
         'users/uid-1/items/item_abc/processed.png',
       );
+    });
+  });
+
+  describe('userMediaPrefix', () => {
+    it('returns users/{uid}/', () => {
+      expect(userMediaPrefix('firebase-uid-1')).toBe('users/firebase-uid-1/');
+    });
+
+    it('rejects path-like user ids so a wipe cannot escape the prefix', () => {
+      expect(() => userMediaPrefix('../other')).toThrow(AppError);
+      expect(() => userMediaPrefix('uid/../other')).toThrow(AppError);
+      expect(() => userMediaPrefix('uid/extra')).toThrow(AppError);
+    });
+  });
+
+  describe('deleteObjectsUnderUserPrefix', () => {
+    it('lists and deletes only keys under users/{uid}/', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Contents: [
+            { Key: 'users/uid-1/uploads/a.jpg' },
+            { Key: 'users/uid-1/items/item_1/processed.png' },
+            { Key: 'users/other/uploads/leak.jpg' },
+          ],
+          IsTruncated: false,
+        })
+        .mockResolvedValueOnce({
+          Deleted: [
+            { Key: 'users/uid-1/uploads/a.jpg' },
+            { Key: 'users/uid-1/items/item_1/processed.png' },
+          ],
+        });
+
+      await expect(deleteObjectsUnderUserPrefix('uid-1')).resolves.toEqual({
+        deleted: 2,
+        failed: 0,
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'ListObjectsV2',
+          input: expect.objectContaining({
+            Bucket: 'wardrobe-media-test',
+            Prefix: 'users/uid-1/',
+          }),
+        }),
+      );
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'DeleteObjects',
+          input: {
+            Bucket: 'wardrobe-media-test',
+            Delete: {
+              Objects: [
+                { Key: 'users/uid-1/uploads/a.jpg' },
+                { Key: 'users/uid-1/items/item_1/processed.png' },
+              ],
+              Quiet: false,
+            },
+          },
+        }),
+      );
+    });
+
+    it('counts individual object errors and continues', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Contents: [{ Key: 'users/uid-1/uploads/a.jpg' }],
+          IsTruncated: false,
+        })
+        .mockResolvedValueOnce({
+          Deleted: [],
+          Errors: [{ Key: 'users/uid-1/uploads/a.jpg', Code: 'AccessDenied' }],
+        });
+
+      await expect(deleteObjectsUnderUserPrefix('uid-1')).resolves.toEqual({
+        deleted: 0,
+        failed: 1,
+      });
+    });
+
+    it('does not throw when listing fails', async () => {
+      mockSend.mockRejectedValueOnce(new Error('S3 unavailable'));
+
+      await expect(deleteObjectsUnderUserPrefix('uid-1')).resolves.toEqual({
+        deleted: 0,
+        failed: 1,
+      });
+    });
+
+    it('returns zeros when the prefix is already empty', async () => {
+      mockSend.mockResolvedValueOnce({ Contents: [], IsTruncated: false });
+
+      await expect(deleteObjectsUnderUserPrefix('uid-1')).resolves.toEqual({
+        deleted: 0,
+        failed: 0,
+      });
+      expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });
 

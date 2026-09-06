@@ -57,18 +57,29 @@ export async function queryByPk<T extends DynamoItem>(
   pk: string,
   skPrefix?: string,
 ): Promise<T[]> {
-  const result = await client.send(
-    new QueryCommand({
-      TableName: tableName(),
-      KeyConditionExpression: skPrefix
-        ? 'PK = :pk AND begins_with(SK, :sk)'
-        : 'PK = :pk',
-      ExpressionAttributeValues: skPrefix
-        ? { ':pk': pk, ':sk': skPrefix }
-        : { ':pk': pk },
-    }),
-  );
-  return (result.Items ?? []) as T[];
+  const items: T[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await client.send(
+      new QueryCommand({
+        TableName: tableName(),
+        KeyConditionExpression: skPrefix
+          ? 'PK = :pk AND begins_with(SK, :sk)'
+          : 'PK = :pk',
+        ExpressionAttributeValues: skPrefix
+          ? { ':pk': pk, ':sk': skPrefix }
+          : { ':pk': pk },
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    );
+    items.push(...((result.Items ?? []) as T[]));
+    exclusiveStartKey = result.LastEvaluatedKey as
+      | Record<string, unknown>
+      | undefined;
+  } while (exclusiveStartKey);
+
+  return items;
 }
 
 export async function deleteItem(pk: string, sk: string): Promise<void> {
@@ -78,6 +89,14 @@ export async function deleteItem(pk: string, sk: string): Promise<void> {
       Key: { PK: pk, SK: sk },
     }),
   );
+}
+
+export async function deleteMany(
+  pairs: Array<{ pk: string; sk: string }>,
+): Promise<void> {
+  for (const { pk, sk } of pairs) {
+    await deleteItem(pk, sk);
+  }
 }
 
 export async function updateAttributes(

@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, wardrobes, items, outfits, recommendations, uploads, processing |
+| Lambda (domain handlers) | Health, me (clear content / delete account), wardrobes, items, outfits, recommendations, uploads, processing |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing pipeline |
@@ -19,6 +19,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 Working in this first cut:
 
 - `GET /health` (no auth)
+- `DELETE /me/content` and `DELETE /me` (clear content / delete account data)
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
@@ -161,6 +162,37 @@ curl -H "Authorization: Bearer $TOKEN" \
 ```http
 GET /health
 ```
+
+### Account (clear content / delete)
+
+Identity comes from the Firebase authorizer (`getUserId`). Body or query `userId` is ignored.
+
+```http
+DELETE /me/content
+DELETE /me
+```
+
+Both wipe the caller's wardrobes, items, and outfits in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads and processed images). Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`.
+
+| Endpoint | Keeps Firebase Auth user | Flutter next step |
+| --- | --- | --- |
+| `DELETE /me/content` | Yes (`keepAccount: true`) | Session may stay; user starts with empty wardrobes |
+| `DELETE /me` | Yes — this backend does **not** call Firebase Admin | Client deletes the Firebase Auth user after `200` |
+
+Success body (`200`):
+
+```json
+{
+  "keepAccount": true,
+  "deletedWardrobes": 1,
+  "deletedItems": 2,
+  "deletedOutfits": 1,
+  "deletedS3Objects": 3,
+  "s3Failures": 0
+}
+```
+
+`keepAccount` is `false` on `DELETE /me` (AWS data is gone; Firebase Auth remains until the client deletes it). Missing or invalid tokens return `401` `UNAUTHENTICATED`.
 
 ### Wardrobes
 
@@ -399,6 +431,7 @@ cdk.json.example
 scripts/ensure-cdk-json.js
 src/functions/
   health/
+  me/                  owner-only clear-content + delete-account (WARDROBE-36)
   wardrobes/
   items/
   outfits/

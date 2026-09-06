@@ -169,6 +169,21 @@ export interface OutfitRecommendationsResponse {
   recommendations: OutfitRecommendation[];
 }
 
+/**
+ * Result of DELETE /me/content or DELETE /me.
+ *
+ * Firebase Auth is never deleted here. Flutter may keep the session after a
+ * content wipe, or delete the Auth user client-side after DELETE /me.
+ */
+export interface UserWipeResult {
+  keepAccount: boolean;
+  deletedWardrobes: number;
+  deletedItems: number;
+  deletedOutfits: number;
+  deletedS3Objects: number;
+  s3Failures: number;
+}
+
 export type EntityType = 'PROFILE' | 'WARDROBE' | 'ITEM' | 'OUTFIT';
 
 export interface DynamoItem {
