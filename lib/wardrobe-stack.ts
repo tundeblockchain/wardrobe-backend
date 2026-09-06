@@ -14,6 +14,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import { addSupportMail } from './support-mail';
 
 export interface WardrobeStackProps extends cdk.StackProps {
   stage?: string;
@@ -451,6 +452,15 @@ export class WardrobeStack extends cdk.Stack {
       methods: [apigwv2.HttpMethod.POST],
       integration: uploadsIntegration,
       authorizer: firebaseAuthorizer,
+    });
+
+    // Isolated WARDROBE-38 module — see lib/support-mail.ts.
+    addSupportMail(this, {
+      stage,
+      httpApi,
+      authorizer: firebaseAuthorizer,
+      commonLambdaProps,
+      removalPolicy,
     });
 
     new cdk.CfnOutput(this, 'ApiUrl', {
