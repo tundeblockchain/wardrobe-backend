@@ -126,6 +126,7 @@ export type AiProfileStatus = (typeof AI_PROFILE_STATUSES)[number];
  * Flutter `AiProfile` DTO. Never expose Dynamo `PK` / `SK` / `GSI1*`.
  *
  * `referenceImages` may be empty on create; WARDROBE-44 attaches uploads.
+ * `label` is set on seeded GENERIC_MODEL rows (WARDROBE-45) for the picker.
  */
 export interface AiProfile {
   aiProfileId: string;
@@ -134,6 +135,7 @@ export interface AiProfile {
   status: AiProfileStatus;
   createdAt: string;
   updatedAt: string;
+  label?: string;
 }
 
 /** Flutter `AiProfileListResponse` for list / models picker. */

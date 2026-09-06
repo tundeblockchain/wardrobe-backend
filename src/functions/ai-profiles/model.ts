@@ -16,6 +16,11 @@ export function toAiProfile(item: DynamoItem): AiProfile {
     ? item.referenceImages.map((entry) => String(entry))
     : [];
 
+  const label =
+    typeof item.label === 'string' && item.label.trim()
+      ? item.label.trim()
+      : undefined;
+
   return {
     aiProfileId: String(item.aiProfileId),
     type: item.type === 'GENERIC_MODEL' ? 'GENERIC_MODEL' : 'PERSONAL',
@@ -23,6 +28,7 @@ export function toAiProfile(item: DynamoItem): AiProfile {
     status: normalizeStatus(item.status),
     createdAt: String(item.createdAt),
     updatedAt: String(item.updatedAt),
+    ...(label ? { label } : {}),
   };
 }
 
@@ -101,9 +107,11 @@ export function buildGenericModelProfile(input: {
   userId?: string;
   createdAt?: string;
   updatedAt?: string;
+  label?: string;
 } = {}): DynamoItem {
   const aiProfileId = input.aiProfileId ?? newAiProfileId();
   const timestamp = input.createdAt ?? nowIso();
+  const label = input.label?.trim();
 
   return {
     PK: keys.genericModelPk(),
@@ -118,5 +126,6 @@ export function buildGenericModelProfile(input: {
     status: input.status ?? 'READY',
     createdAt: timestamp,
     updatedAt: input.updatedAt ?? timestamp,
+    ...(label ? { label } : {}),
   };
 }

@@ -12,8 +12,13 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import {
+  GENERIC_MODEL_CATALOG_VERSION,
+  genericModelIds,
+} from '../src/functions/ai-profiles/catalog';
 import { addSupportMail } from './support-mail';
 
 export interface WardrobeStackProps extends cdk.StackProps {
@@ -54,7 +59,8 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // WARDROBE-43: list GENERIC_MODEL profiles for the try-on picker.
-    // PERSONAL rows omit GSI1 attributes (sparse). WARDROBE-45 seeds catalog + GSI1.
+    // PERSONAL rows omit GSI1 attributes (sparse). WARDROBE-45 seeds catalog + GSI1
+    // at deploy via GenericModelSeedFn.
     table.addGlobalSecondaryIndex({
       indexName: 'GSI1',
       partitionKey: { name: 'GSI1PK', type: dynamodb.AttributeType.STRING },
@@ -249,6 +255,36 @@ export class WardrobeStack extends cdk.Stack {
     // WARDROBE-47 will add wardrobe/{stage}/gemini-try-on and grant it to the
     // try-on worker — not this Lambda. PROCESS_AI_PROFILE is not enqueued here.
     const aiProfilesFn = this.lambda('AiProfilesFn', 'ai-profiles', commonLambdaProps);
+
+    // WARDROBE-45: deploy-time seed of READY GENERIC_MODEL catalog rows.
+    // Delete is a no-op so retained tables keep the picker IDs. Re-run the
+    // CLI (`npm run seed:generic-models`) after changing images only.
+    const genericModelSeedLogGroup = new logs.LogGroup(this, 'GenericModelSeedFnLogs', {
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const genericModelSeedFn = new NodejsFunction(this, 'GenericModelSeedFn', {
+      ...commonLambdaProps,
+      timeout: cdk.Duration.seconds(30),
+      entry: path.join(__dirname, '../src/functions/ai-profiles/seed-handler.ts'),
+      handler: 'handler',
+      logGroup: genericModelSeedLogGroup,
+    });
+    table.grantReadWriteData(genericModelSeedFn);
+
+    const genericModelSeedProvider = new cr.Provider(this, 'GenericModelSeedProvider', {
+      onEventHandler: genericModelSeedFn,
+      logRetention: logs.RetentionDays.ONE_WEEK,
+    });
+
+    new cdk.CustomResource(this, 'GenericModelCatalogSeed', {
+      serviceToken: genericModelSeedProvider.serviceToken,
+      properties: {
+        CatalogVersion: GENERIC_MODEL_CATALOG_VERSION,
+        TableName: table.tableName,
+      },
+    });
+
     const processingFn = this.lambda('ProcessingFn', 'processing', {
       ...commonLambdaProps,
       timeout: processingLambdaTimeout,
@@ -591,6 +627,12 @@ export class WardrobeStack extends cdk.Stack {
       value: aiRecommenderSecret.secretName,
       description:
         'Secrets Manager secret for OpenAI outfit-recommender credentials (placeholder until replaced)',
+    });
+
+    new cdk.CfnOutput(this, 'GenericModelCatalogIds', {
+      value: genericModelIds().join(','),
+      description:
+        'Stable GENERIC_MODEL aiProfileIds seeded for GET /ai-profiles/models (WARDROBE-45)',
     });
   }
 
