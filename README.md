@@ -425,6 +425,7 @@ API responses never expose `PK` / `SK`.
 ```text
 bin/app.ts
 lib/wardrobe-stack.ts
+lib/support-mail.ts    isolated WARDROBE-38 Resend wiring (rebase-friendly)
 lib/wardrobe-pipeline-stack.ts
 lib/wardrobe-stage.ts
 cdk.json.example
@@ -438,6 +439,8 @@ src/functions/
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
   processing/          handler, Gemini helpers, bg-remove, classify, colour-detect, pipeline, retry/poison errors
+  support/             WARDROBE-38 outbound contact/bug + Resend client + Svix verify
+  support-webhook/     public inbound webhook entry (re-exports support/webhook)
 src/shared/
   auth.ts
   dynamodb.ts
@@ -505,3 +508,149 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 1. Phase-2 smart filtering (WARDROBE-21) and outfit recommendations (`GET /wardrobes/{wardrobeId}/recommendations`) are live
 2. Pagination, download pre-signed URLs, and environment-specific alarms
+
+## Support mail (WARDROBE-38)
+
+Flutter **Contact us** / **Report a bug** forms POST through this API. Resend sends from a custom-domain address to Tunde’s mailbox. Inbound mail on that domain is webhook-forwarded to the same mailbox.
+
+```text
+Flutter (Firebase ID token)
+   POST /support/contact  or  POST /support/bug
+        │
+        v
+Support Lambda
+        │  Secrets Manager
+        │   wardrobe/{stage}/resend
+        │   wardrobe/{stage}/support-mail
+        v
+Resend Send API
+   from SUPPORT_FROM_EMAIL  →  SUPPORT_FORWARD_TO
+
+Inbound mail @ custom domain
+        │
+        v
+Resend  →  POST /webhooks/resend  (Svix-signed, no Firebase auth)
+        │
+        v
+Support webhook Lambda
+        │  verify svix-id / svix-timestamp / svix-signature
+        │  GET /emails/receiving/{email_id}
+        v
+Resend Send API  (same from/to; Idempotency-Key inbound:{email_id})
+```
+
+Flutter UI is WARDROBE-34 (out of scope here). DNS is configured in the Resend dashboard by Tunde — this repo only documents the records and webhook URL.
+
+### Flutter endpoint contracts
+
+Both routes require the Firebase authorizer:
+
+```http
+Authorization: Bearer <firebase-id-token>
+Content-Type: application/json
+```
+
+Identity comes from the token (`getUserId`). Body `userId` is ignored.
+
+```http
+POST /support/contact
+POST /support/bug
+```
+
+```json
+{
+  "subject": "Can't upload a photo",
+  "body": "The camera sheet hangs after I pick a photo.",
+  "replyTo": "user@example.com",
+  "meta": {
+    "appVersion": "1.0.0",
+    "platform": "ios",
+    "deviceModel": "iPhone 15",
+    "osVersion": "18.1"
+  }
+}
+```
+
+- `subject` — required, trimmed, 1–200 characters (newlines stripped)
+- `body` — required, trimmed, 1–10000 characters
+- `replyTo` — optional email; set as Resend `reply_to` when present
+- `meta` — optional string map (max 20 keys) included in the mail footer
+
+`202`:
+
+```json
+{ "status": "sent", "kind": "contact" }
+```
+
+`kind` is `contact` or `bug`. Resend’s message id is included as `id` when the Send API returns one.
+
+Validation failures are `400 VALIDATION_ERROR`. Missing Firebase identity is `401 UNAUTHENTICATED`. Resend / secret failures are `500 INTERNAL_ERROR`.
+
+Public inbound webhook (configure this URL in the Resend dashboard):
+
+```http
+POST /webhooks/resend
+```
+
+Resend signs the **raw** body with Standard Webhooks / Svix. The Lambda reads:
+
+| Header | Mapped verify field |
+| --- | --- |
+| `svix-id` | `id` |
+| `svix-timestamp` | `timestamp` |
+| `svix-signature` | `signature` (`v1,<base64>`, space-separated during rotation) |
+
+HMAC-SHA256 over `${svix-id}.${svix-timestamp}.${rawBody}` using the `whsec_…` secret. Timestamps older than 5 minutes are rejected. Invalid signatures return `403 UNAUTHORIZED` (no Resend send). Other event types return `200 { "status": "ignored", "type": "…" }`. `email.received` fetches the body from `GET https://api.resend.com/emails/receiving/{email_id}` and forwards it; if that fetch fails, a metadata notification is still sent so mail is not silently dropped.
+
+### Secret IDs and env wiring
+
+Never commit API keys. CDK creates placeholders; replace them after deploy.
+
+| Secret ID | JSON (or raw) | Runtime env on both support Lambdas |
+| --- | --- | --- |
+| `wardrobe/{stage}/resend` | `{ "apiKey", "webhookSecret" }` or a raw Resend API key | `RESEND_SECRET_ARN` |
+| `wardrobe/{stage}/support-mail` | `{ "fromEmail", "forwardTo" }` | `SUPPORT_MAIL_SECRET_ARN` |
+
+Conceptual keys (loaded from those secrets; env overrides win — useful in unit tests only):
+
+| Key | Meaning |
+| --- | --- |
+| `RESEND_API_KEY` | Resend Send / Receiving API bearer token |
+| `RESEND_WEBHOOK_SECRET` | Webhook signing secret (`whsec_…`) from the Resend webhook page |
+| `SUPPORT_FROM_EMAIL` | Custom-domain From, e.g. `Wardrobe Support <support@your-domain>` |
+| `SUPPORT_FORWARD_TO` | Tunde’s personal mailbox |
+
+Lambdas never receive raw keys as environment variables in the deployed stack.
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/resend \
+  --secret-string '{"apiKey":"re_your_key","webhookSecret":"whsec_your_signing_secret"}'
+```
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/support-mail \
+  --secret-string '{"fromEmail":"Wardrobe Support <support@your-domain>","forwardTo":"tunde@your-mailbox"}'
+```
+
+A raw API key also works for `wardrobe/{stage}/resend` if `webhookSecret` / addresses are supplied in the other secret or as test env vars. All four fields may live in one JSON blob on either secret.
+
+Stack outputs: `ResendSecretName`, `SupportMailSecretName`, `SupportWebhookUrl`.
+
+### Domain DNS (Tunde — do not configure from this PR)
+
+In the Resend dashboard, add the custom sending + receiving domain and copy the DNS records Resend shows. Typical set:
+
+| Record | Purpose |
+| --- | --- |
+| MX | Inbound receiving on the custom domain |
+| TXT (SPF) | Authorize Resend to send for the domain |
+| CNAME / TXT (DKIM) | Message signing (Resend publishes the exact names) |
+| Optional DMARC TXT | Policy for unauthenticated mail |
+
+Enable **receiving** on that domain. Create a webhook for `email.received` pointing at `{ApiUrl}/webhooks/resend` (the `SupportWebhookUrl` output). Paste the webhook’s `whsec_…` signing secret into `wardrobe/{stage}/resend`.
+
+Do not put production Resend keys in git, `cdk.json`, or Lambda env literals.
+
+Unit tests inject a mock Resend HTTP client and sign Svix fixtures locally — no live sends in CI.
