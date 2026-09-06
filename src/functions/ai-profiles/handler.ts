@@ -11,6 +11,7 @@ import {
   putItem,
   queryByGsi1,
   queryByPk,
+  updateAttributes,
 } from '../../shared/dynamodb';
 import { Errors } from '../../shared/errors';
 import {
@@ -18,17 +19,36 @@ import {
   errorResponse,
   noContent,
   ok,
+  parseJsonBody,
   parseOptionalJsonBody,
   routeKey,
 } from '../../shared/http';
-import { newAiProfileId, nowIso } from '../../shared/ids';
+import { newAiProfileId, newUploadId, nowIso } from '../../shared/ids';
+import {
+  aiProfileReferencePrefix,
+  assertUploadContentLength,
+  createPresignedPutUrl,
+  extensionForContentType,
+  normalizeContentType,
+} from '../../shared/s3';
 import { AiProfile, AiProfileList } from '../../shared/types';
 import {
   optionalAiProfileType,
+  optionalInteger,
+  optionalNonEmptyString,
   optionalReferenceImages,
+  requireAttachReferenceImageKeys,
   requireCreatePersonalType,
+  requireNonEmptyString,
 } from '../../shared/validation';
-import { buildPersonalAiProfile, toAiProfile } from './model';
+import {
+  statusAfterReferenceImagesAttached,
+} from './hooks';
+import {
+  buildPersonalAiProfile,
+  mergeReferenceImages,
+  toAiProfile,
+} from './model';
 
 interface CreateAiProfileBody {
   type?: unknown;
@@ -37,8 +57,21 @@ interface CreateAiProfileBody {
   status?: unknown;
 }
 
+interface CreateReferenceUploadBody {
+  contentType?: unknown;
+  purpose?: unknown;
+  contentLength?: unknown;
+  userId?: unknown;
+}
+
+interface AttachReferenceImagesBody {
+  objectKey?: unknown;
+  objectKeys?: unknown;
+  userId?: unknown;
+}
+
 /**
- * Authenticated AI Profile CRUD (WARDROBE-43).
+ * Authenticated AI Profile CRUD + PERSONAL reference-image upload (WARDROBE-43/44).
  *
  * Identity comes from the Firebase authorizer (`getUserId`). Body / query /
  * path `userId` is ignored.
@@ -56,6 +89,34 @@ export async function handler(
         throw Errors.validation(`Unsupported method: ${method}`);
       }
       return ok(await listGenericModels());
+    }
+
+    if (isUploadsRoute(event)) {
+      if (method !== 'POST') {
+        throw Errors.validation(`Unsupported method: ${method}`);
+      }
+      if (!aiProfileId) {
+        throw Errors.validation('aiProfileId is required.');
+      }
+      return created(
+        await createReferenceImageUpload(
+          userId,
+          aiProfileId,
+          parseJsonBody(event),
+        ),
+      );
+    }
+
+    if (isReferenceImagesRoute(event)) {
+      if (method !== 'POST') {
+        throw Errors.validation(`Unsupported method: ${method}`);
+      }
+      if (!aiProfileId) {
+        throw Errors.validation('aiProfileId is required.');
+      }
+      return ok(
+        await attachReferenceImages(userId, aiProfileId, parseJsonBody(event)),
+      );
     }
 
     if (!aiProfileId) {
@@ -92,6 +153,26 @@ function isModelsRoute(event: APIGatewayProxyEventV2): boolean {
     key.includes('/ai-profiles/models') ||
     path === '/ai-profiles/models' ||
     path.endsWith('/ai-profiles/models')
+  );
+}
+
+function isUploadsRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return (
+    key.includes('/ai-profiles/{aiProfileId}/uploads') ||
+    (key.includes('/uploads') && key.includes('/ai-profiles/')) ||
+    /\/ai-profiles\/[^/]+\/uploads\/?$/.test(path)
+  );
+}
+
+function isReferenceImagesRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return (
+    key.includes('/ai-profiles/{aiProfileId}/reference-images') ||
+    (key.includes('/reference-images') && key.includes('/ai-profiles/')) ||
+    /\/ai-profiles\/[^/]+\/reference-images\/?$/.test(path)
   );
 }
 
@@ -147,7 +228,7 @@ async function createPersonalProfile(
     userId,
     aiProfileId: newAiProfileId(),
     referenceImages,
-    // Empty refs: nothing to process. WARDROBE-44 may flip to PENDING on upload.
+    // Empty refs: nothing to process. Attach (WARDROBE-44) keeps READY.
     status: 'READY',
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -172,4 +253,92 @@ async function deletePersonalProfile(
   }
 
   await deleteItem(keys.userPk(userId), keys.aiProfileSk(aiProfileId));
+}
+
+async function requireOwnedPersonalForMutation(
+  userId: string,
+  aiProfileId: string,
+  genericMessage: string,
+) {
+  try {
+    return await getOwnedPersonalAiProfile(userId, aiProfileId);
+  } catch (error) {
+    const generic = await findGenericAiProfile(aiProfileId);
+    if (generic) {
+      throw Errors.unauthorized(genericMessage);
+    }
+    throw error;
+  }
+}
+
+async function createReferenceImageUpload(
+  userId: string,
+  aiProfileId: string,
+  body: CreateReferenceUploadBody,
+) {
+  await requireOwnedPersonalForMutation(
+    userId,
+    aiProfileId,
+    'GENERIC_MODEL profiles do not accept reference image uploads.',
+  );
+
+  const contentType = normalizeContentType(
+    requireNonEmptyString(body.contentType, 'contentType', 64),
+  );
+  const purpose = optionalNonEmptyString(body.purpose, 'purpose', 64);
+  if (purpose !== undefined && purpose !== 'AI_PROFILE_REFERENCE') {
+    throw Errors.uploadInvalid('purpose must be AI_PROFILE_REFERENCE.');
+  }
+
+  const declaredLength = optionalInteger(body.contentLength, 'contentLength');
+  const contentLength =
+    declaredLength === undefined
+      ? undefined
+      : assertUploadContentLength(declaredLength);
+
+  const extension = extensionForContentType(contentType);
+  const objectKey = `${aiProfileReferencePrefix(userId, aiProfileId)}${newUploadId()}.${extension}`;
+  const { uploadUrl, expiresIn } = await createPresignedPutUrl({
+    objectKey,
+    contentType,
+    contentLength,
+  });
+
+  return {
+    uploadUrl,
+    objectKey,
+    expiresIn,
+  };
+}
+
+async function attachReferenceImages(
+  userId: string,
+  aiProfileId: string,
+  body: AttachReferenceImagesBody,
+): Promise<AiProfile> {
+  const profile = await requireOwnedPersonalForMutation(
+    userId,
+    aiProfileId,
+    'GENERIC_MODEL profiles do not accept reference image uploads.',
+  );
+
+  const incoming = requireAttachReferenceImageKeys(body, userId, aiProfileId);
+  const referenceImages = mergeReferenceImages(
+    profile.referenceImages,
+    incoming,
+  );
+  const status = statusAfterReferenceImagesAttached();
+  const updatedAt = nowIso();
+
+  const updated = await updateAttributes(
+    keys.userPk(userId),
+    keys.aiProfileSk(aiProfileId),
+    {
+      referenceImages,
+      status,
+      updatedAt,
+    },
+  );
+
+  return toAiProfile(updated);
 }

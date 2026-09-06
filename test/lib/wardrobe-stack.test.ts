@@ -385,6 +385,38 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(secrets).not.toContain('secretsmanager:*');
   });
 
+  test('AiProfilesFn can PutObject for PERSONAL reference-image presign', () => {
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+          }>;
+        };
+      };
+    };
+
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+
+    const s3 = policies
+      .filter((policy) => JSON.stringify(policy).includes('AiProfilesFn'))
+      .flatMap((policy) =>
+        policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+          const actions = statement.Action;
+          return Array.isArray(actions) ? actions : actions ? [actions] : [];
+        }),
+      )
+      .filter((action) => action.startsWith('s3:'));
+
+    expect(
+      s3.some((action) => action === 's3:PutObject' || action === 's3:PutObject*'),
+    ).toBe(true);
+    expect(s3).not.toContain('s3:DeleteObject');
+    expect(s3).not.toContain('s3:*');
+  });
+
   test('stack does not introduce EventBridge', () => {
     expect(template.findResources('AWS::Events::Rule')).toEqual({});
     expect(template.findResources('AWS::Events::EventBus')).toEqual({});
@@ -836,6 +868,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /ai-profiles/models',
       'GET /ai-profiles/{aiProfileId}',
       'DELETE /ai-profiles/{aiProfileId}',
+      'POST /ai-profiles/{aiProfileId}/uploads',
+      'POST /ai-profiles/{aiProfileId}/reference-images',
     ]) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');

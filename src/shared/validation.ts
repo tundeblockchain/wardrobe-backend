@@ -1,4 +1,5 @@
 import { Errors } from './errors';
+import { aiProfileReferencePrefix } from './s3';
 import {
   AI_PROFILE_TYPES,
   AiProfileType,
@@ -249,6 +250,90 @@ export function optionalReferenceImages(
   return value.map((entry, index) =>
     requireOwnedImageKey(entry, userId, `referenceImages[${index}]`),
   );
+}
+
+/**
+ * Confirmed reference keys (WARDROBE-44) must sit under this profile's prefix:
+ * `users/{uid}/ai-profiles/{aiProfileId}/…`
+ */
+export function requireOwnedAiProfileReferenceKey(
+  value: unknown,
+  userId: string,
+  aiProfileId: string,
+  field = 'objectKey',
+): string {
+  const imageKey = requireOwnedImageKey(value, userId, field);
+  const prefix = aiProfileReferencePrefix(userId, aiProfileId);
+  const remainder = imageKey.slice(prefix.length);
+
+  if (
+    !imageKey.startsWith(prefix) ||
+    !remainder ||
+    remainder.endsWith('/') ||
+    remainder.includes('/')
+  ) {
+    throw Errors.validation(
+      `${field} must be under users/{userId}/ai-profiles/{aiProfileId}/.`,
+    );
+  }
+
+  return imageKey;
+}
+
+export interface AttachReferenceImagesBody {
+  objectKey?: unknown;
+  objectKeys?: unknown;
+  userId?: unknown;
+}
+
+/**
+ * Accept `objectKey` and/or `objectKeys`. Body `userId` is ignored.
+ */
+export function requireAttachReferenceImageKeys(
+  body: AttachReferenceImagesBody,
+  userId: string,
+  aiProfileId: string,
+): string[] {
+  const raw: unknown[] = [];
+
+  if (body.objectKey !== undefined && body.objectKey !== null) {
+    raw.push(body.objectKey);
+  }
+
+  if (body.objectKeys !== undefined && body.objectKeys !== null) {
+    if (!Array.isArray(body.objectKeys)) {
+      throw Errors.validation('objectKeys must be an array of strings.');
+    }
+    raw.push(...body.objectKeys);
+  }
+
+  if (raw.length === 0) {
+    throw Errors.validation('objectKey or objectKeys is required.');
+  }
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+
+  raw.forEach((entry, index) => {
+    const key = requireOwnedAiProfileReferenceKey(
+      entry,
+      userId,
+      aiProfileId,
+      `objectKeys[${index}]`,
+    );
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(key);
+    }
+  });
+
+  if (unique.length > MAX_AI_PROFILE_REFERENCE_IMAGES) {
+    throw Errors.validation(
+      `referenceImages must contain ${MAX_AI_PROFILE_REFERENCE_IMAGES} items or fewer.`,
+    );
+  }
+
+  return unique;
 }
 
 export function optionalInteger(

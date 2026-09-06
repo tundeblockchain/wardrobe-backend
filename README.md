@@ -24,8 +24,8 @@ Working in this first cut:
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe)
 - Owner-only outfit recommendations (derived, never auto-saved)
-- `POST /uploads` (S3 pre-signed PUT URL)
-- AI Profile CRUD (`PERSONAL` / `GENERIC_MODEL`; no try-on inference)
+- `POST /uploads` (S3 pre-signed PUT URL for clothing items)
+- AI Profile CRUD plus PERSONAL reference-image presign/attach (no try-on inference)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
 ## Prerequisites
@@ -411,9 +411,9 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
-## AI profiles (WARDROBE-43)
+## AI profiles (WARDROBE-43 / WARDROBE-44)
 
-Phase-3 foundation. Separate from wardrobe CRUD. **No try-on inference** in this ticket — reference-image upload is WARDROBE-44, generic-model seeding is WARDROBE-45, outfit render is WARDROBE-47.
+Phase-3 foundation. Separate from wardrobe CRUD. **No try-on inference** — generic-model seeding is WARDROBE-45, outfit render is WARDROBE-47.
 
 Identity comes from the Firebase authorizer (`getUserId`). Body/query/path `userId` is ignored.
 
@@ -425,6 +425,8 @@ GET    /ai-profiles?type=GENERIC_MODEL
 GET    /ai-profiles/models
 GET    /ai-profiles/{aiProfileId}
 DELETE /ai-profiles/{aiProfileId}
+POST   /ai-profiles/{aiProfileId}/uploads
+POST   /ai-profiles/{aiProfileId}/reference-images
 ```
 
 | Route | Behaviour |
@@ -434,6 +436,8 @@ DELETE /ai-profiles/{aiProfileId}
 | `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile. |
 | `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). |
 | `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
+| `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. |
+| `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Attach confirmed `objectKey`(s) into `referenceImages[]`. |
 
 Create body (all fields optional):
 
@@ -445,7 +449,7 @@ Create body (all fields optional):
 ```
 
 - `type` — omit or `PERSONAL`. `GENERIC_MODEL` is rejected (`400`); those rows are seeded later (WARDROBE-45).
-- `referenceImages` — omit or `[]` on create. If sent, each key must be under `users/{uid}/`. Upload + attach is WARDROBE-44.
+- `referenceImages` — omit or `[]` on create. If sent, each key must be under `users/{uid}/`. Prefer the presign + attach flow below.
 - Body `userId` / `status` are ignored.
 
 Flutter `AiProfile` DTO (`201` / `200`) — never includes Dynamo `PK` / `SK` / `GSI1*` / `userId`:
@@ -478,17 +482,110 @@ List / models (`200`):
 }
 ```
 
-`type` is `PERSONAL` \| `GENERIC_MODEL`. `status` is `PENDING` \| `PROCESSING` \| `READY` \| `FAILED`. Create with empty refs uses `READY`; WARDROBE-44 may set `PENDING` after an upload.
+`type` is `PERSONAL` \| `GENERIC_MODEL`. `status` is `PENDING` \| `PROCESSING` \| `READY` \| `FAILED`.
 
-Missing or other-user personal profiles return `404 AI_PROFILE_NOT_FOUND`. Missing tokens return `401 UNAUTHENTICATED`. Delete of a generic model returns `403 UNAUTHORIZED`.
+Missing or other-user personal profiles return `404 AI_PROFILE_NOT_FOUND`. Missing tokens return `401 UNAUTHENTICATED`. Delete / upload / attach on a generic model returns `403 UNAUTHORIZED`.
+
+### Reference-image upload (WARDROBE-44) — Flutter contract
+
+Same pattern as clothing-item uploads (`POST /uploads`): the API never accepts image bytes. Flutter asks for a time-limited PUT URL, writes directly to the private media bucket, then confirms the key.
+
+```text
+POST /ai-profiles/{aiProfileId}/uploads
+        │
+        v
+Lambda (owner PERSONAL only)
+        │  S3 presigned PUT
+        v
+Flutter PUT image to uploadUrl
+        │
+        v
+POST /ai-profiles/{aiProfileId}/reference-images
+        │
+        v
+DynamoDB referenceImages[] + status READY
+```
+
+Presign request (`contentType` required; `contentLength` optional, 1–10485760):
+
+```http
+POST /ai-profiles/{aiProfileId}/uploads
+```
+
+```json
+{
+  "contentType": "image/jpeg",
+  "purpose": "AI_PROFILE_REFERENCE",
+  "contentLength": 2048
+}
+```
+
+`contentType` must be `image/jpeg`, `image/png`, `image/webp`, or `image/heic`. `purpose` may be omitted; when sent it must be `AI_PROFILE_REFERENCE`. Body `userId` is ignored. The object key is always `users/{tokenUid}/ai-profiles/{aiProfileId}/{id}.{ext}` — never a body `userId`.
+
+`201` `UploadTicket`:
+
+```json
+{
+  "uploadUrl": "https://...",
+  "objectKey": "users/{uid}/ai-profiles/{aiProfileId}/{id}.jpg",
+  "expiresIn": 900
+}
+```
+
+Flutter then `PUT`s the bytes to `uploadUrl` with the same `Content-Type` (and `Content-Length` when declared).
+
+Confirm / attach (`objectKey` and/or `objectKeys`; at least one required):
+
+```http
+POST /ai-profiles/{aiProfileId}/reference-images
+```
+
+```json
+{
+  "objectKey": "users/{uid}/ai-profiles/{aiProfileId}/{id}.jpg"
+}
+```
+
+or
+
+```json
+{
+  "objectKeys": [
+    "users/{uid}/ai-profiles/{aiProfileId}/{id}.jpg",
+    "users/{uid}/ai-profiles/{aiProfileId}/{id}.png"
+  ]
+}
+```
+
+Rules:
+
+- Owner `PERSONAL` only. Other-user personal → `404 AI_PROFILE_NOT_FOUND`. `GENERIC_MODEL` → `403 UNAUTHORIZED`.
+- Each key must be a file directly under `users/{tokenUid}/ai-profiles/{aiProfileId}/`. Cross-user keys, wardrobe-item upload keys, and nested paths are `400 VALIDATION_ERROR`.
+- Keys are appended (deduped, existing order kept). Combined list max is 10.
+- `200` returns the updated Flutter `AiProfile` DTO.
+
+`POST /uploads` stays clothing-item only (`purpose: WARDROBE_ITEM`). Do not send `AI_PROFILE_REFERENCE` there.
+
+### Status transition
+
+```text
+POST /ai-profiles (empty refs)     READY
+POST .../uploads                   no Dynamo write (status unchanged)
+POST .../reference-images          READY   ← this ticket (no worker)
+
+Future PROCESS_AI_PROFILE worker (not shipped):
+  attach could return PENDING
+  worker: PENDING → PROCESSING → READY | FAILED
+```
+
+This ticket does **not** enqueue `PROCESS_AI_PROFILE`. The clothing-item worker only accepts `PROCESS_WARDROBE_ITEM` and would drop any other job type as poison. The in-repo hook is `statusAfterReferenceImagesAttached()` (returns `READY`) plus `buildProcessAiProfileJob()`. A later worker ticket can flip attach to `PENDING` and enqueue that job.
 
 ### Later-ticket hooks
 
 | Ticket | Hook |
 | --- | --- |
-| WARDROBE-44 | Optional `referenceImages` on create (owned keys). Upload purpose still `WARDROBE_ITEM` only. Job type `PROCESS_AI_PROFILE`. |
 | WARDROBE-45 | `buildGenericModelProfile()` writes `PK=AIPROFILE#GENERIC_MODEL` + sparse `GSI1PK=TYPE#GENERIC_MODEL`. |
-| WARDROBE-47 | Reserved secret id `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT`. Not created in this stack. |
+| WARDROBE-47 | Reserved secret id `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT`. Not created in this stack. Try-on inference is out of scope. |
 
 ## DynamoDB keys
 
@@ -532,7 +629,7 @@ src/functions/
   outfits/
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
-  ai-profiles/         PERSONAL / GENERIC_MODEL CRUD (WARDROBE-43); seed + try-on hooks
+  ai-profiles/         CRUD + PERSONAL reference-image presign/attach (WARDROBE-43/44)
   processing/          handler, Gemini helpers, bg-remove, classify, colour-detect, pipeline, retry/poison errors
   support/             WARDROBE-38 outbound contact/bug + Resend client + Svix verify
   support-webhook/     public inbound webhook entry (re-exports support/webhook)

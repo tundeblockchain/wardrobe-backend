@@ -1,10 +1,16 @@
 import {
   buildGenericModelProfile,
   buildPersonalAiProfile,
+  mergeReferenceImages,
   SYSTEM_AI_PROFILE_OWNER,
   toAiProfile,
 } from '../../src/functions/ai-profiles/model';
-import { tryOnSecretName, FUTURE_JOB_TYPES } from '../../src/functions/ai-profiles/hooks';
+import {
+  buildProcessAiProfileJob,
+  FUTURE_JOB_TYPES,
+  statusAfterReferenceImagesAttached,
+  tryOnSecretName,
+} from '../../src/functions/ai-profiles/hooks';
 
 describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
   it('builds a PERSONAL row under USER# without GSI1 attributes', () => {
@@ -71,5 +77,23 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     expect(tryOnSecretName('prod')).toBe('wardrobe/prod/gemini-try-on');
     expect(FUTURE_JOB_TYPES.processAiProfile).toBe('PROCESS_AI_PROFILE');
     expect(FUTURE_JOB_TYPES.renderOutfit).toBe('RENDER_OUTFIT');
+  });
+
+  it('keeps attach status READY and documents the PROCESS_AI_PROFILE job hook', () => {
+    expect(statusAfterReferenceImagesAttached()).toBe('READY');
+    expect(buildProcessAiProfileJob('uid-1', 'profile_abc')).toEqual({
+      jobType: 'PROCESS_AI_PROFILE',
+      userId: 'uid-1',
+      aiProfileId: 'profile_abc',
+    });
+  });
+
+  it('appends unique reference images and rejects more than 10', () => {
+    expect(mergeReferenceImages(['a.jpg'], ['a.jpg', 'b.jpg'])).toEqual([
+      'a.jpg',
+      'b.jpg',
+    ]);
+    const eleven = Array.from({ length: 11 }, (_, i) => `k-${i}.jpg`);
+    expect(() => mergeReferenceImages([], eleven)).toThrow();
   });
 });

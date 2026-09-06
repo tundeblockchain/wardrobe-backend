@@ -5,11 +5,13 @@ import {
   optionalReferenceImages,
   optionalStringArray,
   requireAiProfileType,
+  requireAttachReferenceImageKeys,
   requireCategory,
   requireColour,
   requireCreatePersonalType,
   requireNonEmptyString,
   requireOutfitItems,
+  requireOwnedAiProfileReferenceKey,
   requireOwnedImageKey,
   requireSlot,
   requireSubcategory,
@@ -339,6 +341,59 @@ describe('validation', () => {
         (_, i) => `users/${userId}/ai-profiles/p/r-${i}.jpg`,
       );
       expect(() => optionalReferenceImages(keys, userId)).toThrow(AppError);
+    });
+
+    it('requires attach keys under users/{uid}/ai-profiles/{aiProfileId}/', () => {
+      const profileId = 'profile_abc';
+      const owned = `users/${userId}/ai-profiles/${profileId}/ref.jpg`;
+      expect(
+        requireOwnedAiProfileReferenceKey(owned, userId, profileId),
+      ).toBe(owned);
+    });
+
+    it('rejects a wardrobe-item upload key on attach', () => {
+      expect(() =>
+        requireOwnedAiProfileReferenceKey(
+          `users/${userId}/uploads/photo.jpg`,
+          userId,
+          'profile_abc',
+        ),
+      ).toThrow(AppError);
+    });
+
+    it('rejects a key for a different profile id', () => {
+      expect(() =>
+        requireOwnedAiProfileReferenceKey(
+          `users/${userId}/ai-profiles/other/ref.jpg`,
+          userId,
+          'profile_abc',
+        ),
+      ).toThrow(AppError);
+    });
+
+    it('accepts objectKey or objectKeys and ignores body userId', () => {
+      const profileId = 'profile_abc';
+      const key = `users/${userId}/ai-profiles/${profileId}/a.jpg`;
+      expect(
+        requireAttachReferenceImageKeys(
+          { objectKey: key, userId: 'attacker' },
+          userId,
+          profileId,
+        ),
+      ).toEqual([key]);
+      expect(
+        requireAttachReferenceImageKeys(
+          { objectKeys: [key, key] },
+          userId,
+          profileId,
+        ),
+      ).toEqual([key]);
+    });
+
+    it('rejects an empty attach body', () => {
+      expect(() =>
+        requireAttachReferenceImageKeys({}, userId, 'profile_abc'),
+      ).toThrow(AppError);
     });
   });
 });

@@ -27,6 +27,7 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
 
 import { AppError } from '../../src/shared/errors';
 import {
+  aiProfileReferencePrefix,
   assertUploadContentLength,
   bucketName,
   createPresignedPutUrl,
@@ -72,6 +73,20 @@ describe('s3 helpers (WARDROBE-8)', () => {
         expect(appError.code).toBe('INTERNAL_ERROR');
         expect(appError.statusCode).toBe(500);
       }
+    });
+  });
+
+  describe('aiProfileReferencePrefix', () => {
+    it('builds users/{uid}/ai-profiles/{aiProfileId}/', () => {
+      expect(aiProfileReferencePrefix('uid-1', 'profile_abc')).toBe(
+        'users/uid-1/ai-profiles/profile_abc/',
+      );
+    });
+
+    it('rejects path-like ids', () => {
+      expect(() => aiProfileReferencePrefix('uid-1', '../secret')).toThrow(
+        AppError,
+      );
     });
   });
 

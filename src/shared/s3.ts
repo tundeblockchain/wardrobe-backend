@@ -91,6 +91,34 @@ export function processedImageObjectKey(userId: string, itemId: string): string 
   return `users/${userId}/items/${itemId}/processed.png`;
 }
 
+function isSafeObjectKeySegment(value: string): boolean {
+  return (
+    value.length > 0 &&
+    !value.includes('/') &&
+    !value.includes('\\') &&
+    !value.includes('..') &&
+    !value.includes('\0')
+  );
+}
+
+/**
+ * Owner-scoped prefix for PERSONAL AI profile reference photos (WARDROBE-44).
+ * Keys must stay under `users/{uid}/ai-profiles/{aiProfileId}/`.
+ */
+export function aiProfileReferencePrefix(
+  userId: string,
+  aiProfileId: string,
+): string {
+  const uid = userId.trim();
+  const profileId = aiProfileId.trim();
+  if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(profileId)) {
+    throw Errors.validation(
+      'aiProfileId is not a valid object-key segment.',
+    );
+  }
+  return `users/${uid}/ai-profiles/${profileId}/`;
+}
+
 export async function getObjectBytes(objectKey: string): Promise<{
   bytes: Uint8Array;
   contentType?: string;

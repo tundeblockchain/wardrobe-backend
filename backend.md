@@ -964,9 +964,13 @@ GET    /ai-profiles?type=GENERIC_MODEL
 GET    /ai-profiles/models
 GET    /ai-profiles/{aiProfileId}
 DELETE /ai-profiles/{aiProfileId}
+POST   /ai-profiles/{aiProfileId}/uploads
+POST   /ai-profiles/{aiProfileId}/reference-images
 ```
 
 `POST` creates `PERSONAL` for the caller (`status: READY` when `referenceImages` is empty). Users cannot create or delete `GENERIC_MODEL` rows — those are seeded (WARDROBE-45) under `PK=AIPROFILE#GENERIC_MODEL` with sparse GSI1 `TYPE#GENERIC_MODEL`. Flutter DTOs omit `PK` / `SK`.
+
+Reference photos (WARDROBE-44) use the same presigned-S3 pattern as clothing items. Keys must be under `users/{uid}/ai-profiles/{aiProfileId}/`. Upload and attach are owner-`PERSONAL` only (`GENERIC_MODEL` is `403`). Confirming keys appends them to `referenceImages` and sets `status: READY`. A future `PROCESS_AI_PROFILE` worker may later use `PENDING` → `PROCESSING` → `READY`.
 
 ---
 
@@ -1091,6 +1095,8 @@ GET    /ai-profiles
 GET    /ai-profiles/models
 GET    /ai-profiles/{aiProfileId}
 DELETE /ai-profiles/{aiProfileId}
+POST   /ai-profiles/{aiProfileId}/uploads
+POST   /ai-profiles/{aiProfileId}/reference-images
 ```
 
 Future APIs may include:
