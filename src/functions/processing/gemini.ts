@@ -6,6 +6,9 @@ export const DEFAULT_GEMINI_API_BASE =
 /** Image-edit model used by WARDROBE-26 background removal. */
 export const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
 
+/** Image-generation model used by WARDROBE-47 virtual try-on. */
+export const DEFAULT_GEMINI_TRY_ON_MODEL = DEFAULT_GEMINI_IMAGE_MODEL;
+
 /** Multimodal text model used by WARDROBE-27 garment classification. */
 export const DEFAULT_GEMINI_CLASSIFIER_MODEL = 'gemini-2.5-flash';
 

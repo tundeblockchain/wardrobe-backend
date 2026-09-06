@@ -1,9 +1,9 @@
 /**
- * Phase-3 hooks. WARDROBE-43/44 do not call inference.
+ * Phase-3 hooks.
  *
  * WARDROBE-44 — reference-image upload + PROCESS_AI_PROFILE job shape
  * WARDROBE-45 — seed GENERIC_MODEL rows via `buildGenericModelProfile` + catalog
- * WARDROBE-47 — try-on / outfit render worker using this secret id
+ * WARDROBE-47 — try-on secret id + RENDER_OUTFIT job (dedicated queue)
  */
 
 import {
@@ -11,9 +11,10 @@ import {
   PROCESS_AI_PROFILE_JOB,
   ProcessAiProfileJob,
   RENDER_OUTFIT_JOB,
+  RenderOutfitJob,
 } from '../../shared/types';
 
-/** Reserved Secrets Manager id. Not created in this ticket — WARDROBE-47. */
+/** Secrets Manager id created by WARDROBE-47 (`wardrobe/{stage}/gemini-try-on`). */
 export function tryOnSecretName(stage: string): string {
   return `wardrobe/${stage}/gemini-try-on`;
 }
@@ -34,10 +35,27 @@ export const FUTURE_JOB_TYPES = {
  * 3. Worker: PENDING → PROCESSING → READY | FAILED
  *
  * Do not enqueue onto the clothing-item queue — that worker only accepts
- * PROCESS_WARDROBE_ITEM and would treat this job as poison.
+ * PROCESS_WARDROBE_ITEM and would treat this job as poison. Outfit try-on
+ * uses a dedicated RENDER_OUTFIT queue (WARDROBE-47).
  */
 export function statusAfterReferenceImagesAttached(): AiProfileStatus {
   return 'READY';
+}
+
+/** Job body for the WARDROBE-47 try-on worker. */
+export function buildRenderOutfitJob(
+  userId: string,
+  wardrobeId: string,
+  outfitId: string,
+  aiProfileId: string,
+): RenderOutfitJob {
+  return {
+    jobType: RENDER_OUTFIT_JOB,
+    userId,
+    wardrobeId,
+    outfitId,
+    aiProfileId,
+  };
 }
 
 /** Job body for a future PROCESS_AI_PROFILE worker. Not enqueued here. */

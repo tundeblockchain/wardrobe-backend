@@ -155,7 +155,7 @@ export interface ProcessAiProfileJob {
   aiProfileId: string;
 }
 
-/** WARDROBE-47 hook — outfit try-on / render. Not used here. */
+/** WARDROBE-47 — async outfit try-on / render job. */
 export const RENDER_OUTFIT_JOB = 'RENDER_OUTFIT' as const;
 
 export interface RenderOutfitJob {
@@ -207,11 +207,33 @@ export interface OutfitItem {
   slot: OutfitSlot;
 }
 
+/** Same status machine as clothing-item processing (WARDROBE-47). */
+export const RENDER_STATUSES = [
+  'PENDING',
+  'PROCESSING',
+  'READY',
+  'FAILED',
+] as const;
+export type RenderStatus = (typeof RENDER_STATUSES)[number];
+
+/**
+ * Flutter `OutfitRender` on the outfit (architecture §24).
+ * `imageUrl` is a short-lived presigned GET — never persisted in Dynamo.
+ */
+export interface OutfitRender {
+  status: RenderStatus;
+  aiProfileId: string;
+  imageKey?: string;
+  imageUrl?: string;
+  error?: string;
+}
+
 export interface Outfit {
   outfitId: string;
   wardrobeId: string;
   name: string;
   items: OutfitItem[];
+  render?: OutfitRender;
   createdAt: string;
   updatedAt: string;
 }

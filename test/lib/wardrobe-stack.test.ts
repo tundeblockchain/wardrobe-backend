@@ -284,11 +284,26 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(processingSqs).not.toContain('sqs:SendMessage');
     expect(processingSqs).not.toContain('sqs:*');
 
+    const outfitsSqs = sqsActionsFor('OutfitsFn');
+    expect(outfitsSqs).toEqual(expect.arrayContaining(['sqs:SendMessage']));
+    expect(outfitsSqs).not.toContain('sqs:ReceiveMessage');
+    expect(outfitsSqs).not.toContain('sqs:*');
+
+    const outfitRenderSqs = sqsActionsFor('OutfitRenderFn');
+    expect(outfitRenderSqs).toEqual(
+      expect.arrayContaining([
+        'sqs:ReceiveMessage',
+        'sqs:DeleteMessage',
+        'sqs:ChangeMessageVisibility',
+      ]),
+    );
+    expect(outfitRenderSqs).not.toContain('sqs:SendMessage');
+    expect(outfitRenderSqs).not.toContain('sqs:*');
+
     for (const fnId of [
       'HealthFn',
       'MeFn',
       'WardrobesFn',
-      'OutfitsFn',
       'RecommendationsFn',
       'UploadsFn',
       'AuthorizerFn',
@@ -299,7 +314,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     }
 
     const eventSources = template.findResources('AWS::Lambda::EventSourceMapping');
-    expect(Object.keys(eventSources).length).toBe(1);
+    expect(Object.keys(eventSources).length).toBe(2);
   });
 
   test('ProcessingFn timeout stays below SQS visibility (retries / DLQ)', () => {
@@ -870,10 +885,45 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     );
   });
 
-  test('does not create the WARDROBE-47 try-on secret in this ticket', () => {
+  test('WARDROBE-47 try-on secret, queue, DLQ, and worker follow the Phase-2 pattern', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/gemini-try-on',
+    });
+    template.hasOutput('GeminiTryOnSecretName', {
+      Description:
+        'Secrets Manager secret for Gemini try-on credentials (API key, optional model/endpoint)',
+    });
+    template.hasOutput('OutfitRenderQueueUrl', {
+      Description: 'Outfit try-on / render queue URL',
+    });
+
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'wardrobe-outfit-render-dev',
+      VisibilityTimeout: 120,
+      MessageRetentionPeriod: 345600,
+      ReceiveMessageWaitTimeSeconds: 20,
+      SqsManagedSseEnabled: true,
+      RedrivePolicy: {
+        maxReceiveCount: 3,
+        deadLetterTargetArn: {
+          'Fn::GetAtt': [Match.stringLikeRegexp('OutfitRenderDlq'), 'Arn'],
+        },
+      },
+    });
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'wardrobe-outfit-render-dlq-dev',
+      MessageRetentionPeriod: 1209600,
+      SqsManagedSseEnabled: true,
+      RedrivePolicy: Match.absent(),
+    });
+
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'wardrobe-outfit-render-dlq-dev',
+      Threshold: 1,
+    });
+
     const synthesized = JSON.stringify(template.toJSON());
-    expect(synthesized).not.toContain('gemini-try-on');
-    expect(synthesized).not.toContain('AI_TRYON_SECRET');
+    expect(synthesized).toContain('GEMINI_TRY_ON_SECRET_ARN');
     expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
     expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
   });
@@ -911,6 +961,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'PATCH /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}',
+      'GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
+      'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
       'GET /wardrobes/{wardrobeId}/recommendations',
       'DELETE /me',
       'DELETE /me/content',

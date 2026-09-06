@@ -5,6 +5,7 @@ export type ErrorCode =
   | 'WARDROBE_NOT_FOUND'
   | 'ITEM_NOT_FOUND'
   | 'OUTFIT_NOT_FOUND'
+  | 'RENDER_NOT_FOUND'
   | 'AI_PROFILE_NOT_FOUND'
   | 'UPLOAD_INVALID'
   | 'PROCESSING_FAILED'
@@ -41,6 +42,9 @@ export const Errors = {
 
   outfitNotFound: (message = 'Outfit not found.') =>
     new AppError('OUTFIT_NOT_FOUND', message, 404),
+
+  renderNotFound: (message = 'No render has been requested for this outfit.') =>
+    new AppError('RENDER_NOT_FOUND', message, 404),
 
   aiProfileNotFound: (message = 'AI profile not found.') =>
     new AppError('AI_PROFILE_NOT_FOUND', message, 404),

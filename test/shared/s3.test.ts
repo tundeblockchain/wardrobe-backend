@@ -30,11 +30,13 @@ import {
   aiProfileReferencePrefix,
   assertUploadContentLength,
   bucketName,
+  createPresignedGetUrl,
   createPresignedPutUrl,
   deleteObjectsUnderUserPrefix,
   extensionForContentType,
   getObjectBytes,
   MAX_UPLOAD_BYTES,
+  outfitRenderObjectKey,
   PRESIGNED_URL_EXPIRES_IN,
   processedImageObjectKey,
   putObjectBytes,
@@ -181,6 +183,39 @@ describe('s3 helpers (WARDROBE-8)', () => {
       expect(processedImageObjectKey('uid-1', 'item_abc')).toBe(
         'users/uid-1/items/item_abc/processed.png',
       );
+    });
+  });
+
+  describe('outfitRenderObjectKey', () => {
+    it('uses users/{userId}/outfits/{outfitId}/render.png', () => {
+      expect(outfitRenderObjectKey('uid-1', 'outfit_abc')).toBe(
+        'users/uid-1/outfits/outfit_abc/render.png',
+      );
+    });
+
+    it('rejects path-like ids', () => {
+      expect(() => outfitRenderObjectKey('uid-1', '../secret')).toThrow(AppError);
+    });
+  });
+
+  describe('createPresignedGetUrl', () => {
+    it('signs a private GetObject', async () => {
+      mockGetSignedUrl.mockResolvedValue('https://signed.example/get');
+
+      await expect(
+        createPresignedGetUrl({ objectKey: 'users/uid/outfits/o1/render.png' }),
+      ).resolves.toEqual({
+        imageUrl: 'https://signed.example/get',
+        expiresIn: PRESIGNED_URL_EXPIRES_IN,
+      });
+
+      const command = mockGetSignedUrl.mock.calls[0][1] as {
+        input: Record<string, unknown>;
+      };
+      expect(command.input).toEqual({
+        Bucket: 'wardrobe-media-test',
+        Key: 'users/uid/outfits/o1/render.png',
+      });
     });
   });
 
