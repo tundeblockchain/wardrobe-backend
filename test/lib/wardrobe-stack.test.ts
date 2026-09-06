@@ -274,6 +274,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
     for (const fnId of [
       'HealthFn',
+      'MeFn',
       'WardrobesFn',
       'OutfitsFn',
       'RecommendationsFn',
@@ -699,6 +700,78 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     }
   });
 
+  test('MeFn is owner-auth and can delete Dynamo rows plus S3 under users/{uid}/', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+    for (const routeKey of ['DELETE /me', 'DELETE /me/content']) {
+      const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
+      expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+    }
+
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+            Effect?: string;
+          }>;
+        };
+      };
+    };
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    const actionsFor = (prefix: string): string[] =>
+      policies
+        .filter((policy) => JSON.stringify(policy).includes('MeFn'))
+        .flatMap((policy) =>
+          policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+            const actions = statement.Action;
+            const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+            return list.filter((action) => action.startsWith(prefix));
+          }),
+        );
+
+    const dynamo = actionsFor('dynamodb:');
+    expect(dynamo).toEqual(
+      expect.arrayContaining([
+        'dynamodb:GetItem',
+        'dynamodb:Query',
+        'dynamodb:DeleteItem',
+      ]),
+    );
+    expect(dynamo).not.toContain('dynamodb:*');
+
+    const s3 = actionsFor('s3:');
+    expect(s3.some((action) => action.startsWith('s3:Get') || action === 's3:ListBucket')).toBe(
+      true,
+    );
+    expect(s3.some((action) => action === 's3:DeleteObject' || action === 's3:DeleteObject*')).toBe(
+      true,
+    );
+    expect(s3).not.toContain('s3:*');
+
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: {
+        Timeout?: number;
+        Environment?: { Variables?: Record<string, unknown> };
+      };
+    }>;
+    const meFn = functions.find((fn) => fn.Properties.Timeout === 29);
+    expect(meFn).toBeDefined();
+    expect(meFn?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        TABLE_NAME: expect.anything(),
+        MEDIA_BUCKET_NAME: expect.anything(),
+      }),
+    );
+  });
+
   test('protected routes use the Firebase Lambda authorizer; /health stays public', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
       Name: 'firebase-dev',
@@ -733,6 +806,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'PATCH /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'GET /wardrobes/{wardrobeId}/recommendations',
+      'DELETE /me',
+      'DELETE /me/content',
     ]) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');

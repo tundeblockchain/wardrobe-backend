@@ -208,6 +208,11 @@ export class WardrobeStack extends cdk.Stack {
     firebaseProjectIdSecret.grantRead(authorizerFn);
 
     const healthFn = this.lambda('HealthFn', 'health', commonLambdaProps);
+    const meFn = this.lambda('MeFn', 'me', {
+      ...commonLambdaProps,
+      // Wipe can list/delete many Dynamo rows and S3 objects under users/{uid}/.
+      timeout: cdk.Duration.seconds(29),
+    });
     const wardrobesFn = this.lambda('WardrobesFn', 'wardrobes', commonLambdaProps);
     const itemsFn = this.lambda('ItemsFn', 'items', {
       ...commonLambdaProps,
@@ -256,6 +261,7 @@ export class WardrobeStack extends cdk.Stack {
     aiClassifierSecret.grantRead(processingFn);
     aiColourDetectorSecret.grantRead(processingFn);
 
+    table.grantReadWriteData(meFn);
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
     table.grantReadWriteData(outfitsFn);
@@ -265,6 +271,9 @@ export class WardrobeStack extends cdk.Stack {
     // Worker reads the item then updates processingStatus / AI metadata.
     table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     mediaBucket.grantPut(uploadsFn);
+    // Account wipe lists and deletes objects under users/{uid}/ only.
+    mediaBucket.grantRead(meFn);
+    mediaBucket.grantDelete(meFn);
     // Read original images and write processed.png. No delete — keep originals.
     mediaBucket.grantRead(processingFn);
     mediaBucket.grantPut(processingFn);
@@ -370,6 +379,7 @@ export class WardrobeStack extends cdk.Stack {
     }
 
     const healthIntegration = new HttpLambdaIntegration('HealthIntegration', healthFn);
+    const meIntegration = new HttpLambdaIntegration('MeIntegration', meFn);
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
     const itemsIntegration = new HttpLambdaIntegration('ItemsIntegration', itemsFn);
     const outfitsIntegration = new HttpLambdaIntegration('OutfitsIntegration', outfitsFn);
@@ -383,6 +393,20 @@ export class WardrobeStack extends cdk.Stack {
       path: '/health',
       methods: [apigwv2.HttpMethod.GET],
       integration: healthIntegration,
+    });
+
+    httpApi.addRoutes({
+      path: '/me/content',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: meIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/me',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: meIntegration,
+      authorizer: firebaseAuthorizer,
     });
 
     httpApi.addRoutes({

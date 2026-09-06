@@ -1,6 +1,13 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Errors } from './errors';
+import { logger } from './logger';
 
 const s3 = new S3Client({});
 
@@ -118,4 +125,98 @@ export async function putObjectBytes(params: {
       ContentType: params.contentType,
     }),
   );
+}
+
+/** Uploads and processed images live under users/{uid}/… */
+export function userMediaPrefix(userId: string): string {
+  const trimmed = userId.trim();
+  if (
+    !trimmed ||
+    trimmed.includes('/') ||
+    trimmed.includes('\\') ||
+    trimmed.includes('..') ||
+    trimmed.includes('\0')
+  ) {
+    throw Errors.internal('Refusing to build an S3 prefix for an invalid user id.');
+  }
+  return `users/${trimmed}/`;
+}
+
+export interface DeleteUserPrefixResult {
+  deleted: number;
+  failed: number;
+}
+
+/**
+ * Best-effort delete of every object under users/{uid}/.
+ * Logs and continues on individual object or list failures.
+ */
+export async function deleteObjectsUnderUserPrefix(
+  userId: string,
+): Promise<DeleteUserPrefixResult> {
+  const prefix = userMediaPrefix(userId);
+  let deleted = 0;
+  let failed = 0;
+  let continuationToken: string | undefined;
+
+  do {
+    let keys: string[];
+    try {
+      const listed = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: bucketName(),
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }),
+      );
+      keys = (listed.Contents ?? [])
+        .map((object) => object.Key)
+        .filter((key): key is string =>
+          Boolean(key && key.startsWith(prefix) && key.length > prefix.length),
+        );
+      continuationToken = listed.IsTruncated
+        ? listed.NextContinuationToken
+        : undefined;
+    } catch (error) {
+      logger.warn('S3 list failed during user media wipe', {
+        prefix,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+      return { deleted, failed: failed + 1 };
+    }
+
+    const chunkSize = 1000;
+    for (let i = 0; i < keys.length; i += chunkSize) {
+      const chunk = keys.slice(i, i + chunkSize);
+      try {
+        const result = await s3.send(
+          new DeleteObjectsCommand({
+            Bucket: bucketName(),
+            Delete: {
+              Objects: chunk.map((Key) => ({ Key })),
+              Quiet: false,
+            },
+          }),
+        );
+        deleted += result.Deleted?.length ?? 0;
+        for (const objectError of result.Errors ?? []) {
+          failed += 1;
+          logger.warn('S3 object delete failed', {
+            key: objectError.Key,
+            code: objectError.Code,
+            message: objectError.Message,
+          });
+        }
+      } catch (error) {
+        failed += chunk.length;
+        logger.warn('S3 delete batch failed during user media wipe', {
+          prefix,
+          count: chunk.length,
+          error: error instanceof Error ? error.message : 'unknown',
+        });
+      }
+    }
+  } while (continuationToken);
+
+  return { deleted, failed };
 }
