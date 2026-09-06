@@ -36,8 +36,10 @@ export class WardrobeStack extends cdk.Stack {
     cdk.Tags.of(this).add('Stage', stage);
 
     // Single-table PK/SK matches backend.md §16–17 access patterns:
-    // USER#{uid}          / PROFILE | WARDROBE#{wardrobeId}
-    // WARDROBE#{wardrobeId} / ITEM#{itemId} | OUTFIT#{outfitId}
+    // USER#{uid}                 / PROFILE | WARDROBE#{wardrobeId} | AIPROFILE#{id}
+    // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
+    // AIPROFILE#GENERIC_MODEL    / AIPROFILE#{id}
+    // GSI1 (sparse): TYPE#GENERIC_MODEL / AIPROFILE#{id}
     const table = new dynamodb.Table(this, 'WardrobeTable', {
       tableName: `wardrobe-app-${stage}`,
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
@@ -49,6 +51,15 @@ export class WardrobeStack extends cdk.Stack {
         pointInTimeRecoveryEnabled: !isDev,
       },
       removalPolicy,
+    });
+
+    // WARDROBE-43: list GENERIC_MODEL profiles for the try-on picker.
+    // PERSONAL rows omit GSI1 attributes (sparse). WARDROBE-45 seeds catalog + GSI1.
+    table.addGlobalSecondaryIndex({
+      indexName: 'GSI1',
+      partitionKey: { name: 'GSI1PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     const mediaBucket = new s3.Bucket(this, 'MediaBucket', {
@@ -234,6 +245,9 @@ export class WardrobeStack extends cdk.Stack {
       },
     });
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
+    // WARDROBE-43 CRUD only. WARDROBE-47 will add wardrobe/{stage}/gemini-try-on
+    // and grant it to the try-on worker — not this Lambda.
+    const aiProfilesFn = this.lambda('AiProfilesFn', 'ai-profiles', commonLambdaProps);
     const processingFn = this.lambda('ProcessingFn', 'processing', {
       ...commonLambdaProps,
       timeout: processingLambdaTimeout,
@@ -266,6 +280,7 @@ export class WardrobeStack extends cdk.Stack {
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
     table.grantReadWriteData(outfitsFn);
+    table.grantReadWriteData(aiProfilesFn);
     // Recommendations are derived and never persisted — read wardrobe + items only.
     table.grantReadData(recommendationsFn);
     aiRecommenderSecret.grantRead(recommendationsFn);
@@ -389,6 +404,10 @@ export class WardrobeStack extends cdk.Stack {
       recommendationsFn,
     );
     const uploadsIntegration = new HttpLambdaIntegration('UploadsIntegration', uploadsFn);
+    const aiProfilesIntegration = new HttpLambdaIntegration(
+      'AiProfilesIntegration',
+      aiProfilesFn,
+    );
 
     httpApi.addRoutes({
       path: '/health',
@@ -475,6 +494,27 @@ export class WardrobeStack extends cdk.Stack {
       path: '/uploads',
       methods: [apigwv2.HttpMethod.POST],
       integration: uploadsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/ai-profiles',
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: aiProfilesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/ai-profiles/models',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: aiProfilesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/ai-profiles/{aiProfileId}',
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.DELETE],
+      integration: aiProfilesIntegration,
       authorizer: firebaseAuthorizer,
     });
 

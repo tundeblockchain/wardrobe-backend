@@ -67,6 +67,14 @@ export function parseJsonBody<T>(event: APIGatewayProxyEventV2): T {
   }
 }
 
+/** Empty / missing body becomes `{}`. Invalid JSON still fails. */
+export function parseOptionalJsonBody<T>(event: APIGatewayProxyEventV2): T {
+  if (!event.body || event.body.trim() === '') {
+    return {} as T;
+  }
+  return parseJsonBody<T>(event);
+}
+
 export function requirePathParam(
   event: APIGatewayProxyEventV2,
   name: string,

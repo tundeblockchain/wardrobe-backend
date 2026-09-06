@@ -2,9 +2,12 @@ import {
   optionalInteger,
   optionalNonEmptyString,
   optionalQueryString,
+  optionalReferenceImages,
   optionalStringArray,
+  requireAiProfileType,
   requireCategory,
   requireColour,
+  requireCreatePersonalType,
   requireNonEmptyString,
   requireOutfitItems,
   requireOwnedImageKey,
@@ -301,6 +304,41 @@ describe('validation', () => {
       expect(() =>
         requireOwnedImageKey(`users/${userId}/uploads/../secret.jpg`, userId),
       ).toThrow(AppError);
+    });
+  });
+
+  describe('AI profile type and referenceImages', () => {
+    const userId = 'firebase-uid-owner';
+
+    it('accepts PERSONAL and GENERIC_MODEL', () => {
+      expect(requireAiProfileType('PERSONAL')).toBe('PERSONAL');
+      expect(requireAiProfileType('GENERIC_MODEL')).toBe('GENERIC_MODEL');
+    });
+
+    it('defaults create type to PERSONAL and rejects GENERIC_MODEL', () => {
+      expect(requireCreatePersonalType(undefined)).toBe('PERSONAL');
+      expect(() => requireCreatePersonalType('GENERIC_MODEL')).toThrow(AppError);
+    });
+
+    it('treats missing referenceImages as an empty array', () => {
+      expect(optionalReferenceImages(undefined, userId)).toEqual([]);
+    });
+
+    it('accepts owned reference image keys', () => {
+      expect(
+        optionalReferenceImages(
+          [`users/${userId}/ai-profiles/p/reference-1.jpg`],
+          userId,
+        ),
+      ).toEqual([`users/${userId}/ai-profiles/p/reference-1.jpg`]);
+    });
+
+    it('rejects more than 10 reference images', () => {
+      const keys = Array.from(
+        { length: 11 },
+        (_, i) => `users/${userId}/ai-profiles/p/r-${i}.jpg`,
+      );
+      expect(() => optionalReferenceImages(keys, userId)).toThrow(AppError);
     });
   });
 });

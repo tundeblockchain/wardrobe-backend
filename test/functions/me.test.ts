@@ -311,6 +311,7 @@ describe('me handler (WARDROBE-36)', () => {
         deletedWardrobes: 1,
         deletedItems: 1,
         deletedOutfits: 1,
+        deletedAiProfiles: 0,
         deletedS3Objects: 2,
         s3Failures: 0,
       });
@@ -340,6 +341,7 @@ describe('me handler (WARDROBE-36)', () => {
         deletedWardrobes: 0,
         deletedItems: 0,
         deletedOutfits: 0,
+        deletedAiProfiles: 0,
         deletedS3Objects: 0,
         s3Failures: 0,
       });
@@ -471,6 +473,7 @@ describe('me handler (WARDROBE-36)', () => {
         deletedWardrobes: 1,
         deletedItems: 1,
         deletedOutfits: 1,
+        deletedAiProfiles: 0,
         deletedS3Objects: 2,
         s3Failures: 0,
       });
@@ -496,9 +499,55 @@ describe('me handler (WARDROBE-36)', () => {
         deletedWardrobes: 0,
         deletedItems: 0,
         deletedOutfits: 0,
+        deletedAiProfiles: 0,
         deletedS3Objects: 0,
         s3Failures: 0,
       });
+    });
+
+    it('wipes owned PERSONAL AI profiles and leaves GENERIC_MODEL catalog rows', async () => {
+      const personal: DynamoItem = {
+        PK: `USER#${OWNER_ID}`,
+        SK: 'AIPROFILE#profile_mine0001',
+        entityType: 'AIPROFILE',
+        userId: OWNER_ID,
+        aiProfileId: 'profile_mine0001',
+        type: 'PERSONAL',
+        referenceImages: [],
+        status: 'READY',
+        createdAt: '2026-09-06T08:00:00.000Z',
+        updatedAt: '2026-09-06T08:00:00.000Z',
+      };
+
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          const sk = command.input.ExpressionAttributeValues?.[':sk'];
+          if (pk === `USER#${OWNER_ID}` && sk === 'AIPROFILE#') {
+            return { Items: [personal] };
+          }
+          return { Items: [] };
+        }
+        if (command._op === 'Get' || command._op === 'Delete') {
+          return {};
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+      mockS3Send.mockResolvedValue({ Contents: [], IsTruncated: false });
+
+      const result = asResult(await handler(event({ path: '/me/content' })));
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({ deletedAiProfiles: 1 }),
+      );
+      expect(deletedKeys()).toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: 'AIPROFILE#profile_mine0001',
+      });
+      expect(deletedKeys().some((key) => key.PK === 'AIPROFILE#GENERIC_MODEL')).toBe(
+        false,
+      );
     });
 
     it('does not delete another user wardrobe children even if they share a PK', async () => {
