@@ -1,10 +1,12 @@
 import { keys } from '../../shared/dynamodb';
+import { Errors } from '../../shared/errors';
 import { newAiProfileId, nowIso } from '../../shared/ids';
 import {
   AiProfile,
   AiProfileStatus,
   DynamoItem,
 } from '../../shared/types';
+import { MAX_AI_PROFILE_REFERENCE_IMAGES } from '../../shared/validation';
 
 /** Owner written on seeded GENERIC_MODEL rows (WARDROBE-45). */
 export const SYSTEM_AI_PROFILE_OWNER = 'SYSTEM';
@@ -59,6 +61,33 @@ export function buildPersonalAiProfile(input: {
     createdAt: timestamp,
     updatedAt: input.updatedAt ?? timestamp,
   };
+}
+
+/** Append unique confirmed keys. Existing order is preserved. */
+export function mergeReferenceImages(
+  existing: unknown,
+  incoming: string[],
+): string[] {
+  const current = Array.isArray(existing)
+    ? existing.map((entry) => String(entry))
+    : [];
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  for (const key of [...current, ...incoming]) {
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(key);
+    }
+  }
+
+  if (merged.length > MAX_AI_PROFILE_REFERENCE_IMAGES) {
+    throw Errors.validation(
+      `referenceImages must contain ${MAX_AI_PROFILE_REFERENCE_IMAGES} items or fewer.`,
+    );
+  }
+
+  return merged;
 }
 
 /**

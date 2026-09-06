@@ -245,8 +245,9 @@ export class WardrobeStack extends cdk.Stack {
       },
     });
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
-    // WARDROBE-43 CRUD only. WARDROBE-47 will add wardrobe/{stage}/gemini-try-on
-    // and grant it to the try-on worker — not this Lambda.
+    // WARDROBE-43 CRUD + WARDROBE-44 PERSONAL reference-image presign/attach.
+    // WARDROBE-47 will add wardrobe/{stage}/gemini-try-on and grant it to the
+    // try-on worker — not this Lambda. PROCESS_AI_PROFILE is not enqueued here.
     const aiProfilesFn = this.lambda('AiProfilesFn', 'ai-profiles', commonLambdaProps);
     const processingFn = this.lambda('ProcessingFn', 'processing', {
       ...commonLambdaProps,
@@ -287,6 +288,8 @@ export class WardrobeStack extends cdk.Stack {
     // Worker reads the item then updates processingStatus / AI metadata.
     table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     mediaBucket.grantPut(uploadsFn);
+    // PERSONAL AI profile reference-image presign (WARDROBE-44).
+    mediaBucket.grantPut(aiProfilesFn);
     // Account wipe lists and deletes objects under users/{uid}/ only.
     mediaBucket.grantRead(meFn);
     mediaBucket.grantDelete(meFn);
@@ -514,6 +517,20 @@ export class WardrobeStack extends cdk.Stack {
     httpApi.addRoutes({
       path: '/ai-profiles/{aiProfileId}',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.DELETE],
+      integration: aiProfilesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/ai-profiles/{aiProfileId}/uploads',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: aiProfilesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/ai-profiles/{aiProfileId}/reference-images',
+      methods: [apigwv2.HttpMethod.POST],
       integration: aiProfilesIntegration,
       authorizer: firebaseAuthorizer,
     });

@@ -141,7 +141,10 @@ export interface AiProfileList {
   aiProfiles: AiProfile[];
 }
 
-/** WARDROBE-44 hook — enqueue after reference-image upload. Not used here. */
+/**
+ * WARDROBE-44 hook — enqueue after reference-image attach when a worker exists.
+ * This ticket documents the job shape only; it is not sent to SQS.
+ */
 export const PROCESS_AI_PROFILE_JOB = 'PROCESS_AI_PROFILE' as const;
 
 export interface ProcessAiProfileJob {
