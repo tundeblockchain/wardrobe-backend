@@ -861,9 +861,12 @@ If processing fails:
 
 ```json
 {
-  "processingStatus": "FAILED"
+  "processingStatus": "FAILED",
+  "processingError": "Processing retries exhausted"
 }
 ```
+
+The terminal failure string is `FAILED` (not `ERROR`). `processingError` is optional and returned on create / list / get when present (WARDROBE-59). Exhausted SQS retries and the processing DLQ must write `FAILED` so the item is never left on `PROCESSING`.
 
 The app can later offer a retry action.
 

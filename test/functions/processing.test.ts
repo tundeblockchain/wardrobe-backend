@@ -35,6 +35,7 @@ const OTHER_ID = 'firebase-uid-other';
 const WARDROBE_ID = 'wd_abc123xyz0';
 const ITEM_ID = 'item_xyz123abcd';
 const ORIGINAL_KEY = `users/${OWNER_ID}/uploads/photo.jpg`;
+const DLQ_ARN = 'arn:aws:sqs:eu-west-1:123:wardrobe-item-processing-dlq-dev';
 
 interface Command {
   _op: 'Get' | 'Update';
@@ -77,13 +78,17 @@ function job(overrides: Record<string, unknown> = {}): string {
   });
 }
 
-function record(body: string, messageId = 'msg-1'): SQSRecord {
+function record(
+  body: string,
+  messageId = 'msg-1',
+  options: { receiveCount?: string; eventSourceARN?: string } = {},
+): SQSRecord {
   return {
     messageId,
     receiptHandle: 'rh',
     body,
     attributes: {
-      ApproximateReceiveCount: '1',
+      ApproximateReceiveCount: options.receiveCount ?? '1',
       SentTimestamp: '0',
       SenderId: 'sender',
       ApproximateFirstReceiveTimestamp: '0',
@@ -91,7 +96,9 @@ function record(body: string, messageId = 'msg-1'): SQSRecord {
     messageAttributes: {},
     md5OfBody: '',
     eventSource: 'aws:sqs',
-    eventSourceARN: 'arn:aws:sqs:eu-west-1:123:wardrobe-item-processing-dev',
+    eventSourceARN:
+      options.eventSourceARN ??
+      'arn:aws:sqs:eu-west-1:123:wardrobe-item-processing-dev',
     awsRegion: 'eu-west-1',
   };
 }
@@ -112,18 +119,31 @@ function statusUpdates(): string[] {
     .map((command) => String(command.input.ExpressionAttributeValues?.[':processingStatus']));
 }
 
+function processingErrors(): Array<string | undefined> {
+  return commands()
+    .filter((command) => command._op === 'Update')
+    .map(
+      (command) =>
+        command.input.ExpressionAttributeValues?.[':processingError'] as
+          | string
+          | undefined,
+    );
+}
+
 function throttleError(): Error {
   const error = new Error('Throughput exceeds the current capacity');
   error.name = 'ThrottlingException';
   return error;
 }
 
-describe('processing worker (WARDROBE-17)', () => {
+describe('processing worker (WARDROBE-17 / WARDROBE-59)', () => {
   const originalTable = process.env.TABLE_NAME;
+  const originalDlqArn = process.env.PROCESSING_DLQ_ARN;
 
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
+    process.env.PROCESSING_DLQ_ARN = DLQ_ARN;
     mockRunPipeline.mockResolvedValue(undefined);
     mockSend.mockImplementation(async (command: Command) => {
       if (command._op === 'Get') {
@@ -144,6 +164,11 @@ describe('processing worker (WARDROBE-17)', () => {
       delete process.env.TABLE_NAME;
     } else {
       process.env.TABLE_NAME = originalTable;
+    }
+    if (originalDlqArn === undefined) {
+      delete process.env.PROCESSING_DLQ_ARN;
+    } else {
+      process.env.PROCESSING_DLQ_ARN = originalDlqArn;
     }
   });
 
@@ -240,6 +265,7 @@ describe('processing worker (WARDROBE-17)', () => {
 
     expect(result).toEqual({ batchItemFailures: [] });
     expect(statusUpdates()).toEqual(['FAILED']);
+    expect(processingErrors()).toEqual(['originalImageKey does not match stored item']);
     expect(mockRunPipeline).not.toHaveBeenCalled();
   });
 
@@ -297,6 +323,7 @@ describe('processing worker (WARDROBE-17)', () => {
 
     expect(result).toEqual({ batchItemFailures: [] });
     expect(statusUpdates()).toEqual(['PROCESSING', 'FAILED']);
+    expect(processingErrors()).toEqual([undefined, 'unusable image']);
   });
 
   it('rethrows unexpected pipeline errors as batch failures for SQS retry', async () => {
@@ -308,6 +335,78 @@ describe('processing worker (WARDROBE-17)', () => {
       batchItemFailures: [{ itemIdentifier: 'msg-1' }],
     });
     expect(statusUpdates()).toEqual(['PROCESSING']);
+    expect(processingErrors()).toEqual([undefined]);
+  });
+
+  it('sets FAILED with processingError and acks on the last receive', async () => {
+    mockRunPipeline.mockRejectedValue(new Error('transient model timeout'));
+
+    const result = await handler({
+      Records: [record(job(), 'msg-1', { receiveCount: '3' })],
+    });
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(statusUpdates()).toEqual(['PROCESSING', 'FAILED']);
+    expect(processingErrors()).toEqual([undefined, 'transient model timeout']);
+    const failedUpdate = commands().filter((command) => command._op === 'Update').at(-1);
+    expect(failedUpdate?.input.ConditionExpression).toContain('#processingStatus <> :readyStatus');
+    expect(failedUpdate?.input.ExpressionAttributeValues?.[':readyStatus']).toBe('READY');
+  });
+
+  it('marks FAILED from the job body when the last receive cannot load the item', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        throw throttleError();
+      }
+      return {
+        Attributes: dynamoItem({
+          processingStatus: command.input.ExpressionAttributeValues?.[
+            ':processingStatus'
+          ] as DynamoItem['processingStatus'],
+        }),
+      };
+    });
+
+    const result = await handler({
+      Records: [record(job(), 'msg-1', { receiveCount: '3' })],
+    });
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(statusUpdates()).toEqual(['FAILED']);
+    expect(processingErrors()).toEqual(['Throughput exceeds the current capacity']);
+    expect(mockRunPipeline).not.toHaveBeenCalled();
+  });
+
+  it('marks FAILED on a DLQ record without re-running the pipeline', async () => {
+    const result = await handler({
+      Records: [
+        record(job(), 'dlq-1', {
+          receiveCount: '1',
+          eventSourceARN: DLQ_ARN,
+        }),
+      ],
+    });
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(statusUpdates()).toEqual(['FAILED']);
+    expect(processingErrors()).toEqual(['Processing retries exhausted']);
+    expect(mockRunPipeline).not.toHaveBeenCalled();
+  });
+
+  it('clears processingError when the pipeline reaches READY', async () => {
+    const result = await handler(eventFor(job()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    const readyUpdate = commands()
+      .filter((command) => command._op === 'Update')
+      .find(
+        (command) =>
+          command.input.ExpressionAttributeValues?.[':processingStatus'] === 'READY',
+      );
+    expect(readyUpdate?.input.UpdateExpression).toContain('REMOVE #processingError');
+    expect(readyUpdate?.input.ExpressionAttributeNames?.['#processingError']).toBe(
+      'processingError',
+    );
   });
 
   it('acks poison records and retries only the retryable record in a batch', async () => {

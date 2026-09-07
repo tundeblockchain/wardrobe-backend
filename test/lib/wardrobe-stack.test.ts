@@ -314,7 +314,19 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     }
 
     const eventSources = template.findResources('AWS::Lambda::EventSourceMapping');
-    expect(Object.keys(eventSources).length).toBe(2);
+    expect(Object.keys(eventSources).length).toBe(3);
+  });
+
+  test('ProcessingFn consumes the item-processing DLQ so exhausted jobs become FAILED', () => {
+    const mappings = Object.values(
+      template.findResources('AWS::Lambda::EventSourceMapping'),
+    ) as Array<{
+      Properties: { EventSourceArn: unknown };
+    }>;
+    const dlqMapped = mappings.some((mapping) =>
+      JSON.stringify(mapping.Properties.EventSourceArn).includes('ItemProcessingDlq'),
+    );
+    expect(dlqMapped).toBe(true);
   });
 
   test('ProcessingFn timeout stays below SQS visibility (retries / DLQ)', () => {

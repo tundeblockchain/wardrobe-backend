@@ -3,7 +3,12 @@ import { getItem, keys, updateAttributes } from '../../shared/dynamodb';
 import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import { parseProcessWardrobeItemJob } from '../../shared/sqs';
-import { DynamoItem, ProcessingStatus, ProcessWardrobeItemJob } from '../../shared/types';
+import {
+  DynamoItem,
+  ITEM_PROCESSING_MAX_RECEIVE_COUNT,
+  ProcessingStatus,
+  ProcessWardrobeItemJob,
+} from '../../shared/types';
 import {
   isRetryableProcessingFailure,
   PermanentProcessingError,
@@ -11,19 +16,24 @@ import {
 } from './errors';
 import { runProcessingPipeline } from './pipeline';
 
+const EXHAUSTED_ERROR = 'Processing retries exhausted';
+const KEY_MISMATCH_ERROR = 'originalImageKey does not match stored item';
+const PROCESSING_ERROR_MAX_LENGTH = 240;
+
 /**
  * SQS worker for PROCESS_WARDROBE_ITEM.
  *
  * DynamoDB is the source of truth. The SQS body is only a pointer;
  * owner, wardrobe, item, and originalImageKey are re-checked on load.
  *
- * Status machine (WARDROBE-17):
- *   PENDING → PROCESSING → READY   (stub pipeline success)
- *   *       → FAILED               (permanent / validation errors)
+ * Status machine (WARDROBE-17 / WARDROBE-59):
+ *   PENDING → PROCESSING → READY   (pipeline success)
+ *   *       → FAILED               (permanent / validation / exhausted retries)
  *
  * Retryable failures throw/report batch item failures so SQS redelivers.
- * After maxReceiveCount (3) the message lands on the DLQ (WARDROBE-15).
- * Poison messages are acked so they do not cycle the retry budget.
+ * On the last receive (maxReceiveCount) or a DLQ record, Dynamo is marked
+ * FAILED and the message is acked. Poison messages are acked so they do
+ * not cycle the retry budget.
  */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: SQSBatchItemFailure[] = [];
@@ -35,8 +45,23 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       if (isRetryableProcessingFailure(error)) {
         logger.error('Retryable clothing-item processing failure', {
           messageId: record.messageId,
+          receiveCount: record.attributes.ApproximateReceiveCount,
           error: error instanceof Error ? error.message : 'unknown',
         });
+
+        if (isTerminalReceive(record)) {
+          try {
+            await persistTerminalFailure(record, error);
+            continue;
+          } catch (markError) {
+            if (isRetryableProcessingFailure(markError)) {
+              batchItemFailures.push({ itemIdentifier: record.messageId });
+              continue;
+            }
+            continue;
+          }
+        }
+
         batchItemFailures.push({ itemIdentifier: record.messageId });
         continue;
       }
@@ -67,7 +92,15 @@ async function processRecord(record: SQSRecord): Promise<void> {
     itemId: job.itemId,
     wardrobeId: job.wardrobeId,
     receiveCount: record.attributes.ApproximateReceiveCount,
+    fromDlq: isDlqRecord(record),
   });
+
+  // WARDROBE-59: DLQ is the safety net for timeouts / crashes that never
+  // reached markFailed. Do not re-run the pipeline.
+  if (isDlqRecord(record)) {
+    await markFailed(job.wardrobeId, job.itemId, EXHAUSTED_ERROR);
+    return;
+  }
 
   const item = await loadItemForJob(job);
   if (!item) {
@@ -80,7 +113,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       itemId: job.itemId,
       wardrobeId: job.wardrobeId,
     });
-    await markFailed(job.wardrobeId, job.itemId);
+    await markFailed(job.wardrobeId, job.itemId, KEY_MISMATCH_ERROR);
     return;
   }
 
@@ -116,7 +149,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         wardrobeId: job.wardrobeId,
         error: error.message,
       });
-      await markFailed(job.wardrobeId, job.itemId);
+      await markFailed(job.wardrobeId, job.itemId, error.message);
       return;
     }
     throw error instanceof RetryableProcessingError
@@ -186,24 +219,101 @@ function itemOriginalKey(item: DynamoItem): string | undefined {
   return typeof item.originalKey === 'string' ? item.originalKey : undefined;
 }
 
-async function markFailed(wardrobeId: string, itemId: string): Promise<void> {
-  await setProcessingStatus(wardrobeId, itemId, 'FAILED');
+function isDlqRecord(record: SQSRecord): boolean {
+  const dlqArn = process.env.PROCESSING_DLQ_ARN;
+  return Boolean(dlqArn && record.eventSourceARN === dlqArn);
+}
+
+function receiveCount(record: SQSRecord): number {
+  const raw = Number.parseInt(
+    record.attributes.ApproximateReceiveCount ?? '1',
+    10,
+  );
+  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
+function isLastReceive(record: SQSRecord): boolean {
+  return receiveCount(record) >= ITEM_PROCESSING_MAX_RECEIVE_COUNT;
+}
+
+function isTerminalReceive(record: SQSRecord): boolean {
+  return isDlqRecord(record) || isLastReceive(record);
+}
+
+function sanitizeProcessingError(reason: string): string {
+  const trimmed = reason.replace(/\s+/g, ' ').trim();
+  if (!trimmed) {
+    return EXHAUSTED_ERROR;
+  }
+  return trimmed.length > PROCESSING_ERROR_MAX_LENGTH
+    ? trimmed.slice(0, PROCESSING_ERROR_MAX_LENGTH)
+    : trimmed;
+}
+
+async function persistTerminalFailure(
+  record: SQSRecord,
+  error: unknown,
+): Promise<void> {
+  const job = parseProcessWardrobeItemJob(record.body);
+  if (!job) {
+    return;
+  }
+
+  const reason =
+    error instanceof Error && error.message.trim()
+      ? error.message
+      : EXHAUSTED_ERROR;
+
+  await markFailed(job.wardrobeId, job.itemId, reason);
+}
+
+async function markFailed(
+  wardrobeId: string,
+  itemId: string,
+  reason: string,
+): Promise<void> {
+  await setProcessingStatus(wardrobeId, itemId, 'FAILED', reason);
 }
 
 async function setProcessingStatus(
   wardrobeId: string,
   itemId: string,
   processingStatus: ProcessingStatus,
+  processingError?: string,
 ): Promise<boolean> {
   try {
-    await updateAttributes(keys.wardrobePk(wardrobeId), keys.itemSk(itemId), {
+    const attributes: Record<string, unknown> = {
       processingStatus,
       updatedAt: nowIso(),
-    });
+    };
+
+    if (processingStatus === 'FAILED') {
+      attributes.processingError = sanitizeProcessingError(
+        processingError ?? EXHAUSTED_ERROR,
+      );
+      await updateAttributes(
+        keys.wardrobePk(wardrobeId),
+        keys.itemSk(itemId),
+        attributes,
+        {
+          conditionExpression:
+            'attribute_exists(PK) AND (attribute_not_exists(#processingStatus) OR #processingStatus <> :readyStatus)',
+          extraValues: { ':readyStatus': 'READY' },
+        },
+      );
+      return true;
+    }
+
+    await updateAttributes(
+      keys.wardrobePk(wardrobeId),
+      keys.itemSk(itemId),
+      attributes,
+      processingStatus === 'READY' ? { remove: ['processingError'] } : undefined,
+    );
     return true;
   } catch (error) {
     if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
-      logger.warn('Item disappeared while updating processing status', {
+      logger.warn('Item disappeared or is READY while updating processing status', {
         itemId,
         wardrobeId,
         processingStatus,

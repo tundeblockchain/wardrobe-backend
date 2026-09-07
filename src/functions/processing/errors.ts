@@ -1,7 +1,8 @@
 /**
- * Worker-side errors. Permanent failures are acked (optionally after
- * FAILED). Retryable failures are reported to SQS so the message is
- * redelivered and can land on the DLQ after maxReceiveCount (3).
+ * Worker-side errors. Permanent failures are acked after FAILED.
+ * Retryable failures are reported to SQS so the message is redelivered.
+ * After maxReceiveCount (or on the DLQ) the worker writes FAILED so
+ * Dynamo is never left on PROCESSING (WARDROBE-59).
  */
 
 export class PermanentProcessingError extends Error {

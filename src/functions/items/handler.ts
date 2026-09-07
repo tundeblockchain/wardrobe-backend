@@ -275,6 +275,13 @@ async function toClothingItem(item: DynamoItem): Promise<ClothingItem> {
   if (typeof item.brand === 'string') {
     dto.brand = item.brand;
   }
+  if (
+    dto.processingStatus === 'FAILED' &&
+    typeof item.processingError === 'string' &&
+    item.processingError.trim()
+  ) {
+    dto.processingError = item.processingError;
+  }
 
   if (typeof item.originalKey === 'string') {
     dto.image = {

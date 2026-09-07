@@ -531,6 +531,9 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
           image: { originalKey: OWNER_IMAGE_KEY },
         }),
       );
+      expect((bodyOf(result) as { items: ClothingItem[] }).items[0]).not.toHaveProperty(
+        'processingError',
+      );
 
       const query = mockSend.mock.calls.find(
         (call) => (call[0] as Command)._op === 'Query',
@@ -538,6 +541,34 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       expect(query.input.ExpressionAttributeValues).toEqual({
         ':pk': `WARDROBE#${WARDROBE_ID}`,
         ':sk': 'ITEM#',
+      });
+    });
+
+    it('includes processingError on FAILED items (WARDROBE-59)', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [
+              dynamoItem(OWNER_ID, {
+                processingStatus: 'FAILED',
+                processingError: 'unusable image',
+              }),
+            ],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        items: [
+          itemDto({
+            processingStatus: 'FAILED',
+            processingError: 'unusable image',
+          }),
+        ],
       });
     });
 
@@ -877,6 +908,35 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
             processedKey: OWNER_PROCESSED_KEY,
           },
           processedImageUrl: PROCESSED_IMAGE_URL,
+        }),
+      );
+    });
+
+    it('returns FAILED with processingError for Flutter (WARDROBE-59)', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return {
+            Item: dynamoItem(OWNER_ID, {
+              processingStatus: 'FAILED',
+              processingError: 'Processing retries exhausted',
+            }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        itemDto({
+          processingStatus: 'FAILED',
+          processingError: 'Processing retries exhausted',
         }),
       );
     });

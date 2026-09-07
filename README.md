@@ -27,7 +27,7 @@ Working in this first cut:
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
 - AI Profile CRUD plus PERSONAL reference-image presign/attach and seeded GENERIC_MODEL catalog
 - Outfit try-on worker (Gemini `generateContent` image; writes `users/{uid}/outfits/{outfitId}/render.png`)
-- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
+- Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
 ## Prerequisites
 
@@ -306,7 +306,7 @@ Create body (`name`, `category`, and `imageKey` required):
 
 `category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user.
 
-Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
 
 #### Clothing-item image URLs (WARDROBE-54)
 
@@ -339,6 +339,7 @@ The media bucket stays private. Create / list / get / PATCH return short-lived *
 | `originalImageUrl` | Whenever `originalKey` exists (`PENDING` / `PROCESSING` / `READY` / `FAILED`) — 15-minute (`expiresIn` **900**) presigned GET via `createPresignedGetUrl` |
 | `image.processedKey` | After background removal writes `processed.png` (typically `READY`) |
 | `processedImageUrl` | Whenever `processedKey` exists — same 900s presigned GET. Both URLs are returned when both keys exist so Flutter can prefer processed |
+| `processingError` | `FAILED` only — short worker reason (`originalImageKey` mismatch, permanent Gemini / image error, or exhausted retries). Omitted on PENDING / PROCESSING / READY |
 
 URLs are never written to Dynamo. A presign failure is logged and the URL is omitted; the rest of the item still returns `200` / `201`. Same TTL as `POST /uploads` (`expiresIn: 900`) and outfit `render.imageUrl`.
 
@@ -351,11 +352,14 @@ Status machine:
 ```text
 PENDING → PROCESSING → READY     pipeline success
         → FAILED                 permanent / validation errors
+                                 exhausted retries (last receive or DLQ)
 ```
+
+The terminal failure string is **`FAILED`** (not `ERROR`). Flutter should stop polling when create / list / get return `FAILED` and may show optional `processingError`.
 
 Poison messages (invalid JSON, unknown `jobType`, missing item, owner mismatch) are acked and dropped. An `originalImageKey` mismatch sets `FAILED` then acks.
 
-Retries use the existing queue (WARDROBE-15): Lambda timeout **60s**, visibility timeout **120s** (visibility must stay greater than the timeout), `maxReceiveCount: 3`, then the DLQ + CloudWatch alarms. Retryable DynamoDB / provider / S3 errors are returned as SQS batch item failures so the message is redelivered.
+Retries use the existing queue (WARDROBE-15): Lambda timeout **60s**, visibility timeout **120s** (visibility must stay greater than the timeout), `maxReceiveCount: 3`, then the DLQ + CloudWatch alarms. Retryable DynamoDB / provider / S3 errors are returned as SQS batch item failures so the message is redelivered. On the last receive (`ApproximateReceiveCount >= 3`) the worker writes `processingStatus: FAILED` plus `processingError` and acks. The same Lambda also consumes the processing DLQ so timeouts / crashes that never reached that last-receive write still become `FAILED` (WARDROBE-59). Dynamo is never left on `PROCESSING` as a terminal state.
 
 Background removal (WARDROBE-26) reads the Dynamo-validated `originalImageKey` from the private media bucket, calls an injectable Gemini vision/image client (Secrets Manager credential; unit tests mock Gemini — no live Gemini calls in CI), writes `users/{userId}/items/{itemId}/processed.png`, and updates DynamoDB:
 
@@ -363,19 +367,32 @@ Background removal (WARDROBE-26) reads the Dynamo-validated `originalImageKey` f
 - `ai.backgroundRemoved = true`
 - `ai.processedImageKey` — architecture metadata (merged into any existing `ai` map)
 
-The original object is kept. Permanent Gemini / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
+The original object is kept. Permanent Gemini / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED` with `processingError`. Transient failures throw `RetryableProcessingError` for SQS retry; after `maxReceiveCount` the worker (or DLQ path) sets `FAILED`.
 
 Pipeline hooks:
 
 1. Background removal (WARDROBE-26, Gemini) — implemented
 2. AI classification (WARDROBE-19/27, Gemini) — injectable `generateContent` classifier; persists `ai.detectedCategory` / `ai.detectedSubcategory` only (never overwrites user `category` / `subcategory`)
-3. Colour / category detection (WARDROBE-20 / WARDROBE-29) — injectable Gemini `generateContent` detector (deployed default). Persists `ai.detectedColours` (controlled tokens such as `BLACK`, `WHITE`, `RED`, `BLUE`) and may refine `ai.detectedCategory` / `ai.detectedSubcategory`. Never overwrites user-owned `category`, `subcategory`, or `colours`. Soft Gemini failures throw `PermanentProcessingError` / `RetryableProcessingError` so the worker sets `FAILED` or retries then DLQ — they never 500 the worker.
+3. Colour / category detection (WARDROBE-20 / WARDROBE-29) — injectable Gemini `generateContent` detector (deployed default). Persists `ai.detectedColours` (controlled tokens such as `BLACK`, `WHITE`, `RED`, `BLUE`) and may refine `ai.detectedCategory` / `ai.detectedSubcategory`. Never overwrites user-owned `category`, `subcategory`, or `colours`. Soft Gemini failures throw `PermanentProcessingError` / `RetryableProcessingError` so the worker sets `FAILED` or retries then marks `FAILED` after exhaustion — they never 500 the worker.
 
 Classification and colour detection both use the processed image key when present (including the key just written by Gemini), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/gemini-background-removal`, `wardrobe/{stage}/gemini-classifier`, and `wardrobe/{stage}/gemini-colour`); unit tests inject mock clients or use `COLOUR_DETECTOR_STRATEGY=http` and never call a live vision API. After deploy, replace the Gemini placeholders with API keys (or JSON `{"apiKey":"...","model":"..."}`) — do not commit AI keys.
 
-Gemini classifier and colour-detector failures follow the existing worker degrade path: permanent errors (`PermanentProcessingError`) mark the item `FAILED` and ack; transient errors (`RetryableProcessingError`) are reported as SQS batch item failures for retry then DLQ. The worker does not 500.
+Gemini classifier and colour-detector failures follow the existing worker degrade path: permanent errors (`PermanentProcessingError`) mark the item `FAILED` and ack; transient errors (`RetryableProcessingError`) are reported as SQS batch item failures for retry, then `FAILED` after exhaustion (last receive or DLQ). The worker does not 500.
 
-The worker still sets `processingStatus: READY` after the full pipeline returns successfully, or `FAILED` on `PermanentProcessingError`. Transient failures throw `RetryableProcessingError` for SQS retry then DLQ.
+The worker still sets `processingStatus: READY` after the full pipeline returns successfully (and removes `processingError`), or `FAILED` on `PermanentProcessingError` / exhausted retries.
+
+#### Flutter contract (WARDROBE-59)
+
+Poll create / list / get until a terminal status. Do not treat `PROCESSING` as finished.
+
+| `processingStatus` | Flutter |
+| --- | --- |
+| `PENDING` | Show processing; keep polling |
+| `PROCESSING` | Show processing; keep polling |
+| `READY` | Done; hide spinner |
+| `FAILED` | Done; stop polling; show `processingError` when present |
+
+`FAILED` is the only terminal failure value. There is no `ERROR` status.
 
 ### Outfits
 

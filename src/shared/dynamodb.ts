@@ -147,9 +147,14 @@ export async function updateAttributes(
   pk: string,
   sk: string,
   attributes: Record<string, unknown>,
+  options?: {
+    remove?: string[];
+    conditionExpression?: string;
+    extraValues?: Record<string, unknown>;
+  },
 ): Promise<DynamoItem> {
   const names: Record<string, string> = {};
-  const values: Record<string, unknown> = {};
+  const values: Record<string, unknown> = { ...(options?.extraValues ?? {}) };
   const sets: string[] = [];
 
   for (const [key, value] of Object.entries(attributes)) {
@@ -158,14 +163,33 @@ export async function updateAttributes(
     sets.push(`#${key} = :${key}`);
   }
 
+  const remove = options?.remove ?? [];
+  for (const key of remove) {
+    names[`#${key}`] = key;
+  }
+
+  const clauses: string[] = [];
+  if (sets.length > 0) {
+    clauses.push(`SET ${sets.join(', ')}`);
+  }
+  if (remove.length > 0) {
+    clauses.push(`REMOVE ${remove.map((key) => `#${key}`).join(', ')}`);
+  }
+  if (clauses.length === 0) {
+    throw Errors.internal('updateAttributes requires attributes to set or remove.');
+  }
+
   const result = await client.send(
     new UpdateCommand({
       TableName: tableName(),
       Key: { PK: pk, SK: sk },
-      UpdateExpression: `SET ${sets.join(', ')}`,
+      UpdateExpression: clauses.join(' '),
       ExpressionAttributeNames: names,
-      ExpressionAttributeValues: values,
-      ConditionExpression: 'attribute_exists(PK)',
+      ...(Object.keys(values).length > 0
+        ? { ExpressionAttributeValues: values }
+        : {}),
+      ConditionExpression:
+        options?.conditionExpression ?? 'attribute_exists(PK)',
       ReturnValues: 'ALL_NEW',
     }),
   );
