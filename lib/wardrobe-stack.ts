@@ -20,6 +20,7 @@ import {
   genericModelIds,
 } from '../src/functions/ai-profiles/catalog';
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
+import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
 import { addSupportMail } from './support-mail';
 
 export interface WardrobeStackProps extends cdk.StackProps {
@@ -92,8 +93,10 @@ export class WardrobeStack extends cdk.Stack {
     // WARDROBE-18/26 Gemini bg-remove + WARDROBE-19/27 Gemini classify +
     // WARDROBE-20/29 Gemini colour. Visibility must stay greater than the worker
     // timeout so an in-flight Gemini / vision invoke is not redelivered. After
-    // maxReceiveCount: 3 SQS sends the message to the DLQ (alarmed
-    // below). No EventBridge.
+    // maxReceiveCount (ITEM_PROCESSING_MAX_RECEIVE_COUNT) SQS sends the
+    // message to the DLQ (alarmed below). The worker marks FAILED on the
+    // last receive or DLQ so Dynamo is never stuck on PROCESSING
+    // (WARDROBE-59). No EventBridge.
     const processingLambdaTimeout = cdk.Duration.seconds(60);
     const processingVisibilityTimeout = cdk.Duration.seconds(120);
 
@@ -115,7 +118,7 @@ export class WardrobeStack extends cdk.Stack {
       removalPolicy,
       deadLetterQueue: {
         queue: processingDlq,
-        maxReceiveCount: 3,
+        maxReceiveCount: ITEM_PROCESSING_MAX_RECEIVE_COUNT,
       },
     });
 
@@ -339,6 +342,7 @@ export class WardrobeStack extends cdk.Stack {
       environment: {
         ...commonLambdaProps.environment,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+        PROCESSING_DLQ_ARN: processingDlq.queueArn,
         BACKGROUND_REMOVAL_SECRET_ARN: backgroundRemovalSecret.secretArn,
         AI_CLASSIFIER_SECRET_ARN: aiClassifierSecret.secretArn,
         AI_COLOUR_DETECTOR_SECRET_ARN: aiColourDetectorSecret.secretArn,
@@ -414,6 +418,14 @@ export class WardrobeStack extends cdk.Stack {
 
     processingFn.addEventSource(
       new SqsEventSource(processingQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      }),
+    );
+    // WARDROBE-59: timeouts / crashes can land on the DLQ without a
+    // last-receive FAILED write. Same worker marks Dynamo FAILED and acks.
+    processingFn.addEventSource(
+      new SqsEventSource(processingDlq, {
         batchSize: 1,
         reportBatchItemFailures: true,
       }),

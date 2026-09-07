@@ -99,6 +99,13 @@ export interface GarmentAiMetadata {
 
 export type ProcessingStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
 
+/**
+ * Must match the clothing-item processing queue `maxReceiveCount` in
+ * `lib/wardrobe-stack.ts`. After this many receives, Dynamo is marked
+ * `FAILED` (WARDROBE-59) so Flutter is never stuck on `PROCESSING`.
+ */
+export const ITEM_PROCESSING_MAX_RECEIVE_COUNT = 3;
+
 export const PROCESS_WARDROBE_ITEM_JOB = 'PROCESS_WARDROBE_ITEM' as const;
 
 export interface ProcessWardrobeItemJob {
@@ -195,6 +202,11 @@ export interface ClothingItem {
   /** Presigned GET for `image.processedKey`. Present when a processed object exists. */
   processedImageUrl?: string;
   processingStatus: ProcessingStatus;
+  /**
+   * Present on `FAILED` (WARDROBE-59). Short worker reason for Flutter.
+   * Omitted on PENDING / PROCESSING / READY.
+   */
+  processingError?: string;
   createdAt: string;
   updatedAt: string;
 }
