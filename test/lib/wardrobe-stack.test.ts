@@ -144,6 +144,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'wardrobe-item-processing-dlq-dev',
+      VisibilityTimeout: 120,
       MessageRetentionPeriod: 1209600,
       SqsManagedSseEnabled: true,
       RedrivePolicy: Match.absent(),
@@ -358,7 +359,60 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       },
     });
 
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'wardrobe-item-processing-dlq-dev',
+      VisibilityTimeout: 120,
+    });
+
     expect(processing?.Properties.Timeout).toBeLessThan(120);
+  });
+
+  test('every SQS EventSourceMapping has queue visibility >= function timeout', () => {
+    const queues = template.findResources('AWS::SQS::Queue') as Record<
+      string,
+      { Properties?: { QueueName?: string; VisibilityTimeout?: number } }
+    >;
+    const functions = template.findResources('AWS::Lambda::Function') as Record<
+      string,
+      { Properties?: { Timeout?: number } }
+    >;
+    const mappings = Object.values(
+      template.findResources('AWS::Lambda::EventSourceMapping'),
+    ) as Array<{
+      Properties: { EventSourceArn?: unknown; FunctionName?: unknown };
+    }>;
+
+    expect(mappings.length).toBeGreaterThan(0);
+
+    const logicalId = (value: unknown): string | undefined => {
+      if (!value || typeof value !== 'object') {
+        return undefined;
+      }
+      if ('Ref' in value && typeof (value as { Ref: unknown }).Ref === 'string') {
+        return (value as { Ref: string }).Ref;
+      }
+      const getAtt = (value as { 'Fn::GetAtt'?: unknown })['Fn::GetAtt'];
+      if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') {
+        return getAtt[0];
+      }
+      return undefined;
+    };
+
+    for (const mapping of mappings) {
+      const queueId = logicalId(mapping.Properties.EventSourceArn);
+      const functionId = logicalId(mapping.Properties.FunctionName);
+      expect(queueId).toBeDefined();
+      expect(functionId).toBeDefined();
+
+      const queue = queues[queueId!];
+      const fn = functions[functionId!];
+      expect(queue).toBeDefined();
+      expect(fn).toBeDefined();
+
+      const visibility = queue.Properties?.VisibilityTimeout ?? 30;
+      const timeout = fn.Properties?.Timeout ?? 3;
+      expect(visibility).toBeGreaterThanOrEqual(timeout);
+    }
   });
 
   test('ProcessingFn IAM is least privilege for Get/Update and S3 read+write', () => {
@@ -956,6 +1010,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     });
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'wardrobe-outfit-render-dlq-dev',
+      VisibilityTimeout: 120,
       MessageRetentionPeriod: 1209600,
       SqsManagedSseEnabled: true,
       RedrivePolicy: Match.absent(),
