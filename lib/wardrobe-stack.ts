@@ -97,11 +97,18 @@ export class WardrobeStack extends cdk.Stack {
     // message to the DLQ (alarmed below). The worker marks FAILED on the
     // last receive or DLQ so Dynamo is never stuck on PROCESSING
     // (WARDROBE-59). No EventBridge.
+    //
+    // WARDROBE-61: AWS rejects EventSourceMappings when queue visibility
+    // is less than the function timeout. Derive visibility from the worker
+    // timeout so the main queues and the item-processing DLQ cannot drift.
     const processingLambdaTimeout = cdk.Duration.seconds(60);
-    const processingVisibilityTimeout = cdk.Duration.seconds(120);
+    const processingVisibilityTimeout = cdk.Duration.seconds(
+      processingLambdaTimeout.toSeconds() * 2,
+    );
 
     const processingDlq = new sqs.Queue(this, 'ItemProcessingDlq', {
       queueName: `wardrobe-item-processing-dlq-${stage}`,
+      visibilityTimeout: processingVisibilityTimeout,
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       enforceSSL: true,
@@ -127,6 +134,9 @@ export class WardrobeStack extends cdk.Stack {
     // handling and item-processing alarms stay isolated.
     const tryOnDlq = new sqs.Queue(this, 'OutfitRenderDlq', {
       queueName: `wardrobe-outfit-render-dlq-${stage}`,
+      // Not an EventSource today; keep the same visibility as OutfitRenderFn
+      // so a later DLQ consumer cannot recreate the WARDROBE-61 deploy fail.
+      visibilityTimeout: processingVisibilityTimeout,
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       enforceSSL: true,
