@@ -1,6 +1,8 @@
 import { PermanentProcessingError, RetryableProcessingError } from '../../src/functions/processing/errors';
 import {
   DEFAULT_GEMINI_CLASSIFIER_MODEL,
+  DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL,
+  DEFAULT_GEMINI_COLOUR_MODEL,
   classifyGeminiHttpStatus,
   extractGeminiText,
   geminiBlockReason,
@@ -9,6 +11,7 @@ import {
   normalizeGeminiModelId,
   parseGeminiApiSecret,
   parseGeminiJsonText,
+  pinClassifyColourGeminiConfig,
   resolveGeminiEndpoint,
   resolveGeminiGenerateContentConfig,
 } from '../../src/functions/processing/gemini';
@@ -29,15 +32,44 @@ describe('Gemini generateContent helpers', () => {
     );
   });
 
-  it('remaps retired Gemini model ids to the caller fallback', () => {
+  it('remaps retired Gemini model ids to the caller fallback, not gemini-2.5-flash', () => {
     expect(normalizeGeminiModelId('gemini-2.0-flash', DEFAULT_GEMINI_CLASSIFIER_MODEL)).toBe(
-      DEFAULT_GEMINI_CLASSIFIER_MODEL,
+      DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL,
     );
     expect(normalizeGeminiModelId('gemini-1.5-flash', DEFAULT_GEMINI_CLASSIFIER_MODEL)).toBe(
-      DEFAULT_GEMINI_CLASSIFIER_MODEL,
+      DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL,
     );
     expect(normalizeGeminiModelId('gemini-pro-vision', DEFAULT_GEMINI_CLASSIFIER_MODEL)).toBe(
-      DEFAULT_GEMINI_CLASSIFIER_MODEL,
+      DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL,
+    );
+    expect(normalizeGeminiModelId('gemini-2.0-flash', DEFAULT_GEMINI_CLASSIFIER_MODEL)).not.toBe(
+      'gemini-2.5-flash',
+    );
+  });
+
+  it('hardcodes classify/colour to gemini-2.5-flash-lite and does not remap onto gemini-2.5-flash', () => {
+    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).toBe('gemini-2.5-flash-lite');
+    expect(DEFAULT_GEMINI_COLOUR_MODEL).toBe('gemini-2.5-flash-lite');
+    expect(DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL).toBe('gemini-2.5-flash-lite');
+    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).not.toBe('gemini-2.5-flash');
+    expect(DEFAULT_GEMINI_COLOUR_MODEL).not.toBe('gemini-2.5-flash');
+
+    const pinned = pinClassifyColourGeminiConfig({
+      apiKey: 'key',
+      model: 'gemini-2.5-flash',
+      endpoint: geminiGenerateContentUrl('gemini-2.5-flash'),
+    });
+    expect(pinned).toEqual({
+      apiKey: 'key',
+      model: 'gemini-2.5-flash-lite',
+      endpoint: geminiGenerateContentUrl('gemini-2.5-flash-lite'),
+    });
+    expect(pinned.model).not.toBe('gemini-2.5-flash');
+    expect(pinned.endpoint).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+    );
+    expect(geminiRequestPath(pinned.endpoint)).toBe(
+      '/v1beta/models/gemini-2.5-flash-lite:generateContent',
     );
   });
 

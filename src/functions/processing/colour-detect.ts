@@ -27,7 +27,7 @@ import {
   geminiBlockReason,
   parseGeminiApiSecret,
   parseGeminiJsonText,
-  resolveGeminiGenerateContentConfig,
+  pinClassifyColourGeminiConfig,
   resolveGeminiImageMimeType,
 } from './gemini';
 import type { ProcessingContext } from './pipeline';
@@ -468,7 +468,9 @@ export function parseGeminiColourDetectorSecret(
   if (!secretString?.trim()) {
     throw new RetryableProcessingError('Gemini colour-detection secret is empty');
   }
-  return parseGeminiApiSecret(secretString, DEFAULT_GEMINI_COLOUR_MODEL);
+  return pinClassifyColourGeminiConfig(
+    parseGeminiApiSecret(secretString, DEFAULT_GEMINI_COLOUR_MODEL),
+  );
 }
 
 export async function loadGeminiColourDetectorConfig(
@@ -511,11 +513,10 @@ export async function loadGeminiColourDetectorConfig(
     throw new RetryableProcessingError('Gemini colour-detection API key is empty');
   }
 
-  const config = resolveGeminiGenerateContentConfig(fromSecret, {
-    defaultModel: DEFAULT_GEMINI_COLOUR_MODEL,
-    modelOverride: process.env.GEMINI_COLOUR_MODEL,
-    endpointOverride: process.env.GEMINI_COLOUR_ENDPOINT,
-  });
+  const config = pinClassifyColourGeminiConfig(
+    fromSecret,
+    process.env.GEMINI_COLOUR_ENDPOINT,
+  );
   cachedGeminiConfig = config;
   cachedGeminiConfigAt = Date.now();
   return config;

@@ -22,11 +22,18 @@ export const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
 /** Image-generation model used by WARDROBE-47 virtual try-on. */
 export const DEFAULT_GEMINI_TRY_ON_MODEL = DEFAULT_GEMINI_IMAGE_MODEL;
 
+/**
+ * WARDROBE-65: classify and colour are hardcoded to flash-lite.
+ * `gemini-2.5-flash` 404s in prod (`/v1beta/models/gemini-2.5-flash:generateContent`)
+ * and must not be the default or remap target for those stages.
+ */
+export const DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL = 'gemini-2.5-flash-lite';
+
 /** Multimodal text model used by WARDROBE-27 garment classification. */
-export const DEFAULT_GEMINI_CLASSIFIER_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_GEMINI_CLASSIFIER_MODEL = DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL;
 
 /** Multimodal text model used by WARDROBE-29 colour / category detection. */
-export const DEFAULT_GEMINI_COLOUR_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_GEMINI_COLOUR_MODEL = DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL;
 
 export const GEMINI_PROVIDER_TIMEOUT_MS = 45_000;
 
@@ -236,6 +243,22 @@ export function resolveGeminiGenerateContentConfig(
     model,
     endpoint: resolveGeminiEndpoint(model, explicitEndpoint),
   };
+}
+
+/**
+ * WARDROBE-65: pin classify / colour onto the hardcoded flash-lite model
+ * and rebuild the Google generateContent URL. Secret stays API key only —
+ * any secret/env model (including gemini-2.5-flash) is ignored.
+ */
+export function pinClassifyColourGeminiConfig(
+  fromSecret: GeminiGenerateContentConfig,
+  endpointOverride?: string,
+): GeminiGenerateContentConfig {
+  return resolveGeminiGenerateContentConfig(fromSecret, {
+    defaultModel: DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL,
+    modelOverride: DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL,
+    endpointOverride,
+  });
 }
 
 /** Pathname only — never include `?key=` or other query secrets. */
