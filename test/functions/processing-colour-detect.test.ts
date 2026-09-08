@@ -589,8 +589,22 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
     ).toEqual({
       apiKey: 'json-key',
       model: 'gemini-2.5-pro',
-      endpoint:
-        'https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent',
+      endpoint: geminiGenerateContentUrl('gemini-2.5-pro'),
+    });
+
+    expect(
+      parseGeminiColourDetectorSecret(
+        JSON.stringify({
+          apiKey: 'json-key',
+          model: 'models/gemini-2.5-flash',
+          endpoint:
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash/generateContent',
+        }),
+      ),
+    ).toEqual({
+      apiKey: 'json-key',
+      model: 'gemini-2.5-flash',
+      endpoint: geminiGenerateContentUrl('gemini-2.5-flash'),
     });
 
     expect(
@@ -778,6 +792,25 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
     await expect(
       permanent.detect({ imageKey: ORIGINAL_KEY, context: context() }),
     ).rejects.toBeInstanceOf(PermanentProcessingError);
+
+    const missingModel = createGeminiColourDetector({
+      fetchSecret: async () => ({
+        apiKey: 'test-key',
+        model: DEFAULT_GEMINI_COLOUR_MODEL,
+        endpoint: DEFAULT_GEMINI_COLOUR_ENDPOINT,
+      }),
+      getImage: async () => ({
+        bytes: new Uint8Array([1]),
+        contentType: 'image/png',
+      }),
+      fetchImpl: async () => ({ ok: false, status: 404 }) as Response,
+    });
+    await expect(
+      missingModel.detect({ imageKey: ORIGINAL_KEY, context: context() }),
+    ).rejects.toMatchObject({
+      name: 'PermanentProcessingError',
+      message: 'Gemini colour detection rejected the request (404)',
+    });
   });
 
   it('maps network failures to retryable', async () => {

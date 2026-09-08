@@ -20,14 +20,14 @@ import {
   RetryableProcessingError,
 } from './errors';
 import {
-  classifyGeminiHttpStatus,
   DEFAULT_GEMINI_COLOUR_MODEL,
   extractGeminiText,
+  fetchGeminiGenerateContent,
   firstString,
   geminiBlockReason,
-  geminiGenerateContentUrl,
-  GEMINI_PROVIDER_TIMEOUT_MS,
+  parseGeminiApiSecret,
   parseGeminiJsonText,
+  resolveGeminiGenerateContentConfig,
   resolveGeminiImageMimeType,
 } from './gemini';
 import type { ProcessingContext } from './pipeline';
@@ -375,6 +375,7 @@ export function createGeminiColourDetector(
         image,
         config,
         fetchImpl,
+        input.context,
       );
       const blocked = geminiBlockReason(payload);
       if (blocked) {
@@ -467,29 +468,7 @@ export function parseGeminiColourDetectorSecret(
   if (!secretString?.trim()) {
     throw new RetryableProcessingError('Gemini colour-detection secret is empty');
   }
-
-  const parsed = parseJsonObjectOrString(secretString);
-  if (typeof parsed === 'string') {
-    return {
-      apiKey: parsed,
-      model: DEFAULT_GEMINI_COLOUR_MODEL,
-      endpoint: geminiGenerateContentUrl(DEFAULT_GEMINI_COLOUR_MODEL),
-    };
-  }
-
-  const apiKey = firstString(parsed, ['apiKey', 'api_key', 'key']);
-  if (!apiKey) {
-    throw new RetryableProcessingError(
-      'Gemini colour-detection secret is missing apiKey',
-    );
-  }
-
-  const model =
-    firstString(parsed, ['model']) ?? DEFAULT_GEMINI_COLOUR_MODEL;
-  const endpoint =
-    firstString(parsed, ['endpoint', 'url']) ?? geminiGenerateContentUrl(model);
-
-  return { apiKey, model, endpoint };
+  return parseGeminiApiSecret(secretString, DEFAULT_GEMINI_COLOUR_MODEL);
 }
 
 export async function loadGeminiColourDetectorConfig(
@@ -532,16 +511,11 @@ export async function loadGeminiColourDetectorConfig(
     throw new RetryableProcessingError('Gemini colour-detection API key is empty');
   }
 
-  const model =
-    process.env.GEMINI_COLOUR_MODEL?.trim() ||
-    fromSecret.model ||
-    DEFAULT_GEMINI_COLOUR_MODEL;
-  const endpoint =
-    process.env.GEMINI_COLOUR_ENDPOINT?.trim() ||
-    fromSecret.endpoint ||
-    geminiGenerateContentUrl(model);
-
-  const config = { apiKey: fromSecret.apiKey, model, endpoint };
+  const config = resolveGeminiGenerateContentConfig(fromSecret, {
+    defaultModel: DEFAULT_GEMINI_COLOUR_MODEL,
+    modelOverride: process.env.GEMINI_COLOUR_MODEL,
+    endpointOverride: process.env.GEMINI_COLOUR_ENDPOINT,
+  });
   cachedGeminiConfig = config;
   cachedGeminiConfigAt = Date.now();
   return config;
@@ -656,6 +630,7 @@ async function postGeminiColourDetection(
   image: { bytes: Uint8Array; contentType: string },
   config: GeminiColourDetectorConfig,
   fetchImpl: typeof fetch,
+  context?: ProcessingContext,
 ): Promise<unknown> {
   const mimeType = resolveGeminiImageMimeType(image.bytes, image.contentType);
   const body = {
@@ -678,29 +653,13 @@ async function postGeminiColourDetection(
     },
   };
 
-  let response: Response;
-  try {
-    response = await fetchImpl(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': config.apiKey,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
-    });
-  } catch (error) {
-    throw new RetryableProcessingError(
-      error instanceof Error
-        ? error.message
-        : 'Gemini colour-detection request failed',
-      error,
-    );
-  }
-
-  if (!response.ok) {
-    classifyGeminiHttpStatus(response.status, 'Gemini colour detection');
-  }
+  const response = await fetchGeminiGenerateContent(config, body, fetchImpl, {
+    stage: 'colour',
+    label: 'Gemini colour detection',
+    itemId: context?.itemId,
+    wardrobeId: context?.wardrobeId,
+    networkErrorMessage: 'Gemini colour-detection request failed',
+  });
 
   try {
     return JSON.parse(await response.text());

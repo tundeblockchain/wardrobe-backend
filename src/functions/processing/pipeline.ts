@@ -1,4 +1,3 @@
-import { logger } from '../../shared/logger';
 import { DynamoItem } from '../../shared/types';
 import {
   isBackgroundRemovalEnabled,
@@ -12,6 +11,10 @@ import {
   detectColourAndCategory as runDetectColourAndCategory,
   type DetectColourAndCategoryDeps,
 } from './colour-detect';
+import {
+  logGeminiPipelineStage,
+  type GeminiPipelineStage,
+} from './gemini';
 
 /**
  * Dynamo-validated work context. Callers must load the clothing item
@@ -45,9 +48,39 @@ export async function runProcessingPipeline(
   context: ProcessingContext,
   deps?: ProcessingPipelineDeps,
 ): Promise<void> {
-  await removeBackground(context);
-  await classifyGarment(context, deps);
-  await detectColourAndCategory(context, deps);
+  await runStage('bg-removal', context, () => removeBackground(context));
+  await runStage('classify', context, () => classifyGarment(context, deps));
+  await runStage('colour', context, () =>
+    detectColourAndCategory(context, deps),
+  );
+}
+
+async function runStage(
+  stage: GeminiPipelineStage,
+  context: ProcessingContext,
+  work: () => Promise<void>,
+): Promise<void> {
+  logGeminiPipelineStage('start', {
+    stage,
+    itemId: context.itemId,
+    wardrobeId: context.wardrobeId,
+  });
+  try {
+    await work();
+    logGeminiPipelineStage('success', {
+      stage,
+      itemId: context.itemId,
+      wardrobeId: context.wardrobeId,
+    });
+  } catch (error) {
+    logGeminiPipelineStage('fail', {
+      stage,
+      itemId: context.itemId,
+      wardrobeId: context.wardrobeId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    throw error;
+  }
 }
 
 /**
@@ -59,9 +92,11 @@ export async function removeBackground(
   context: ProcessingContext,
 ): Promise<void> {
   if (!isBackgroundRemovalEnabled()) {
-    logger.info('Background removal disabled; skipping Gemini', {
+    logGeminiPipelineStage('skip', {
+      stage: 'bg-removal',
       itemId: context.itemId,
       wardrobeId: context.wardrobeId,
+      reason: 'BACKGROUND_REMOVAL_ENABLED is off',
     });
     return;
   }

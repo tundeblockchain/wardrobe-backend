@@ -82,8 +82,7 @@ describe('parseBackgroundRemovalSecret', () => {
     ).toEqual({
       apiKey: 'json-key',
       model: 'gemini-3.1-flash-image',
-      endpoint:
-        'https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-image:generateContent',
+      endpoint: geminiGenerateContentUrl('gemini-3.1-flash-image'),
     });
   });
 

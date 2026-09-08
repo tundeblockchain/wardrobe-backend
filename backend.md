@@ -870,6 +870,8 @@ The terminal failure string is `FAILED` (not `ERROR`). `processingError` is opti
 
 Background removal (WARDROBE-26) is gated by `BACKGROUND_REMOVAL_ENABLED` on the processing Lambda (WARDROBE-62). The deployed default is **off**, so Gemini "did not return an image" no longer fails add-item. Classify / colour then use the original image. Set the env to `true` (CDK context `backgroundRemovalEnabled=true`) to turn Gemini bg-removal back on.
 
+WARDROBE-64: Gemini classify / colour rebuild Google `generateContent` URLs from a bare model id (`gemini-2.5-flash` on `v1beta`). A `models/` prefix, slash `/generateContent` path, or retired model (`gemini-2.0-flash`, `gemini-1.5-*`, `gemini-pro`) was 404ing add-item after bg-removal was skipped. Those are normalized. A remaining 404 is `PermanentProcessingError` → `FAILED` + `processingError` (never stuck on `PROCESSING`). CloudWatch: `stage`, `pipelineEvent`, `geminiHttpStatus`, `geminiModel`, `geminiRequestPath`.
+
 The app can later offer a retry action.
 
 ---

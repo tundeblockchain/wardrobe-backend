@@ -17,13 +17,12 @@ import {
 } from './errors';
 import {
   DEFAULT_GEMINI_CLASSIFIER_MODEL,
-  GEMINI_PROVIDER_TIMEOUT_MS,
-  classifyGeminiHttpStatus,
   extractGeminiText,
+  fetchGeminiGenerateContent,
   geminiBlockReason,
-  geminiGenerateContentUrl,
   parseGeminiApiSecret,
   parseGeminiJsonText,
+  resolveGeminiGenerateContentConfig,
   resolveGeminiImageMimeType,
   type GeminiGenerateContentConfig,
 } from './gemini';
@@ -232,7 +231,7 @@ function buildGeminiClassifier(
     async classify(input: ClassifyGarmentInput): Promise<GarmentClassification> {
       const config = await loadConfig();
       const image = await getImage(input.imageKey);
-      return classifyWithGemini(image, config, fetchImpl);
+      return classifyWithGemini(image, config, fetchImpl, input.context);
     },
   };
 }
@@ -275,20 +274,11 @@ export async function loadClassifierConfig(
   }
 
   const fromSecret = parseClassifierSecret(raw);
-  const model =
-    process.env.GEMINI_CLASSIFIER_MODEL?.trim() ||
-    fromSecret.model ||
-    DEFAULT_GEMINI_CLASSIFIER_MODEL;
-  const endpoint =
-    process.env.GEMINI_CLASSIFIER_ENDPOINT?.trim() ||
-    fromSecret.endpoint ||
-    geminiGenerateContentUrl(model);
-
-  const config = {
-    apiKey: fromSecret.apiKey,
-    model,
-    endpoint,
-  };
+  const config = resolveGeminiGenerateContentConfig(fromSecret, {
+    defaultModel: DEFAULT_GEMINI_CLASSIFIER_MODEL,
+    modelOverride: process.env.GEMINI_CLASSIFIER_MODEL,
+    endpointOverride: process.env.GEMINI_CLASSIFIER_ENDPOINT,
+  });
   cachedSecret = config;
   cachedSecretAt = Date.now();
   return config;
@@ -351,6 +341,7 @@ async function classifyWithGemini(
   image: { bytes: Uint8Array; contentType: string },
   config: GeminiClassifierConfig,
   fetchImpl: typeof fetch,
+  context?: ProcessingContext,
 ): Promise<GarmentClassification> {
   const mimeType = resolveGeminiImageMimeType(image.bytes, image.contentType);
   const body = {
@@ -374,29 +365,13 @@ async function classifyWithGemini(
     },
   };
 
-  let response: Response;
-  try {
-    response = await fetchImpl(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': config.apiKey,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
-    });
-  } catch (error) {
-    throw new RetryableProcessingError(
-      error instanceof Error
-        ? error.message
-        : 'Gemini classification request failed',
-      error,
-    );
-  }
-
-  if (!response.ok) {
-    classifyGeminiHttpStatus(response.status, 'Gemini classifier');
-  }
+  const response = await fetchGeminiGenerateContent(config, body, fetchImpl, {
+    stage: 'classify',
+    label: 'Gemini classifier',
+    itemId: context?.itemId,
+    wardrobeId: context?.wardrobeId,
+    networkErrorMessage: 'Gemini classification request failed',
+  });
 
   let payload: unknown;
   try {

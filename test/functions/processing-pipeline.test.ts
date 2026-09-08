@@ -12,6 +12,7 @@ jest.mock('../../src/functions/processing/background-removal', () => {
   };
 });
 
+import { PermanentProcessingError } from '../../src/functions/processing/errors';
 import { isBackgroundRemovalEnabled } from '../../src/functions/processing/background-removal';
 import {
   classifyGarment,
@@ -207,5 +208,45 @@ describe('processing pipeline hooks (WARDROBE-18/26 + WARDROBE-19/27 + WARDROBE-
 
     expect(mockRunBackgroundRemoval).not.toHaveBeenCalled();
     expect(ctx.item.processedKey).toBeUndefined();
+  });
+
+  it('logs skip / classify-fail fields when bg-removal is off and Gemini returns 404', async () => {
+    delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    const lines: Array<Record<string, unknown>> = [];
+    const spy = jest.spyOn(console, 'log').mockImplementation((line: unknown) => {
+      lines.push(JSON.parse(String(line)) as Record<string, unknown>);
+    });
+
+    const classify = jest.fn().mockRejectedValue(
+      new PermanentProcessingError('Gemini classifier rejected the request (404)'),
+    );
+
+    await expect(
+      runProcessingPipeline(context(), {
+        classifier: { classify },
+        detector: { detect: jest.fn() },
+        persistAi: jest.fn(),
+      }),
+    ).rejects.toMatchObject({
+      name: 'PermanentProcessingError',
+      message: 'Gemini classifier rejected the request (404)',
+    });
+
+    spy.mockRestore();
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'bg-removal',
+          pipelineEvent: 'skip',
+          reason: 'BACKGROUND_REMOVAL_ENABLED is off',
+        }),
+        expect.objectContaining({
+          stage: 'classify',
+          pipelineEvent: 'fail',
+          error: 'Gemini classifier rejected the request (404)',
+        }),
+      ]),
+    );
+    expect(classify).toHaveBeenCalledTimes(1);
   });
 });

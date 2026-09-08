@@ -470,6 +470,61 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
     ).rejects.toBeInstanceOf(RetryableProcessingError);
   });
 
+  it('treats HTTP 404 as permanent so add-item is not left on PROCESSING', async () => {
+    const missing = createGeminiGarmentClassifier({
+      fetchSecret: async () => ({
+        apiKey: 'test-key',
+        model: DEFAULT_GEMINI_CLASSIFIER_MODEL,
+        endpoint: DEFAULT_ENDPOINT,
+      }),
+      getImage: async () => ({ bytes: IMAGE, contentType: 'image/png' }),
+      fetchImpl: async () => ({ ok: false, status: 404 }) as Response,
+    });
+
+    await expect(
+      missing.classify({ imageKey: ORIGINAL_KEY, context: context() }),
+    ).rejects.toMatchObject({
+      name: 'PermanentProcessingError',
+      message: 'Gemini classifier rejected the request (404)',
+    });
+  });
+
+  it('logs classify 404 with model and request path and never logs the API key', async () => {
+    const lines: string[] = [];
+    const spy = jest.spyOn(console, 'log').mockImplementation((line: unknown) => {
+      lines.push(String(line));
+    });
+
+    const missing = createGeminiGarmentClassifier({
+      fetchSecret: async () => ({
+        apiKey: 'super-secret-key',
+        model: DEFAULT_GEMINI_CLASSIFIER_MODEL,
+        endpoint: `${DEFAULT_ENDPOINT}?key=super-secret-key`,
+      }),
+      getImage: async () => ({ bytes: IMAGE, contentType: 'image/png' }),
+      fetchImpl: async () => ({ ok: false, status: 404 }) as Response,
+    });
+
+    await expect(
+      missing.classify({ imageKey: ORIGINAL_KEY, context: context() }),
+    ).rejects.toBeInstanceOf(PermanentProcessingError);
+
+    spy.mockRestore();
+    const parsed = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(parsed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'classify',
+          pipelineEvent: 'fail',
+          geminiHttpStatus: 404,
+          geminiModel: DEFAULT_GEMINI_CLASSIFIER_MODEL,
+          geminiRequestPath: '/v1beta/models/gemini-2.5-flash:generateContent',
+        }),
+      ]),
+    );
+    expect(lines.join('\n')).not.toContain('super-secret-key');
+  });
+
   it('treats HTTP 400, safety blocks, and uncontrolled JSON as permanent', async () => {
     const badRequest = createGeminiGarmentClassifier({
       fetchSecret: async () => ({
@@ -612,6 +667,21 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
       parseClassifierSecret(
         JSON.stringify({
           apiKey: 'json-key',
+          model: 'models/gemini-2.5-flash',
+          endpoint:
+            'https://generativelanguage.googleapis.com/v1beta/models/models%2Fgemini-2.5-flash:generateContent',
+        }),
+      ),
+    ).toEqual({
+      apiKey: 'json-key',
+      model: DEFAULT_GEMINI_CLASSIFIER_MODEL,
+      endpoint: DEFAULT_ENDPOINT,
+    });
+
+    expect(
+      parseClassifierSecret(
+        JSON.stringify({
+          apiKey: 'json-key',
           model: 'gemini-2.0-flash',
           endpoint:
             'https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent',
@@ -619,9 +689,8 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
       ),
     ).toEqual({
       apiKey: 'json-key',
-      model: 'gemini-2.0-flash',
-      endpoint:
-        'https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent',
+      model: DEFAULT_GEMINI_CLASSIFIER_MODEL,
+      endpoint: DEFAULT_ENDPOINT,
     });
   });
 
