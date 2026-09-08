@@ -90,15 +90,7 @@ npx cdk deploy --app "node -r ts-node/register/transpile-only bin/app.ts" \
 
 Console fallback (overwritten the next time you deploy unless CDK context/env is also set): AWS Lambda → `ProcessingFn` → Configuration → Environment variables → set `BACKGROUND_REMOVAL_ENABLED` to `true`. Allowed on values: `true`, `1`, `yes`, `on` (case-insensitive). Anything else, including unset, is off.
 
-Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Use the bare model id (`gemini-2.5-flash`), not `models/gemini-2.5-flash` and not a `/generateContent` slash path — those 404. Retired ids (`gemini-1.5-*`, `gemini-2.0-flash`, `gemini-pro`) are remapped to the default. Never commit the key.
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id wardrobe/prod/gemini-classifier \
-  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash"}'
-```
-
-A raw key string also works:
+Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. The classifier secret is **API key only** — do not add a `model` field and do not edit the secret to pick a model. Classify is hardcoded to `gemini-2.5-flash-lite` (`/v1beta/models/gemini-2.5-flash-lite:generateContent`). It does not remap onto `gemini-2.5-flash` (that path 404s in prod). Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -106,17 +98,9 @@ aws secretsmanager put-secret-value \
   --secret-string "your-gemini-api-key"
 ```
 
-Optional CDK context / env `geminiClassifierModel` / `GEMINI_CLASSIFIER_MODEL` and `geminiClassifierEndpoint` / `GEMINI_CLASSIFIER_ENDPOINT` override the classifier secret when you need a different Gemini text+image model or a proxy URL. The processing Lambda reads `AI_CLASSIFIER_SECRET_ARN` at runtime. Do not reuse `GEMINI_MODEL` here — that override is for background-removal's image-edit model.
+Optional CDK context / env `geminiClassifierEndpoint` / `GEMINI_CLASSIFIER_ENDPOINT` keeps a custom (non-Google) proxy URL. The processing Lambda reads `AI_CLASSIFIER_SECRET_ARN` at runtime. Do not reuse `GEMINI_MODEL` here — that override is for background-removal's image-edit model.
 
-Colour / category detection uses **Google Gemini** (`generateContent` image+text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Same model-id rules as the classifier (`models/` prefix, slash paths, and retired ids are normalized). Never commit the key.
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id wardrobe/prod/gemini-colour \
-  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash"}'
-```
-
-A raw key string also works:
+Colour / category detection uses **Google Gemini** (`generateContent` image+text). After deploy, replace the generated placeholder with a Gemini API key. The colour secret is **API key only** — same hardcoded model as classify (`gemini-2.5-flash-lite`). Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -124,7 +108,7 @@ aws secretsmanager put-secret-value \
   --secret-string "your-gemini-api-key"
 ```
 
-The processing Lambda sets `COLOUR_DETECTOR_STRATEGY=gemini` by default. Override at synth/deploy with CDK context `colourDetectorStrategy` or env `COLOUR_DETECTOR_STRATEGY=http` to keep the vendor-agnostic HTTP hook. Optional `geminiColourModel` / `GEMINI_COLOUR_MODEL` and `geminiColourEndpoint` / `GEMINI_COLOUR_ENDPOINT` override the colour secret when you need a different Gemini text+vision model or a proxy URL. The processing Lambda reads `AI_COLOUR_DETECTOR_SECRET_ARN` at runtime.
+The processing Lambda sets `COLOUR_DETECTOR_STRATEGY=gemini` by default. Override at synth/deploy with CDK context `colourDetectorStrategy` or env `COLOUR_DETECTOR_STRATEGY=http` to keep the vendor-agnostic HTTP hook. Optional `geminiColourEndpoint` / `GEMINI_COLOUR_ENDPOINT` keeps a custom proxy URL. The processing Lambda reads `AI_COLOUR_DETECTOR_SECRET_ARN` at runtime.
 
 Outfit recommendations (WARDROBE-28) default to OpenAI chat (`RECOMMENDER_STRATEGY=openai` on the recommendations Lambda). After deploy, replace the generated placeholder (never commit the key). A raw API key is enough; JSON may also set `model` / `endpoint`:
 

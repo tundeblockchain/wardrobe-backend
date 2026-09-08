@@ -518,7 +518,7 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
           pipelineEvent: 'fail',
           geminiHttpStatus: 404,
           geminiModel: DEFAULT_GEMINI_CLASSIFIER_MODEL,
-          geminiRequestPath: '/v1beta/models/gemini-2.5-flash:generateContent',
+          geminiRequestPath: '/v1beta/models/gemini-2.5-flash-lite:generateContent',
         }),
       ]),
     );
@@ -656,13 +656,20 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
     );
   });
 
-  it('parses a plain Gemini API key and JSON secrets with default generateContent URL', () => {
-    expect(parseClassifierSecret('  gemini-key  ')).toEqual({
+  it('parses a plain Gemini API key onto hardcoded gemini-2.5-flash-lite', () => {
+    const fromPlainKey = parseClassifierSecret('  gemini-key  ');
+    expect(fromPlainKey).toEqual({
       apiKey: 'gemini-key',
-      model: DEFAULT_GEMINI_CLASSIFIER_MODEL,
-      endpoint: DEFAULT_ENDPOINT,
+      model: 'gemini-2.5-flash-lite',
+      endpoint:
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
     });
+    expect(fromPlainKey.model).toBe(DEFAULT_GEMINI_CLASSIFIER_MODEL);
+    expect(fromPlainKey.model).not.toBe('gemini-2.5-flash');
+    expect(fromPlainKey.endpoint).toBe(DEFAULT_ENDPOINT);
+  });
 
+  it('does not remap classify onto gemini-2.5-flash from secret model or retired ids', () => {
     expect(
       parseClassifierSecret(
         JSON.stringify({
@@ -674,7 +681,21 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
       ),
     ).toEqual({
       apiKey: 'json-key',
-      model: DEFAULT_GEMINI_CLASSIFIER_MODEL,
+      model: 'gemini-2.5-flash-lite',
+      endpoint: DEFAULT_ENDPOINT,
+    });
+
+    expect(
+      parseClassifierSecret(
+        JSON.stringify({
+          apiKey: 'json-key',
+          model: 'gemini-2.5-flash',
+          endpoint: geminiGenerateContentUrl('gemini-2.5-flash'),
+        }),
+      ),
+    ).toEqual({
+      apiKey: 'json-key',
+      model: 'gemini-2.5-flash-lite',
       endpoint: DEFAULT_ENDPOINT,
     });
 
@@ -701,24 +722,41 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
     ).toThrow(RetryableProcessingError);
   });
 
-  it('prefers GEMINI_CLASSIFIER_MODEL and GEMINI_CLASSIFIER_ENDPOINT over the secret', async () => {
+  it('hardcodes classify to gemini-2.5-flash-lite from an API-key-only secret', async () => {
     process.env.AI_CLASSIFIER_SECRET_ARN = 'arn:secret';
-    process.env.GEMINI_CLASSIFIER_MODEL = 'gemini-from-env';
+    delete process.env.GEMINI_CLASSIFIER_MODEL;
+    delete process.env.GEMINI_CLASSIFIER_ENDPOINT;
+
+    const config = await loadClassifierConfig(async () => 'plain-api-key');
+
+    expect(config).toEqual({
+      apiKey: 'plain-api-key',
+      model: 'gemini-2.5-flash-lite',
+      endpoint:
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+    });
+    expect(config.model).not.toBe('gemini-2.5-flash');
+  });
+
+  it('ignores secret/env classify model remaps onto gemini-2.5-flash and keeps a proxy endpoint', async () => {
+    process.env.AI_CLASSIFIER_SECRET_ARN = 'arn:secret';
+    process.env.GEMINI_CLASSIFIER_MODEL = 'gemini-2.5-flash';
     process.env.GEMINI_CLASSIFIER_ENDPOINT = 'https://env.example/generateContent';
 
     const config = await loadClassifierConfig(async () =>
       JSON.stringify({
         apiKey: 'from-secret',
-        model: 'gemini-from-secret',
+        model: 'gemini-2.5-flash',
         endpoint: 'https://secret.example/generateContent',
       }),
     );
 
     expect(config).toEqual({
       apiKey: 'from-secret',
-      model: 'gemini-from-env',
+      model: 'gemini-2.5-flash-lite',
       endpoint: 'https://env.example/generateContent',
     });
+    expect(config.model).not.toBe('gemini-2.5-flash');
   });
 
   it('fails retryably when the secret ARN is missing', async () => {

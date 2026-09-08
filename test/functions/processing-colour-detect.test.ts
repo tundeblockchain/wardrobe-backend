@@ -570,13 +570,20 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
     ).resolves.toEqual({ detectedColours: ['BLACK'] });
   });
 
-  it('parses a plain Gemini API key and JSON secret with optional model/endpoint', () => {
-    expect(parseGeminiColourDetectorSecret('  gemini-key  ')).toEqual({
+  it('parses a plain Gemini API key onto hardcoded gemini-2.5-flash-lite', () => {
+    const fromPlainKey = parseGeminiColourDetectorSecret('  gemini-key  ');
+    expect(fromPlainKey).toEqual({
       apiKey: 'gemini-key',
-      model: DEFAULT_GEMINI_COLOUR_MODEL,
-      endpoint: DEFAULT_GEMINI_COLOUR_ENDPOINT,
+      model: 'gemini-2.5-flash-lite',
+      endpoint:
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
     });
+    expect(fromPlainKey.model).toBe(DEFAULT_GEMINI_COLOUR_MODEL);
+    expect(fromPlainKey.model).not.toBe('gemini-2.5-flash');
+    expect(fromPlainKey.endpoint).toBe(DEFAULT_GEMINI_COLOUR_ENDPOINT);
+  });
 
+  it('does not remap colour onto gemini-2.5-flash from secret model or retired ids', () => {
     expect(
       parseGeminiColourDetectorSecret(
         JSON.stringify({
@@ -588,8 +595,8 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
       ),
     ).toEqual({
       apiKey: 'json-key',
-      model: 'gemini-2.5-pro',
-      endpoint: geminiGenerateContentUrl('gemini-2.5-pro'),
+      model: 'gemini-2.5-flash-lite',
+      endpoint: DEFAULT_GEMINI_COLOUR_ENDPOINT,
     });
 
     expect(
@@ -603,8 +610,8 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
       ),
     ).toEqual({
       apiKey: 'json-key',
-      model: 'gemini-2.5-flash',
-      endpoint: geminiGenerateContentUrl('gemini-2.5-flash'),
+      model: 'gemini-2.5-flash-lite',
+      endpoint: DEFAULT_GEMINI_COLOUR_ENDPOINT,
     });
 
     expect(
@@ -616,8 +623,8 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
       ),
     ).toEqual({
       apiKey: 'json-key',
-      model: 'gemini-2.5-flash',
-      endpoint: geminiGenerateContentUrl('gemini-2.5-flash'),
+      model: 'gemini-2.5-flash-lite',
+      endpoint: DEFAULT_GEMINI_COLOUR_ENDPOINT,
     });
   });
 
@@ -630,22 +637,35 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
     ).toThrow(RetryableProcessingError);
   });
 
-  it('prefers GEMINI_COLOUR_MODEL and GEMINI_COLOUR_ENDPOINT over the secret', async () => {
+  it('hardcodes colour to gemini-2.5-flash-lite from an API-key-only secret', async () => {
     process.env.AI_COLOUR_DETECTOR_SECRET_ARN = 'arn:secret';
-    process.env.GEMINI_COLOUR_MODEL = 'gemini-from-env';
+    delete process.env.GEMINI_COLOUR_MODEL;
+    delete process.env.GEMINI_COLOUR_ENDPOINT;
+
+    await expect(loadGeminiColourDetectorConfig(async () => 'plain-api-key')).resolves.toEqual({
+      apiKey: 'plain-api-key',
+      model: 'gemini-2.5-flash-lite',
+      endpoint:
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+    });
+  });
+
+  it('ignores secret/env colour model remaps onto gemini-2.5-flash and keeps a proxy endpoint', async () => {
+    process.env.AI_COLOUR_DETECTOR_SECRET_ARN = 'arn:secret';
+    process.env.GEMINI_COLOUR_MODEL = 'gemini-2.5-flash';
     process.env.GEMINI_COLOUR_ENDPOINT = 'https://env.example/generateContent';
 
     await expect(
       loadGeminiColourDetectorConfig(async () =>
         JSON.stringify({
           apiKey: 'from-secret',
-          model: 'gemini-from-secret',
+          model: 'gemini-2.5-flash',
           endpoint: 'https://secret.example/generateContent',
         }),
       ),
     ).resolves.toEqual({
       apiKey: 'from-secret',
-      model: 'gemini-from-env',
+      model: 'gemini-2.5-flash-lite',
       endpoint: 'https://env.example/generateContent',
     });
   });

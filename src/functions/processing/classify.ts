@@ -22,7 +22,7 @@ import {
   geminiBlockReason,
   parseGeminiApiSecret,
   parseGeminiJsonText,
-  resolveGeminiGenerateContentConfig,
+  pinClassifyColourGeminiConfig,
   resolveGeminiImageMimeType,
   type GeminiGenerateContentConfig,
 } from './gemini';
@@ -274,11 +274,10 @@ export async function loadClassifierConfig(
   }
 
   const fromSecret = parseClassifierSecret(raw);
-  const config = resolveGeminiGenerateContentConfig(fromSecret, {
-    defaultModel: DEFAULT_GEMINI_CLASSIFIER_MODEL,
-    modelOverride: process.env.GEMINI_CLASSIFIER_MODEL,
-    endpointOverride: process.env.GEMINI_CLASSIFIER_ENDPOINT,
-  });
+  const config = pinClassifyColourGeminiConfig(
+    fromSecret,
+    process.env.GEMINI_CLASSIFIER_ENDPOINT,
+  );
   cachedSecret = config;
   cachedSecretAt = Date.now();
   return config;
@@ -290,7 +289,9 @@ export function parseClassifierSecret(
   if (!secretString?.trim()) {
     throw new RetryableProcessingError('Gemini classifier secret is empty.');
   }
-  return parseGeminiApiSecret(secretString, DEFAULT_GEMINI_CLASSIFIER_MODEL);
+  return pinClassifyColourGeminiConfig(
+    parseGeminiApiSecret(secretString, DEFAULT_GEMINI_CLASSIFIER_MODEL),
+  );
 }
 
 export function classificationPrompt(): string {
