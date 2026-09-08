@@ -9,12 +9,12 @@ import { getSecretString } from '../../shared/secrets';
 import { PermanentProcessingError, RetryableProcessingError } from './errors';
 import {
   DEFAULT_GEMINI_TRY_ON_MODEL,
-  GEMINI_PROVIDER_TIMEOUT_MS,
-  classifyGeminiHttpStatus,
   extractGeminiInlineImage,
+  fetchGeminiGenerateContent,
   geminiBlockReason,
   geminiGenerateContentUrl,
   parseGeminiApiSecret,
+  resolveGeminiGenerateContentConfig,
   resolveGeminiImageMimeType,
 } from './gemini';
 
@@ -97,20 +97,11 @@ export async function loadTryOnConfig(
     throw new RetryableProcessingError('Gemini API key is empty.');
   }
 
-  const model =
-    process.env.GEMINI_TRY_ON_MODEL?.trim() ||
-    fromSecret.model ||
-    DEFAULT_GEMINI_MODEL;
-  const endpoint =
-    process.env.GEMINI_TRY_ON_ENDPOINT?.trim() ||
-    fromSecret.endpoint ||
-    geminiGenerateContentUrl(model);
-
-  return {
-    apiKey: fromSecret.apiKey,
-    model,
-    endpoint,
-  };
+  return resolveGeminiGenerateContentConfig(fromSecret, {
+    defaultModel: DEFAULT_GEMINI_MODEL,
+    modelOverride: process.env.GEMINI_TRY_ON_MODEL,
+    endpointOverride: process.env.GEMINI_TRY_ON_ENDPOINT,
+  });
 }
 
 export function createGeminiTryOnClient(
@@ -284,24 +275,11 @@ async function generateTryOnPng(
     },
   };
 
-  let response: Response;
-  try {
-    response = await fetchImpl(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': config.apiKey,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
-    });
-  } catch (error) {
-    throw toRetryable(error, 'Gemini try-on request failed');
-  }
-
-  if (!response.ok) {
-    classifyGeminiHttpStatus(response.status, 'Gemini try-on');
-  }
+  const response = await fetchGeminiGenerateContent(config, body, fetchImpl, {
+    stage: 'try-on',
+    label: 'Gemini try-on',
+    networkErrorMessage: 'Gemini try-on request failed',
+  });
 
   let payload: unknown;
   try {

@@ -90,7 +90,7 @@ npx cdk deploy --app "node -r ts-node/register/transpile-only bin/app.ts" \
 
 Console fallback (overwritten the next time you deploy unless CDK context/env is also set): AWS Lambda → `ProcessingFn` → Configuration → Environment variables → set `BACKGROUND_REMOVAL_ENABLED` to `true`. Allowed on values: `true`, `1`, `yes`, `on` (case-insensitive). Anything else, including unset, is off.
 
-Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Never commit the key.
+Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Use the bare model id (`gemini-2.5-flash`), not `models/gemini-2.5-flash` and not a `/generateContent` slash path — those 404. Retired ids (`gemini-1.5-*`, `gemini-2.0-flash`, `gemini-pro`) are remapped to the default. Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -108,7 +108,7 @@ aws secretsmanager put-secret-value \
 
 Optional CDK context / env `geminiClassifierModel` / `GEMINI_CLASSIFIER_MODEL` and `geminiClassifierEndpoint` / `GEMINI_CLASSIFIER_ENDPOINT` override the classifier secret when you need a different Gemini text+image model or a proxy URL. The processing Lambda reads `AI_CLASSIFIER_SECRET_ARN` at runtime. Do not reuse `GEMINI_MODEL` here — that override is for background-removal's image-edit model.
 
-Colour / category detection uses **Google Gemini** (`generateContent` image+text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Never commit the key.
+Colour / category detection uses **Google Gemini** (`generateContent` image+text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Same model-id rules as the classifier (`models/` prefix, slash paths, and retired ids are normalized). Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -393,7 +393,9 @@ Pipeline hooks:
 
 Classification and colour detection both use the processed image key when present (including the key just written by Gemini), otherwise the original. Credentials come from Secrets Manager (`wardrobe/{stage}/gemini-background-removal`, `wardrobe/{stage}/gemini-classifier`, and `wardrobe/{stage}/gemini-colour`); unit tests inject mock clients or use `COLOUR_DETECTOR_STRATEGY=http` and never call a live vision API. After deploy, replace the Gemini placeholders with API keys (or JSON `{"apiKey":"...","model":"..."}`) — do not commit AI keys.
 
-Gemini classifier and colour-detector failures follow the existing worker degrade path: permanent errors (`PermanentProcessingError`) mark the item `FAILED` and ack; transient errors (`RetryableProcessingError`) are reported as SQS batch item failures for retry, then `FAILED` after exhaustion (last receive or DLQ). The worker does not 500.
+Gemini classifier and colour-detector failures follow the existing worker degrade path: permanent errors (`PermanentProcessingError`) mark the item `FAILED` and ack; transient errors (`RetryableProcessingError`) are reported as SQS batch item failures for retry, then `FAILED` after exhaustion (last receive or DLQ). The worker does not 500. A classifier HTTP 404 is permanent (WARDROBE-64) so the item is not left on `PROCESSING`.
+
+CloudWatch (`ProcessingFn`): grep JSON fields `stage` (`bg-removal` / `classify` / `colour`), `pipelineEvent` (`start` / `success` / `fail` / `skip`), `geminiHttpStatus`, `geminiModel`, `geminiRequestPath`. Example: `{ $.stage = "classify" && $.geminiHttpStatus = 404 }`. Logs never include API keys or image bytes.
 
 The worker still sets `processingStatus: READY` after the full pipeline returns successfully (and removes `processingError`), or `FAILED` on `PermanentProcessingError` / exhausted retries.
 

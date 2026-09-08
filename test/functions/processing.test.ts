@@ -326,6 +326,21 @@ describe('processing worker (WARDROBE-17 / WARDROBE-59)', () => {
     expect(processingErrors()).toEqual([undefined, 'unusable image']);
   });
 
+  it('sets FAILED with processingError when the Gemini classifier 404s (WARDROBE-64)', async () => {
+    mockRunPipeline.mockRejectedValue(
+      new PermanentProcessingError('Gemini classifier rejected the request (404)'),
+    );
+
+    const result = await handler(eventFor(job()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(statusUpdates()).toEqual(['PROCESSING', 'FAILED']);
+    expect(processingErrors()).toEqual([
+      undefined,
+      'Gemini classifier rejected the request (404)',
+    ]);
+  });
+
   it('rethrows unexpected pipeline errors as batch failures for SQS retry', async () => {
     mockRunPipeline.mockRejectedValue(new Error('transient model timeout'));
 

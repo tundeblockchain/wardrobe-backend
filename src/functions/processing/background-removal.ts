@@ -13,12 +13,13 @@ import { PermanentProcessingError, RetryableProcessingError } from './errors';
 import {
   DEFAULT_GEMINI_API_BASE,
   DEFAULT_GEMINI_IMAGE_MODEL,
-  GEMINI_PROVIDER_TIMEOUT_MS,
-  classifyGeminiHttpStatus,
   extractGeminiInlineImage,
+  fetchGeminiGenerateContent,
   geminiBlockReason,
   geminiGenerateContentUrl,
+  logGeminiPipelineStage,
   parseGeminiApiSecret,
+  resolveGeminiGenerateContentConfig,
   resolveGeminiImageMimeType,
 } from './gemini';
 
@@ -129,18 +130,11 @@ export async function loadBackgroundRemovalConfig(
     throw new RetryableProcessingError('Gemini API key is empty.');
   }
 
-  const model =
-    process.env.GEMINI_MODEL?.trim() || fromSecret.model || DEFAULT_GEMINI_MODEL;
-  const endpoint =
-    process.env.GEMINI_ENDPOINT?.trim() ||
-    fromSecret.endpoint ||
-    geminiGenerateContentUrl(model);
-
-  return {
-    apiKey: fromSecret.apiKey,
-    model,
-    endpoint,
-  };
+  return resolveGeminiGenerateContentConfig(fromSecret, {
+    defaultModel: DEFAULT_GEMINI_MODEL,
+    modelOverride: process.env.GEMINI_MODEL,
+    endpointOverride: process.env.GEMINI_ENDPOINT,
+  });
 }
 
 export function createGeminiBackgroundRemovalClient(
@@ -159,9 +153,11 @@ export async function runBackgroundRemoval(
   deps: BackgroundRemovalDeps = {},
 ): Promise<string | undefined> {
   if (!isBackgroundRemovalEnabled()) {
-    logger.info('Background removal disabled; skipping Gemini', {
+    logGeminiPipelineStage('skip', {
+      stage: 'bg-removal',
       itemId: context.itemId,
       wardrobeId: context.wardrobeId,
+      reason: 'BACKGROUND_REMOVAL_ENABLED is off',
     });
     return undefined;
   }
@@ -318,24 +314,11 @@ async function generateBackgroundRemovedPng(
     },
   };
 
-  let response: Response;
-  try {
-    response = await fetchImpl(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': config.apiKey,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
-    });
-  } catch (error) {
-    throw toRetryable(error, 'Gemini background-removal request failed');
-  }
-
-  if (!response.ok) {
-    classifyGeminiHttpStatus(response.status, 'Gemini background removal');
-  }
+  const response = await fetchGeminiGenerateContent(config, body, fetchImpl, {
+    stage: 'bg-removal',
+    label: 'Gemini background removal',
+    networkErrorMessage: 'Gemini background-removal request failed',
+  });
 
   let payload: unknown;
   try {

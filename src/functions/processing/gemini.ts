@@ -1,7 +1,20 @@
+import { logger } from '../../shared/logger';
 import { PermanentProcessingError, RetryableProcessingError } from './errors';
 
 export const DEFAULT_GEMINI_API_BASE =
   'https://generativelanguage.googleapis.com/v1beta/models';
+
+export const GEMINI_GOOGLE_API_HOST = 'generativelanguage.googleapis.com';
+
+/** Item-processing pipeline stages that call Gemini (WARDROBE-64 logs). */
+export type GeminiPipelineStage =
+  | 'bg-removal'
+  | 'classify'
+  | 'colour'
+  | 'try-on'
+  | 'other';
+
+export type GeminiPipelineEvent = 'start' | 'success' | 'fail' | 'skip';
 
 /** Image-edit model used by WARDROBE-26 background removal. */
 export const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
@@ -43,8 +56,14 @@ export interface GeminiGenerateContentConfig {
   endpoint: string;
 }
 
+/**
+ * Build the Google AI generateContent URL.
+ * Strips a leading `models/` prefix — that resource name is already in the
+ * path, and leaving it in the model id 404s (`/v1beta/models/models/...`).
+ */
 export function geminiGenerateContentUrl(model: string): string {
-  return `${DEFAULT_GEMINI_API_BASE}/${encodeURIComponent(model)}:generateContent`;
+  const id = stripGeminiModelDecorators(model);
+  return `${DEFAULT_GEMINI_API_BASE}/${encodeURIComponent(id)}:generateContent`;
 }
 
 /**
@@ -91,11 +110,284 @@ export function parseGeminiApiSecret(
     throw new RetryableProcessingError('Gemini secret is missing apiKey.');
   }
 
-  const model = firstString(parsed, ['model']) ?? defaultModel;
-  const endpoint =
-    firstString(parsed, ['endpoint', 'url']) ?? geminiGenerateContentUrl(model);
+  const model = normalizeGeminiModelId(
+    firstString(parsed, ['model']),
+    defaultModel,
+  );
+  const endpoint = resolveGeminiEndpoint(
+    model,
+    firstString(parsed, ['endpoint', 'url']),
+  );
 
   return { apiKey, model, endpoint };
+}
+
+/**
+ * Retired Gemini ids that 404 on generateContent (WARDROBE-64).
+ * 1.0 / 1.5 / 2.0 Flash families and the old `gemini-pro` aliases.
+ */
+const RETIRED_GEMINI_MODEL_IDS = new Set([
+  'gemini-pro',
+  'gemini-pro-vision',
+  'gemini-1.0-pro',
+  'gemini-1.0-pro-001',
+  'gemini-1.0-pro-latest',
+  'gemini-1.0-pro-vision',
+  'gemini-1.0-pro-vision-latest',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-001',
+  'gemini-1.5-flash-002',
+  'gemini-1.5-flash-latest',
+  'gemini-1.5-flash-8b',
+  'gemini-1.5-flash-8b-001',
+  'gemini-1.5-flash-8b-latest',
+  'gemini-1.5-pro',
+  'gemini-1.5-pro-001',
+  'gemini-1.5-pro-002',
+  'gemini-1.5-pro-latest',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-001',
+  'gemini-2.0-flash-exp',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash-lite-001',
+]);
+
+export function isRetiredGeminiModel(model: string): boolean {
+  return RETIRED_GEMINI_MODEL_IDS.has(model.trim().toLowerCase());
+}
+
+/**
+ * Strip `models/` and `:generateContent` / `/generateContent` decorations.
+ * Google's resource name is `models/{id}`; the URL already has `/models/`.
+ */
+export function stripGeminiModelDecorators(model: string): string {
+  let id = model.trim();
+  if (/^https?:\/\//i.test(id)) {
+    id = extractGeminiModelFromUrl(id) ?? id;
+  }
+  id = id.replace(/^models\//i, '');
+  id = id.replace(/:generateContent$/i, '');
+  id = id.replace(/\/generateContent$/i, '');
+  id = id.replace(/^models\//i, '');
+  return id || model.trim();
+}
+
+export function normalizeGeminiModelId(
+  raw: string | undefined,
+  fallback: string,
+): string {
+  if (!raw?.trim()) {
+    return fallback;
+  }
+  const id = stripGeminiModelDecorators(raw);
+  if (!id || isRetiredGeminiModel(id)) {
+    return fallback;
+  }
+  return id;
+}
+
+export function isCustomGeminiProxy(endpoint: string | undefined): boolean {
+  if (!endpoint?.trim()) {
+    return false;
+  }
+  try {
+    return new URL(endpoint.trim()).hostname !== GEMINI_GOOGLE_API_HOST;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Use a custom (non-Google) proxy as-is; rebuild Google generateContent
+ * URLs from the resolved model so slash-method / `models/` / v1 / retired
+ * paths cannot 404.
+ */
+export function resolveGeminiEndpoint(
+  model: string,
+  explicitEndpoint?: string,
+): string {
+  const trimmed = explicitEndpoint?.trim();
+  if (trimmed && isCustomGeminiProxy(trimmed)) {
+    return stripSecretQueryParams(trimmed);
+  }
+  return geminiGenerateContentUrl(model);
+}
+
+export function resolveGeminiGenerateContentConfig(
+  fromSecret: GeminiGenerateContentConfig,
+  options: {
+    defaultModel: string;
+    modelOverride?: string;
+    endpointOverride?: string;
+  },
+): GeminiGenerateContentConfig {
+  const model = normalizeGeminiModelId(
+    options.modelOverride || fromSecret.model,
+    options.defaultModel,
+  );
+  const modelOverridden = Boolean(options.modelOverride?.trim());
+  const explicitEndpoint =
+    options.endpointOverride?.trim() ||
+    (modelOverridden && !isCustomGeminiProxy(fromSecret.endpoint)
+      ? undefined
+      : fromSecret.endpoint);
+  return {
+    apiKey: fromSecret.apiKey,
+    model,
+    endpoint: resolveGeminiEndpoint(model, explicitEndpoint),
+  };
+}
+
+/** Pathname only — never include `?key=` or other query secrets. */
+export function geminiRequestPath(endpoint: string): string {
+  try {
+    return new URL(endpoint).pathname;
+  } catch {
+    const withoutQuery = endpoint.split('?')[0] ?? endpoint;
+    return withoutQuery;
+  }
+}
+
+export function logGeminiPipelineStage(
+  event: GeminiPipelineEvent,
+  fields: {
+    stage: GeminiPipelineStage;
+    itemId?: string;
+    wardrobeId?: string;
+    geminiHttpStatus?: number;
+    geminiModel?: string;
+    geminiRequestPath?: string;
+    error?: string;
+    reason?: string;
+  },
+): void {
+  const message =
+    event === 'start'
+      ? 'Gemini pipeline stage start'
+      : event === 'success'
+        ? 'Gemini pipeline stage success'
+        : event === 'skip'
+          ? 'Gemini pipeline stage skip'
+          : 'Gemini pipeline stage fail';
+  const write = event === 'fail' ? logger.error : logger.info;
+  write(message, {
+    stage: fields.stage,
+    pipelineEvent: event,
+    ...(fields.itemId ? { itemId: fields.itemId } : {}),
+    ...(fields.wardrobeId ? { wardrobeId: fields.wardrobeId } : {}),
+    ...(fields.geminiHttpStatus !== undefined
+      ? { geminiHttpStatus: fields.geminiHttpStatus }
+      : {}),
+    ...(fields.geminiModel ? { geminiModel: fields.geminiModel } : {}),
+    ...(fields.geminiRequestPath
+      ? { geminiRequestPath: fields.geminiRequestPath }
+      : {}),
+    ...(fields.error ? { error: fields.error } : {}),
+    ...(fields.reason ? { reason: fields.reason } : {}),
+  });
+}
+
+export async function fetchGeminiGenerateContent(
+  config: GeminiGenerateContentConfig,
+  body: unknown,
+  fetchImpl: typeof fetch,
+  options: {
+    stage: GeminiPipelineStage;
+    label: string;
+    itemId?: string;
+    wardrobeId?: string;
+    networkErrorMessage: string;
+  },
+): Promise<Response> {
+  const requestPath = geminiRequestPath(config.endpoint);
+  logGeminiPipelineStage('start', {
+    stage: options.stage,
+    itemId: options.itemId,
+    wardrobeId: options.wardrobeId,
+    geminiModel: config.model,
+    geminiRequestPath: requestPath,
+  });
+
+  let response: Response;
+  try {
+    response = await fetchImpl(config.endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': config.apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (
+      error instanceof PermanentProcessingError ||
+      error instanceof RetryableProcessingError
+    ) {
+      throw error;
+    }
+    logGeminiPipelineStage('fail', {
+      stage: options.stage,
+      itemId: options.itemId,
+      wardrobeId: options.wardrobeId,
+      geminiModel: config.model,
+      geminiRequestPath: requestPath,
+      error: error instanceof Error ? error.message : options.networkErrorMessage,
+    });
+    throw new RetryableProcessingError(
+      error instanceof Error ? error.message : options.networkErrorMessage,
+      error,
+    );
+  }
+
+  if (!response.ok) {
+    logGeminiPipelineStage('fail', {
+      stage: options.stage,
+      itemId: options.itemId,
+      wardrobeId: options.wardrobeId,
+      geminiHttpStatus: response.status,
+      geminiModel: config.model,
+      geminiRequestPath: requestPath,
+    });
+    classifyGeminiHttpStatus(response.status, options.label);
+  }
+
+  logGeminiPipelineStage('success', {
+    stage: options.stage,
+    itemId: options.itemId,
+    wardrobeId: options.wardrobeId,
+    geminiHttpStatus: response.status,
+    geminiModel: config.model,
+    geminiRequestPath: requestPath,
+  });
+  return response;
+}
+
+function extractGeminiModelFromUrl(endpoint: string): string | undefined {
+  try {
+    const pathname = new URL(endpoint).pathname;
+    const match = pathname.match(
+      /\/models\/(.+?)(?::generateContent|\/generateContent)?\/?$/i,
+    );
+    if (!match?.[1]) {
+      return undefined;
+    }
+    return decodeURIComponent(match[1]).replace(/^models\//i, '');
+  } catch {
+    return undefined;
+  }
+}
+
+function stripSecretQueryParams(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    url.searchParams.delete('key');
+    url.searchParams.delete('apiKey');
+    url.searchParams.delete('api_key');
+    return url.toString();
+  } catch {
+    return endpoint.split('?')[0] ?? endpoint;
+  }
 }
 
 export function resolveGeminiImageMimeType(

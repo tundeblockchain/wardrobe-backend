@@ -54,8 +54,7 @@ describe('parseTryOnSecret', () => {
     ).toEqual({
       apiKey: 'json-key',
       model: 'gemini-3.1-flash-image',
-      endpoint:
-        'https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-image:generateContent',
+      endpoint: geminiGenerateContentUrl('gemini-3.1-flash-image'),
     });
   });
 
@@ -102,7 +101,7 @@ describe('loadTryOnConfig', () => {
     await expect(loadTryOnConfig(async () => 'plain-key')).resolves.toEqual({
       apiKey: 'plain-key',
       model: 'gemini-override',
-      endpoint: geminiGenerateContentUrl(DEFAULT_GEMINI_MODEL),
+      endpoint: geminiGenerateContentUrl('gemini-override'),
     });
   });
 });
