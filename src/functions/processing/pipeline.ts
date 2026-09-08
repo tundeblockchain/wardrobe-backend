@@ -1,5 +1,9 @@
+import { logger } from '../../shared/logger';
 import { DynamoItem } from '../../shared/types';
-import { runBackgroundRemoval } from './background-removal';
+import {
+  isBackgroundRemovalEnabled,
+  runBackgroundRemoval,
+} from './background-removal';
 import {
   classifyGarment as runClassifyGarment,
   type ClassifyGarmentDeps,
@@ -28,7 +32,10 @@ export type ProcessingPipelineDeps = ClassifyGarmentDeps &
 /**
  * Ordered clothing-item processing pipeline.
  *
- *   1. removeBackground        — WARDROBE-18/26 (S3 + injectable Gemini client)
+ *   1. removeBackground        — WARDROBE-18/26 (S3 + injectable Gemini client).
+ *                                Gated by BACKGROUND_REMOVAL_ENABLED (WARDROBE-62;
+ *                                default off). When skipped, classify / colour
+ *                                use the original image.
  *   2. classifyGarment         — WARDROBE-19/27 (injectable Gemini classifier; `ai` only)
  *   3. detectColourAndCategory — WARDROBE-20/29 (injectable Gemini detector; `ai` only)
  *
@@ -43,11 +50,26 @@ export async function runProcessingPipeline(
   await detectColourAndCategory(context, deps);
 }
 
-/** WARDROBE-18/26: read original from S3, Gemini bg-remove, write processed.png. */
+/**
+ * WARDROBE-18/26: read original from S3, Gemini bg-remove, write processed.png.
+ * WARDROBE-62: skip entirely when BACKGROUND_REMOVAL_ENABLED is not true so
+ * Gemini "did not return an image" cannot fail add-item.
+ */
 export async function removeBackground(
   context: ProcessingContext,
 ): Promise<void> {
+  if (!isBackgroundRemovalEnabled()) {
+    logger.info('Background removal disabled; skipping Gemini', {
+      itemId: context.itemId,
+      wardrobeId: context.wardrobeId,
+    });
+    return;
+  }
+
   const processedKey = await runBackgroundRemoval(context);
+  if (!processedKey) {
+    return;
+  }
   rememberProcessedImage(context, processedKey);
 }
 

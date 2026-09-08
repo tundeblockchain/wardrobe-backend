@@ -2,10 +2,17 @@ import { DynamoItem } from '../../src/shared/types';
 
 const mockRunBackgroundRemoval = jest.fn();
 
-jest.mock('../../src/functions/processing/background-removal', () => ({
-  runBackgroundRemoval: (...args: unknown[]) => mockRunBackgroundRemoval(...args),
-}));
+jest.mock('../../src/functions/processing/background-removal', () => {
+  const actual = jest.requireActual(
+    '../../src/functions/processing/background-removal',
+  ) as typeof import('../../src/functions/processing/background-removal');
+  return {
+    ...actual,
+    runBackgroundRemoval: (...args: unknown[]) => mockRunBackgroundRemoval(...args),
+  };
+});
 
+import { isBackgroundRemovalEnabled } from '../../src/functions/processing/background-removal';
 import {
   classifyGarment,
   detectColourAndCategory,
@@ -41,10 +48,53 @@ function context(): ProcessingContext {
   };
 }
 
+describe('isBackgroundRemovalEnabled (WARDROBE-62)', () => {
+  const original = process.env.BACKGROUND_REMOVAL_ENABLED;
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    } else {
+      process.env.BACKGROUND_REMOVAL_ENABLED = original;
+    }
+  });
+
+  it('is off by default so Gemini bg-removal cannot block add-item', () => {
+    delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    expect(isBackgroundRemovalEnabled()).toBe(false);
+    expect(isBackgroundRemovalEnabled('')).toBe(false);
+    expect(isBackgroundRemovalEnabled('false')).toBe(false);
+    expect(isBackgroundRemovalEnabled('0')).toBe(false);
+    expect(isBackgroundRemovalEnabled('no')).toBe(false);
+    expect(isBackgroundRemovalEnabled('off')).toBe(false);
+  });
+
+  it('turns on only for true / 1 / yes / on', () => {
+    expect(isBackgroundRemovalEnabled('true')).toBe(true);
+    expect(isBackgroundRemovalEnabled('TRUE')).toBe(true);
+    expect(isBackgroundRemovalEnabled('1')).toBe(true);
+    expect(isBackgroundRemovalEnabled('yes')).toBe(true);
+    expect(isBackgroundRemovalEnabled('on')).toBe(true);
+    process.env.BACKGROUND_REMOVAL_ENABLED = 'true';
+    expect(isBackgroundRemovalEnabled()).toBe(true);
+  });
+});
+
 describe('processing pipeline hooks (WARDROBE-18/26 + WARDROBE-19/27 + WARDROBE-20/29)', () => {
+  const originalFlag = process.env.BACKGROUND_REMOVAL_ENABLED;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.BACKGROUND_REMOVAL_ENABLED = 'true';
     mockRunBackgroundRemoval.mockResolvedValue(PROCESSED_KEY);
+  });
+
+  afterEach(() => {
+    if (originalFlag === undefined) {
+      delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    } else {
+      process.env.BACKGROUND_REMOVAL_ENABLED = originalFlag;
+    }
   });
 
   it('delegates removeBackground to the injectable Gemini hook', async () => {
@@ -120,5 +170,42 @@ describe('processing pipeline hooks (WARDROBE-18/26 + WARDROBE-19/27 + WARDROBE-
     expect(classify).toHaveBeenCalledTimes(1);
     expect(detect).toHaveBeenCalledTimes(1);
     expect(persistAi).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips Gemini bg-removal when BACKGROUND_REMOVAL_ENABLED is off and uses the original image', async () => {
+    delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    const ctx = context();
+    const classify = jest.fn().mockImplementation(async (input: { imageKey: string }) => {
+      expect(input.imageKey).toBe(ctx.originalImageKey);
+      return { detectedCategory: 'TOP', detectedSubcategory: 'TSHIRT' };
+    });
+    const detect = jest.fn().mockImplementation(async (input: { imageKey: string }) => {
+      expect(input.imageKey).toBe(ctx.originalImageKey);
+      return { detectedColours: ['BLACK'] };
+    });
+    const persistAi = jest.fn().mockResolvedValue(undefined);
+
+    await runProcessingPipeline(ctx, {
+      classifier: { classify },
+      detector: { detect },
+      persistAi,
+    });
+
+    expect(mockRunBackgroundRemoval).not.toHaveBeenCalled();
+    expect(ctx.item.processedKey).toBeUndefined();
+    expect(ctx.item.ai).toBeUndefined();
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(detect).toHaveBeenCalledTimes(1);
+    expect(persistAi).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call Gemini bg-removal from removeBackground when the flag is false', async () => {
+    process.env.BACKGROUND_REMOVAL_ENABLED = 'false';
+    const ctx = context();
+
+    await expect(removeBackground(ctx)).resolves.toBeUndefined();
+
+    expect(mockRunBackgroundRemoval).not.toHaveBeenCalled();
+    expect(ctx.item.processedKey).toBeUndefined();
   });
 });

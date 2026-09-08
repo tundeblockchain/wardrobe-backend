@@ -173,6 +173,47 @@ describe('loadBackgroundRemovalConfig', () => {
 });
 
 describe('runBackgroundRemoval', () => {
+  const originalFlag = process.env.BACKGROUND_REMOVAL_ENABLED;
+
+  beforeEach(() => {
+    process.env.BACKGROUND_REMOVAL_ENABLED = 'true';
+  });
+
+  afterEach(() => {
+    if (originalFlag === undefined) {
+      delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    } else {
+      process.env.BACKGROUND_REMOVAL_ENABLED = originalFlag;
+    }
+  });
+
+  it('skips Gemini, S3, and metadata when BACKGROUND_REMOVAL_ENABLED is off', async () => {
+    delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    const getObject = jest.fn();
+    const putObject = jest.fn();
+    const update = jest.fn();
+    const removeBackground = jest.fn();
+    const loadConfig = jest.fn();
+    const fetchImpl = jest.fn();
+
+    await expect(
+      runBackgroundRemoval(context(), {
+        store: { getObject, putObject },
+        metadata: { update },
+        client: { removeBackground },
+        loadConfig,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(removeBackground).not.toHaveBeenCalled();
+    expect(getObject).not.toHaveBeenCalled();
+    expect(putObject).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('reads the original, writes processed.png, and updates ai + processedKey', async () => {
     const getObject = jest.fn().mockResolvedValue({
       bytes: ORIGINAL,

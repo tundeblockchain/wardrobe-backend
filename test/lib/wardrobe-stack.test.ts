@@ -9,7 +9,9 @@ function synthTemplate(
   context: Record<string, string> = {},
 ): Template {
   const previousStrategy = process.env.RECOMMENDER_STRATEGY;
+  const previousBgRemoval = process.env.BACKGROUND_REMOVAL_ENABLED;
   delete process.env.RECOMMENDER_STRATEGY;
+  delete process.env.BACKGROUND_REMOVAL_ENABLED;
   try {
     const app = new cdk.App({ context });
     const stack = new WardrobeStack(app, `WardrobeStack-${stage}`, { stage });
@@ -19,6 +21,11 @@ function synthTemplate(
       delete process.env.RECOMMENDER_STRATEGY;
     } else {
       process.env.RECOMMENDER_STRATEGY = previousStrategy;
+    }
+    if (previousBgRemoval === undefined) {
+      delete process.env.BACKGROUND_REMOVAL_ENABLED;
+    } else {
+      process.env.BACKGROUND_REMOVAL_ENABLED = previousBgRemoval;
     }
   }
 }
@@ -642,6 +649,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(processing?.Properties.Environment?.Variables).toEqual(
       expect.objectContaining({
         BACKGROUND_REMOVAL_SECRET_ARN: expect.anything(),
+        BACKGROUND_REMOVAL_ENABLED: 'false',
       }),
     );
     expect(processing?.Properties.Environment?.Variables).not.toHaveProperty(
@@ -659,6 +667,31 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/sk_live_/);
     expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
     expect(synthesized).not.toMatch(/remove\.bg\/[A-Za-z0-9]{10,}/);
+  });
+
+  test('ProcessingFn BACKGROUND_REMOVAL_ENABLED defaults off and can be enabled via CDK context', () => {
+    const processingEnv = (tmpl: Template) => {
+      const functions = Object.values(
+        tmpl.findResources('AWS::Lambda::Function'),
+      ) as Array<{
+        Properties: {
+          Timeout?: number;
+          MemorySize?: number;
+          Environment?: { Variables?: Record<string, unknown> };
+        };
+      }>;
+      const processing = functions.find(
+        (fn) => fn.Properties.Timeout === 60 && fn.Properties.MemorySize === 512,
+      );
+      return processing?.Properties.Environment?.Variables;
+    };
+
+    expect(processingEnv(template)?.BACKGROUND_REMOVAL_ENABLED).toBe('false');
+
+    const enabled = synthTemplate('enabled-bg', {
+      backgroundRemovalEnabled: 'true',
+    });
+    expect(processingEnv(enabled)?.BACKGROUND_REMOVAL_ENABLED).toBe('true');
   });
 
   test('AI classifier credentials are a Secrets Manager placeholder granted to ProcessingFn', () => {
@@ -687,6 +720,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(processing?.Properties.Environment?.Variables).toEqual(
       expect.objectContaining({
         BACKGROUND_REMOVAL_SECRET_ARN: expect.anything(),
+        BACKGROUND_REMOVAL_ENABLED: 'false',
         AI_CLASSIFIER_SECRET_ARN: expect.anything(),
         AI_COLOUR_DETECTOR_SECRET_ARN: expect.anything(),
       }),
