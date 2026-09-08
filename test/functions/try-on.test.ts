@@ -188,12 +188,11 @@ describe('createGeminiTryOnClient', () => {
     ).resolves.toEqual(PNG);
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      DEFAULT_ENDPOINT,
+      `${DEFAULT_ENDPOINT}?key=gemini-key`,
       expect.objectContaining({
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': 'gemini-key',
+          'content-type': 'application/json',
         },
       }),
     );

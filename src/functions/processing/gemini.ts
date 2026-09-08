@@ -1,10 +1,21 @@
 import { logger } from '../../shared/logger';
 import { PermanentProcessingError, RetryableProcessingError } from './errors';
 
-export const DEFAULT_GEMINI_API_BASE =
-  'https://generativelanguage.googleapis.com/v1beta/models';
-
 export const GEMINI_GOOGLE_API_HOST = 'generativelanguage.googleapis.com';
+
+/** API version Interior-design-backend GeminiRenderer uses (working prod call). */
+export const GEMINI_GOOGLE_API_VERSION = 'v1beta';
+
+export const DEFAULT_GEMINI_API_BASE =
+  `https://${GEMINI_GOOGLE_API_HOST}/${GEMINI_GOOGLE_API_VERSION}/models`;
+
+/**
+ * Interior-design-backend `gemini-renderer.ts` request headers.
+ * Auth is the `key` query param — not `x-goog-api-key` or Authorization.
+ */
+export const INTERIOR_GEMINI_REQUEST_HEADERS = {
+  'content-type': 'application/json',
+} as const;
 
 /** Item-processing pipeline stages that call Gemini (WARDROBE-64 logs). */
 export type GeminiPipelineStage =
@@ -271,6 +282,27 @@ export function geminiRequestPath(endpoint: string): string {
   }
 }
 
+/**
+ * Interior-design-backend GeminiRenderer auth: `?key=` on the generateContent URL.
+ * Used only at fetch time so logs / stored endpoints never keep the API key.
+ */
+export function geminiGenerateContentRequestUrl(
+  endpoint: string,
+  apiKey: string,
+): string {
+  try {
+    const url = new URL(endpoint);
+    url.searchParams.set('key', apiKey);
+    return url.toString();
+  } catch {
+    const [base, query = ''] = endpoint.split('?');
+    const params = new URLSearchParams(query);
+    params.set('key', apiKey);
+    const serialized = params.toString();
+    return serialized ? `${base}?${serialized}` : `${base}?key=${encodeURIComponent(apiKey)}`;
+  }
+}
+
 export function logGeminiPipelineStage(
   event: GeminiPipelineEvent,
   fields: {
@@ -310,6 +342,11 @@ export function logGeminiPipelineStage(
   });
 }
 
+/**
+ * POST generateContent using Interior-design-backend's working request shape:
+ * `v1beta` `:generateContent` URL + `?key=` query + `content-type` only.
+ * Classify/colour stay on hardcoded flash-lite (not gemini-2.5-flash).
+ */
 export async function fetchGeminiGenerateContent(
   config: GeminiGenerateContentConfig,
   body: unknown,
@@ -333,15 +370,15 @@ export async function fetchGeminiGenerateContent(
 
   let response: Response;
   try {
-    response = await fetchImpl(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': config.apiKey,
+    response = await fetchImpl(
+      geminiGenerateContentRequestUrl(config.endpoint, config.apiKey),
+      {
+        method: 'POST',
+        headers: { ...INTERIOR_GEMINI_REQUEST_HEADERS },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
       },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(GEMINI_PROVIDER_TIMEOUT_MS),
-    });
+    );
   } catch (error) {
     if (
       error instanceof PermanentProcessingError ||

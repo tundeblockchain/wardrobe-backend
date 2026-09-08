@@ -711,15 +711,19 @@ describe('Gemini colour detector (WARDROBE-29)', () => {
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      DEFAULT_GEMINI_COLOUR_ENDPOINT,
+      `${DEFAULT_GEMINI_COLOUR_ENDPOINT}?key=test-key`,
       expect.objectContaining({
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': 'test-key',
+          'content-type': 'application/json',
         },
       }),
     );
+    const fetchInit = fetchImpl.mock.calls[0][1] as {
+      headers: Record<string, string>;
+    };
+    expect(fetchInit.headers).not.toHaveProperty('x-goog-api-key');
+    expect(fetchInit.headers).not.toHaveProperty('Authorization');
     const init = fetchImpl.mock.calls[0][1] as { body: string };
     const sent = JSON.parse(init.body) as {
       contents: Array<{ parts: Array<Record<string, unknown>> }>;

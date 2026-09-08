@@ -382,16 +382,24 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
       detectedSubcategory: 'SNEAKERS',
     });
 
+    expect(DEFAULT_ENDPOINT).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+    );
+    expect(DEFAULT_ENDPOINT).not.toContain('gemini-2.5-flash:');
     expect(fetchImpl).toHaveBeenCalledWith(
-      DEFAULT_ENDPOINT,
+      `${DEFAULT_ENDPOINT}?key=test-key`,
       expect.objectContaining({
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': 'test-key',
+          'content-type': 'application/json',
         },
       }),
     );
+    const fetchInit = fetchImpl.mock.calls[0][1] as {
+      headers: Record<string, string>;
+    };
+    expect(fetchInit.headers).not.toHaveProperty('x-goog-api-key');
+    expect(fetchInit.headers).not.toHaveProperty('Authorization');
     const sent = JSON.parse(
       (fetchImpl.mock.calls[0][1] as { body: string }).body,
     ) as {

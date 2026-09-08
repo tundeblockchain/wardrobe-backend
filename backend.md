@@ -874,6 +874,8 @@ WARDROBE-64: Gemini classify / colour rebuild Google `generateContent` URLs from
 
 WARDROBE-65: classify and colour are hardcoded to `gemini-2.5-flash-lite` (`/v1beta/models/gemini-2.5-flash-lite:generateContent`). They do not remap onto `gemini-2.5-flash` (that model 404s in prod). Classifier / colour secrets stay API key only — no model field and no secret edit required. A remaining classifier failure is still terminal `FAILED` + `processingError`.
 
+WARDROBE-66: classify and colour adopt Interior-design-backend's working Gemini request (`v1beta` `:generateContent` + `?key=` query, `content-type` only — no `x-goog-api-key`). Model stays `gemini-2.5-flash-lite` and is not remapped to `gemini-2.5-flash`. A remaining non-404 failure is still terminal `FAILED` + `processingError`.
+
 The app can later offer a retry action.
 
 ---
