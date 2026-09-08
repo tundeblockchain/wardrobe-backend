@@ -90,7 +90,7 @@ npx cdk deploy --app "node -r ts-node/register/transpile-only bin/app.ts" \
 
 Console fallback (overwritten the next time you deploy unless CDK context/env is also set): AWS Lambda → `ProcessingFn` → Configuration → Environment variables → set `BACKGROUND_REMOVAL_ENABLED` to `true`. Allowed on values: `true`, `1`, `yes`, `on` (case-insensitive). Anything else, including unset, is off.
 
-Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. The classifier secret is **API key only** — do not add a `model` field and do not edit the secret to pick a model. Classify is hardcoded to `gemini-2.5-flash-lite` (`/v1beta/models/gemini-2.5-flash-lite:generateContent`). It does not remap onto `gemini-2.5-flash` (that path 404s in prod). The request matches Interior-design-backend: `?key=` query auth and `content-type: application/json` only (no `x-goog-api-key`). Never commit the key.
+Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. The classifier secret is **API key only** — do not add a `model` field and do not edit the secret to pick a model. Classify is hardcoded to `gemini-3.1-flash-lite` (`/v1beta/models/gemini-3.1-flash-lite:generateContent`). It does not remap onto Gemini 2.5 (`gemini-2.5-flash` / `gemini-2.5-flash-lite` 404 for new API keys). The request matches Interior-design-backend: `?key=` query auth and `content-type: application/json` only (no `x-goog-api-key`). Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -100,7 +100,7 @@ aws secretsmanager put-secret-value \
 
 Optional CDK context / env `geminiClassifierEndpoint` / `GEMINI_CLASSIFIER_ENDPOINT` keeps a custom (non-Google) proxy URL. The processing Lambda reads `AI_CLASSIFIER_SECRET_ARN` at runtime. Do not reuse `GEMINI_MODEL` here — that override is for background-removal's image-edit model.
 
-Colour / category detection uses **Google Gemini** (`generateContent` image+text). After deploy, replace the generated placeholder with a Gemini API key. The colour secret is **API key only** — same hardcoded model as classify (`gemini-2.5-flash-lite`). Never commit the key.
+Colour / category detection uses **Google Gemini** (`generateContent` image+text). After deploy, replace the generated placeholder with a Gemini API key. The colour secret is **API key only** — same hardcoded model as classify (`gemini-3.1-flash-lite`). Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
