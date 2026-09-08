@@ -196,6 +196,9 @@ export class WardrobeStack extends cdk.Stack {
         process.env.COLOUR_DETECTOR_STRATEGY ??
         'gemini'
       ).trim() || 'gemini';
+    // WARDROBE-62: Gemini bg-removal is opt-in. Default false so add-item is
+    // not blocked when Gemini returns no image. Set true to turn it back on.
+    const backgroundRemovalEnabled = resolveBackgroundRemovalEnabled(this);
 
     const geminiClassifierModel =
       (this.node.tryGetContext('geminiClassifierModel') as string | undefined) ??
@@ -354,6 +357,7 @@ export class WardrobeStack extends cdk.Stack {
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
         PROCESSING_DLQ_ARN: processingDlq.queueArn,
         BACKGROUND_REMOVAL_SECRET_ARN: backgroundRemovalSecret.secretArn,
+        BACKGROUND_REMOVAL_ENABLED: backgroundRemovalEnabled ? 'true' : 'false',
         AI_CLASSIFIER_SECRET_ARN: aiClassifierSecret.secretArn,
         AI_COLOUR_DETECTOR_SECRET_ARN: aiColourDetectorSecret.secretArn,
         COLOUR_DETECTOR_STRATEGY: colourDetectorStrategy,
@@ -811,6 +815,39 @@ export class WardrobeStack extends cdk.Stack {
       logGroup,
     });
   }
+}
+
+/**
+ * WARDROBE-62: ProcessingFn BACKGROUND_REMOVAL_ENABLED.
+ * Default off. Enable with CDK context `backgroundRemovalEnabled=true` or
+ * env `BACKGROUND_REMOVAL_ENABLED=true` at synth/deploy.
+ */
+function resolveBackgroundRemovalEnabled(node: Construct): boolean {
+  const fromContext = node.node.tryGetContext('backgroundRemovalEnabled');
+  if (fromContext !== undefined && fromContext !== null && fromContext !== '') {
+    return parseEnabledFlag(fromContext);
+  }
+  if (
+    process.env.BACKGROUND_REMOVAL_ENABLED !== undefined &&
+    process.env.BACKGROUND_REMOVAL_ENABLED !== ''
+  ) {
+    return parseEnabledFlag(process.env.BACKGROUND_REMOVAL_ENABLED);
+  }
+  return false;
+}
+
+function parseEnabledFlag(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+  if (typeof value === 'string') {
+    const raw = value.trim().toLowerCase();
+    return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
+  }
+  return false;
 }
 
 function resolveRecommenderStrategy(node: Construct): string {

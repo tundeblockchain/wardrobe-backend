@@ -868,6 +868,8 @@ If processing fails:
 
 The terminal failure string is `FAILED` (not `ERROR`). `processingError` is optional and returned on create / list / get when present (WARDROBE-59). Exhausted SQS retries and the processing DLQ must write `FAILED` so the item is never left on `PROCESSING`.
 
+Background removal (WARDROBE-26) is gated by `BACKGROUND_REMOVAL_ENABLED` on the processing Lambda (WARDROBE-62). The deployed default is **off**, so Gemini "did not return an image" no longer fails add-item. Classify / colour then use the original image. Set the env to `true` (CDK context `backgroundRemovalEnabled=true`) to turn Gemini bg-removal back on.
+
 The app can later offer a retry action.
 
 ---

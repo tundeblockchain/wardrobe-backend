@@ -76,6 +76,20 @@ aws secretsmanager put-secret-value \
 
 Optional CDK context / env `geminiModel` / `GEMINI_MODEL` and `geminiEndpoint` / `GEMINI_ENDPOINT` override the secret when you need a different Gemini image model or a proxy URL. The processing Lambda reads `BACKGROUND_REMOVAL_SECRET_ARN` at runtime.
 
+**Background removal is off by default** (`BACKGROUND_REMOVAL_ENABLED=false`, WARDROBE-62). Gemini image-edit often returns no image, which used to fail add-item with `Gemini did not return an image for background removal.` When the flag is off the worker skips Gemini bg-removal entirely, does not fail the item for that reason, and continues classify / colour using the **original** image. The item still reaches `READY` with `originalKey` / `originalImageUrl`.
+
+To turn background removal **on** for a deployed stage (after Reviewer squash-merge + your deploy):
+
+```bash
+# At synth/deploy (preferred — survives the next CDK deploy)
+BACKGROUND_REMOVAL_ENABLED=true npm run deploy -- -c stage=prod
+# or
+npx cdk deploy --app "node -r ts-node/register/transpile-only bin/app.ts" \
+  -c stage=prod -c backgroundRemovalEnabled=true
+```
+
+Console fallback (overwritten the next time you deploy unless CDK context/env is also set): AWS Lambda → `ProcessingFn` → Configuration → Environment variables → set `BACKGROUND_REMOVAL_ENABLED` to `true`. Allowed on values: `true`, `1`, `yes`, `on` (case-insensitive). Anything else, including unset, is off.
+
 Garment classification uses **Google Gemini** (`generateContent` image + text). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash`); JSON can override `model` and `endpoint`. Never commit the key.
 
 ```bash
@@ -337,7 +351,7 @@ The media bucket stays private. Create / list / get / PATCH return short-lived *
 | --- | --- |
 | `image.originalKey` | Whenever an original object key is stored |
 | `originalImageUrl` | Whenever `originalKey` exists (`PENDING` / `PROCESSING` / `READY` / `FAILED`) — 15-minute (`expiresIn` **900**) presigned GET via `createPresignedGetUrl` |
-| `image.processedKey` | After background removal writes `processed.png` (typically `READY`) |
+| `image.processedKey` | After background removal writes `processed.png` (typically `READY`). Omitted when `BACKGROUND_REMOVAL_ENABLED` is off (WARDROBE-62 default) — Flutter still has `originalKey` / `originalImageUrl` |
 | `processedImageUrl` | Whenever `processedKey` exists — same 900s presigned GET. Both URLs are returned when both keys exist so Flutter can prefer processed |
 | `processingError` | `FAILED` only — short worker reason (`originalImageKey` mismatch, permanent Gemini / image error, or exhausted retries). Omitted on PENDING / PROCESSING / READY |
 
@@ -361,17 +375,19 @@ Poison messages (invalid JSON, unknown `jobType`, missing item, owner mismatch) 
 
 Retries use the existing queue (WARDROBE-15): Lambda timeout **60s**, visibility timeout **120s** (visibility must stay greater than the timeout; AWS EventSourceMappings require this), `maxReceiveCount: 3`, then the DLQ + CloudWatch alarms. The processing DLQ uses the same **120s** visibility because `ProcessingFn` consumes it (WARDROBE-61). Retryable DynamoDB / provider / S3 errors are returned as SQS batch item failures so the message is redelivered. On the last receive (`ApproximateReceiveCount >= 3`) the worker writes `processingStatus: FAILED` plus `processingError` and acks. The same Lambda also consumes the processing DLQ so timeouts / crashes that never reached that last-receive write still become `FAILED` (WARDROBE-59). Dynamo is never left on `PROCESSING` as a terminal state.
 
-Background removal (WARDROBE-26) reads the Dynamo-validated `originalImageKey` from the private media bucket, calls an injectable Gemini vision/image client (Secrets Manager credential; unit tests mock Gemini — no live Gemini calls in CI), writes `users/{userId}/items/{itemId}/processed.png`, and updates DynamoDB:
+Background removal (WARDROBE-26, gated by WARDROBE-62) reads the Dynamo-validated `originalImageKey` from the private media bucket, calls an injectable Gemini vision/image client (Secrets Manager credential; unit tests mock Gemini — no live Gemini calls in CI), writes `users/{userId}/items/{itemId}/processed.png`, and updates DynamoDB:
 
 - `processedKey` — Flutter `ClothingItem.image.processedKey`
 - `ai.backgroundRemoved = true`
 - `ai.processedImageKey` — architecture metadata (merged into any existing `ai` map)
 
-The original object is kept. Permanent Gemini / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED` with `processingError`. Transient failures throw `RetryableProcessingError` for SQS retry; after `maxReceiveCount` the worker (or DLQ path) sets `FAILED`.
+The original object is kept. **`BACKGROUND_REMOVAL_ENABLED` defaults to `false`** on `ProcessingFn`. When off, this step is skipped (Gemini is not called), the item is not failed for a missing Gemini image, and classify / colour use the original key. Permanent Gemini / missing-image failures throw `PermanentProcessingError` so the worker sets `FAILED` with `processingError` **only when the flag is on**. Transient failures throw `RetryableProcessingError` for SQS retry; after `maxReceiveCount` the worker (or DLQ path) sets `FAILED`.
+
+To re-enable later: synth/deploy with `BACKGROUND_REMOVAL_ENABLED=true` or CDK context `backgroundRemovalEnabled=true`, or set that env var on `ProcessingFn` in the Lambda console (console-only edits are overwritten by the next CDK deploy).
 
 Pipeline hooks:
 
-1. Background removal (WARDROBE-26, Gemini) — implemented
+1. Background removal (WARDROBE-26, Gemini) — implemented; **off by default** via `BACKGROUND_REMOVAL_ENABLED` (WARDROBE-62)
 2. AI classification (WARDROBE-19/27, Gemini) — injectable `generateContent` classifier; persists `ai.detectedCategory` / `ai.detectedSubcategory` only (never overwrites user `category` / `subcategory`)
 3. Colour / category detection (WARDROBE-20 / WARDROBE-29) — injectable Gemini `generateContent` detector (deployed default). Persists `ai.detectedColours` (controlled tokens such as `BLACK`, `WHITE`, `RED`, `BLUE`) and may refine `ai.detectedCategory` / `ai.detectedSubcategory`. Never overwrites user-owned `category`, `subcategory`, or `colours`. Soft Gemini failures throw `PermanentProcessingError` / `RetryableProcessingError` so the worker sets `FAILED` or retries then marks `FAILED` after exhaustion — they never 500 the worker.
 
