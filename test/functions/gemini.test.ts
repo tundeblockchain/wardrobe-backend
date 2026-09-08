@@ -3,9 +3,13 @@ import {
   DEFAULT_GEMINI_CLASSIFIER_MODEL,
   DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL,
   DEFAULT_GEMINI_COLOUR_MODEL,
+  GEMINI_GOOGLE_API_VERSION,
+  INTERIOR_GEMINI_REQUEST_HEADERS,
   classifyGeminiHttpStatus,
   extractGeminiText,
+  fetchGeminiGenerateContent,
   geminiBlockReason,
+  geminiGenerateContentRequestUrl,
   geminiGenerateContentUrl,
   geminiRequestPath,
   normalizeGeminiModelId,
@@ -187,5 +191,63 @@ describe('Gemini generateContent helpers', () => {
       model: DEFAULT_GEMINI_CLASSIFIER_MODEL,
       endpoint: geminiGenerateContentUrl(DEFAULT_GEMINI_CLASSIFIER_MODEL),
     });
+  });
+
+  it('adopts Interior-design-backend generateContent request shape for classify', async () => {
+    expect(GEMINI_GOOGLE_API_VERSION).toBe('v1beta');
+    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).toBe('gemini-2.5-flash-lite');
+    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).not.toBe('gemini-2.5-flash');
+    expect(INTERIOR_GEMINI_REQUEST_HEADERS).toEqual({
+      'content-type': 'application/json',
+    });
+
+    const config = pinClassifyColourGeminiConfig({
+      apiKey: 'interior-key',
+      model: 'gemini-2.5-flash',
+      endpoint: geminiGenerateContentUrl('gemini-2.5-flash'),
+    });
+    expect(config.model).toBe('gemini-2.5-flash-lite');
+    expect(config.model).not.toBe('gemini-2.5-flash');
+    expect(geminiRequestPath(config.endpoint)).toBe(
+      '/v1beta/models/gemini-2.5-flash-lite:generateContent',
+    );
+    expect(config.endpoint).toContain(`/${GEMINI_GOOGLE_API_VERSION}/`);
+    expect(config.endpoint).toContain(':generateContent');
+    expect(config.endpoint).not.toContain('interior-key');
+
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '{}',
+    });
+
+    await fetchGeminiGenerateContent(
+      config,
+      { contents: [] },
+      fetchImpl as unknown as typeof fetch,
+      {
+        stage: 'classify',
+        label: 'Gemini classifier',
+        networkErrorMessage: 'failed',
+      },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as [
+      string,
+      { method: string; headers: Record<string, string> },
+    ];
+    expect(url).toBe(
+      geminiGenerateContentRequestUrl(config.endpoint, 'interior-key'),
+    );
+    expect(url).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=interior-key',
+    );
+    expect(url).toContain('?key=interior-key');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({ 'content-type': 'application/json' });
+    expect(init.headers).not.toHaveProperty('x-goog-api-key');
+    expect(init.headers).not.toHaveProperty('Authorization');
+    expect(init.headers).not.toHaveProperty('authorization');
   });
 });

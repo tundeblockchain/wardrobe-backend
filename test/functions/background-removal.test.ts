@@ -375,12 +375,11 @@ describe('runBackgroundRemoval', () => {
     ).resolves.toBe(PROCESSED_KEY);
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      DEFAULT_ENDPOINT,
+      `${DEFAULT_ENDPOINT}?key=test-key`,
       expect.objectContaining({
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': 'test-key',
+          'content-type': 'application/json',
         },
       }),
     );
@@ -420,12 +419,11 @@ describe('createGeminiBackgroundRemovalClient', () => {
     await expect(client.removeBackground(ORIGINAL, 'image/jpeg')).resolves.toEqual(PNG);
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      config.endpoint,
+      `${config.endpoint}?key=test-key`,
       expect.objectContaining({
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': 'test-key',
+          'content-type': 'application/json',
         },
       }),
     );
