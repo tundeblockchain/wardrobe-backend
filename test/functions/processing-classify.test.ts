@@ -383,7 +383,7 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
     });
 
     expect(DEFAULT_ENDPOINT).toBe(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',
     );
     expect(DEFAULT_ENDPOINT).not.toContain('gemini-2.5-flash:');
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -526,7 +526,7 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
           pipelineEvent: 'fail',
           geminiHttpStatus: 404,
           geminiModel: DEFAULT_GEMINI_CLASSIFIER_MODEL,
-          geminiRequestPath: '/v1beta/models/gemini-2.5-flash-lite:generateContent',
+          geminiRequestPath: '/v1beta/models/gemini-3.1-flash-lite:generateContent',
         }),
       ]),
     );
@@ -664,13 +664,13 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
     );
   });
 
-  it('parses a plain Gemini API key onto hardcoded gemini-2.5-flash-lite', () => {
+  it('parses a plain Gemini API key onto hardcoded gemini-3.1-flash-lite', () => {
     const fromPlainKey = parseClassifierSecret('  gemini-key  ');
     expect(fromPlainKey).toEqual({
       apiKey: 'gemini-key',
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.1-flash-lite',
       endpoint:
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',
     });
     expect(fromPlainKey.model).toBe(DEFAULT_GEMINI_CLASSIFIER_MODEL);
     expect(fromPlainKey.model).not.toBe('gemini-2.5-flash');
@@ -689,7 +689,7 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
       ),
     ).toEqual({
       apiKey: 'json-key',
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.1-flash-lite',
       endpoint: DEFAULT_ENDPOINT,
     });
 
@@ -703,7 +703,7 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
       ),
     ).toEqual({
       apiKey: 'json-key',
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.1-flash-lite',
       endpoint: DEFAULT_ENDPOINT,
     });
 
@@ -730,7 +730,7 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
     ).toThrow(RetryableProcessingError);
   });
 
-  it('hardcodes classify to gemini-2.5-flash-lite from an API-key-only secret', async () => {
+  it('hardcodes classify to gemini-3.1-flash-lite from an API-key-only secret', async () => {
     process.env.AI_CLASSIFIER_SECRET_ARN = 'arn:secret';
     delete process.env.GEMINI_CLASSIFIER_MODEL;
     delete process.env.GEMINI_CLASSIFIER_ENDPOINT;
@@ -739,9 +739,9 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
 
     expect(config).toEqual({
       apiKey: 'plain-api-key',
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.1-flash-lite',
       endpoint:
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',
     });
     expect(config.model).not.toBe('gemini-2.5-flash');
   });
@@ -761,7 +761,7 @@ describe('Gemini garment classifier (WARDROBE-27)', () => {
 
     expect(config).toEqual({
       apiKey: 'from-secret',
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-3.1-flash-lite',
       endpoint: 'https://env.example/generateContent',
     });
     expect(config.model).not.toBe('gemini-2.5-flash');

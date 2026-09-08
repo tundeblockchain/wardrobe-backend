@@ -34,11 +34,11 @@ export const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
 export const DEFAULT_GEMINI_TRY_ON_MODEL = DEFAULT_GEMINI_IMAGE_MODEL;
 
 /**
- * WARDROBE-65: classify and colour are hardcoded to flash-lite.
- * `gemini-2.5-flash` 404s in prod (`/v1beta/models/gemini-2.5-flash:generateContent`)
- * and must not be the default or remap target for those stages.
+ * Classify and colour are hardcoded to 3.1 flash-lite.
+ * Gemini 2.5 (`gemini-2.5-flash`, `gemini-2.5-flash-lite`) 404s for new
+ * API keys and must not be the default or remap target for those stages.
  */
-export const DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL = 'gemini-2.5-flash-lite';
+export const DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL = 'gemini-3.1-flash-lite';
 
 /** Multimodal text model used by WARDROBE-27 garment classification. */
 export const DEFAULT_GEMINI_CLASSIFIER_MODEL = DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL;
@@ -257,9 +257,9 @@ export function resolveGeminiGenerateContentConfig(
 }
 
 /**
- * WARDROBE-65: pin classify / colour onto the hardcoded flash-lite model
+ * Pin classify / colour onto the hardcoded 3.1 flash-lite model
  * and rebuild the Google generateContent URL. Secret stays API key only —
- * any secret/env model (including gemini-2.5-flash) is ignored.
+ * any secret/env model (including gemini-2.5-*) is ignored.
  */
 export function pinClassifyColourGeminiConfig(
   fromSecret: GeminiGenerateContentConfig,
@@ -345,7 +345,7 @@ export function logGeminiPipelineStage(
 /**
  * POST generateContent using Interior-design-backend's working request shape:
  * `v1beta` `:generateContent` URL + `?key=` query + `content-type` only.
- * Classify/colour stay on hardcoded flash-lite (not gemini-2.5-flash).
+ * Classify/colour stay on hardcoded 3.1 flash-lite (not gemini-2.5-*).
  */
 export async function fetchGeminiGenerateContent(
   config: GeminiGenerateContentConfig,

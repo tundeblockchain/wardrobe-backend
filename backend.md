@@ -872,9 +872,9 @@ Background removal (WARDROBE-26) is gated by `BACKGROUND_REMOVAL_ENABLED` on the
 
 WARDROBE-64: Gemini classify / colour rebuild Google `generateContent` URLs from a bare model id on `v1beta`. A `models/` prefix, slash `/generateContent` path, or retired model (`gemini-2.0-flash`, `gemini-1.5-*`, `gemini-pro`) was 404ing add-item after bg-removal was skipped. Those are normalized. A remaining 404 is `PermanentProcessingError` → `FAILED` + `processingError` (never stuck on `PROCESSING`). CloudWatch: `stage`, `pipelineEvent`, `geminiHttpStatus`, `geminiModel`, `geminiRequestPath`.
 
-WARDROBE-65: classify and colour are hardcoded to `gemini-2.5-flash-lite` (`/v1beta/models/gemini-2.5-flash-lite:generateContent`). They do not remap onto `gemini-2.5-flash` (that model 404s in prod). Classifier / colour secrets stay API key only — no model field and no secret edit required. A remaining classifier failure is still terminal `FAILED` + `processingError`.
+WARDROBE-65: classify and colour are hardcoded to `gemini-3.1-flash-lite` (`/v1beta/models/gemini-3.1-flash-lite:generateContent`). They do not remap onto Gemini 2.5 (`gemini-2.5-flash` / `gemini-2.5-flash-lite` 404 for new API keys). Classifier / colour secrets stay API key only — no model field and no secret edit required. A remaining classifier failure is still terminal `FAILED` + `processingError`.
 
-WARDROBE-66: classify and colour adopt Interior-design-backend's working Gemini request (`v1beta` `:generateContent` + `?key=` query, `content-type` only — no `x-goog-api-key`). Model stays `gemini-2.5-flash-lite` and is not remapped to `gemini-2.5-flash`. A remaining non-404 failure is still terminal `FAILED` + `processingError`.
+WARDROBE-66: classify and colour adopt Interior-design-backend's working Gemini request (`v1beta` `:generateContent` + `?key=` query, `content-type` only — no `x-goog-api-key`). Model stays `gemini-3.1-flash-lite` and is not remapped to Gemini 2.5. A remaining non-404 failure is still terminal `FAILED` + `processingError`.
 
 The app can later offer a retry action.
 

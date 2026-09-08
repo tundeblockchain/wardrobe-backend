@@ -51,10 +51,10 @@ describe('Gemini generateContent helpers', () => {
     );
   });
 
-  it('hardcodes classify/colour to gemini-2.5-flash-lite and does not remap onto gemini-2.5-flash', () => {
-    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).toBe('gemini-2.5-flash-lite');
-    expect(DEFAULT_GEMINI_COLOUR_MODEL).toBe('gemini-2.5-flash-lite');
-    expect(DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL).toBe('gemini-2.5-flash-lite');
+  it('hardcodes classify/colour to gemini-3.1-flash-lite and does not remap onto gemini-2.5-flash', () => {
+    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).toBe('gemini-3.1-flash-lite');
+    expect(DEFAULT_GEMINI_COLOUR_MODEL).toBe('gemini-3.1-flash-lite');
+    expect(DEFAULT_GEMINI_CLASSIFY_COLOUR_MODEL).toBe('gemini-3.1-flash-lite');
     expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).not.toBe('gemini-2.5-flash');
     expect(DEFAULT_GEMINI_COLOUR_MODEL).not.toBe('gemini-2.5-flash');
 
@@ -65,15 +65,15 @@ describe('Gemini generateContent helpers', () => {
     });
     expect(pinned).toEqual({
       apiKey: 'key',
-      model: 'gemini-2.5-flash-lite',
-      endpoint: geminiGenerateContentUrl('gemini-2.5-flash-lite'),
+      model: 'gemini-3.1-flash-lite',
+      endpoint: geminiGenerateContentUrl('gemini-3.1-flash-lite'),
     });
     expect(pinned.model).not.toBe('gemini-2.5-flash');
     expect(pinned.endpoint).toBe(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent',
     );
     expect(geminiRequestPath(pinned.endpoint)).toBe(
-      '/v1beta/models/gemini-2.5-flash-lite:generateContent',
+      '/v1beta/models/gemini-3.1-flash-lite:generateContent',
     );
   });
 
@@ -195,7 +195,7 @@ describe('Gemini generateContent helpers', () => {
 
   it('adopts Interior-design-backend generateContent request shape for classify', async () => {
     expect(GEMINI_GOOGLE_API_VERSION).toBe('v1beta');
-    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).toBe('gemini-2.5-flash-lite');
+    expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).toBe('gemini-3.1-flash-lite');
     expect(DEFAULT_GEMINI_CLASSIFIER_MODEL).not.toBe('gemini-2.5-flash');
     expect(INTERIOR_GEMINI_REQUEST_HEADERS).toEqual({
       'content-type': 'application/json',
@@ -206,10 +206,10 @@ describe('Gemini generateContent helpers', () => {
       model: 'gemini-2.5-flash',
       endpoint: geminiGenerateContentUrl('gemini-2.5-flash'),
     });
-    expect(config.model).toBe('gemini-2.5-flash-lite');
+    expect(config.model).toBe('gemini-3.1-flash-lite');
     expect(config.model).not.toBe('gemini-2.5-flash');
     expect(geminiRequestPath(config.endpoint)).toBe(
-      '/v1beta/models/gemini-2.5-flash-lite:generateContent',
+      '/v1beta/models/gemini-3.1-flash-lite:generateContent',
     );
     expect(config.endpoint).toContain(`/${GEMINI_GOOGLE_API_VERSION}/`);
     expect(config.endpoint).toContain(':generateContent');
@@ -241,7 +241,7 @@ describe('Gemini generateContent helpers', () => {
       geminiGenerateContentRequestUrl(config.endpoint, 'interior-key'),
     );
     expect(url).toBe(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=interior-key',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=interior-key',
     );
     expect(url).toContain('?key=interior-key');
     expect(init.method).toBe('POST');
