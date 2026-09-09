@@ -216,6 +216,85 @@ describe('outfit render worker (WARDROBE-47)', () => {
         {
           slot: 'TOP',
           objectKey: `users/${OWNER_ID}/items/${TOP_ITEM_ID}/processed.png`,
+          category: 'TOP',
+          name: 'Tee',
+        },
+      ],
+    });
+  });
+
+  it('passes each item category/subcategory so try-on can ground outfit context', async () => {
+    const dressId = 'item_dress12abcd';
+    const jeansId = 'item_jeans12abcd';
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('OUTFIT#')) {
+          return {
+            Item: dynamoOutfit({
+              items: [
+                { itemId: dressId, slot: 'DRESS' },
+                { itemId: jeansId, slot: 'BOTTOM' },
+              ],
+            }),
+          };
+        }
+        if (sk === `ITEM#${dressId}`) {
+          return {
+            Item: {
+              ...dynamoItem(),
+              SK: `ITEM#${dressId}`,
+              itemId: dressId,
+              name: 'Midi dress',
+              category: 'DRESS',
+              subcategory: 'DRESS',
+              processedKey: `users/${OWNER_ID}/items/${dressId}/processed.png`,
+            },
+          };
+        }
+        if (sk === `ITEM#${jeansId}`) {
+          return {
+            Item: {
+              ...dynamoItem(),
+              SK: `ITEM#${jeansId}`,
+              itemId: jeansId,
+              name: 'Blue jeans',
+              category: 'BOTTOM',
+              subcategory: 'JEANS',
+              processedKey: `users/${OWNER_ID}/items/${jeansId}/processed.png`,
+            },
+          };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: dynamoGenericProfile() };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoOutfit() };
+    });
+
+    const result = await handler(eventFor(job()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(mockRunTryOn).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      outfitId: OUTFIT_ID,
+      profileImageKeys: ['shared/ai-profiles/generic/alex/front.png'],
+      garmentImages: [
+        {
+          slot: 'DRESS',
+          objectKey: `users/${OWNER_ID}/items/${dressId}/processed.png`,
+          category: 'DRESS',
+          subcategory: 'DRESS',
+          name: 'Midi dress',
+        },
+        {
+          slot: 'BOTTOM',
+          objectKey: `users/${OWNER_ID}/items/${jeansId}/processed.png`,
+          category: 'BOTTOM',
+          subcategory: 'JEANS',
+          name: 'Blue jeans',
         },
       ],
     });

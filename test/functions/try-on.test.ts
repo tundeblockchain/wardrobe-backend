@@ -141,6 +141,65 @@ describe('runOutfitTryOn', () => {
     expect(puts).toEqual([{ key: RENDER_KEY, type: 'image/png' }]);
   });
 
+  it('grounds Gemini in outfit categories and omits jeans when a dress is present', async () => {
+    const dressKey = `users/${USER_ID}/items/item_dress/processed.png`;
+    const jeansKey = `users/${USER_ID}/items/item_jeans/processed.png`;
+    const gets: string[] = [];
+    let renderedLabels: string[] = [];
+    let renderedPrompt = '';
+
+    await runOutfitTryOn(
+      {
+        userId: USER_ID,
+        outfitId: OUTFIT_ID,
+        profileImageKeys: [PROFILE_KEY],
+        garmentImages: [
+          {
+            slot: 'DRESS',
+            objectKey: dressKey,
+            category: 'DRESS',
+            subcategory: 'DRESS',
+            name: 'Midi dress',
+          },
+          {
+            slot: 'BOTTOM',
+            objectKey: jeansKey,
+            category: 'BOTTOM',
+            subcategory: 'JEANS',
+            name: 'Blue jeans',
+          },
+        ],
+      },
+      {
+        store: {
+          async getObject(objectKey) {
+            gets.push(objectKey);
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject() {},
+        },
+        client: {
+          async render(images, prompt) {
+            renderedLabels = images.map((image) => image.label);
+            renderedPrompt = prompt ?? '';
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(gets).toEqual([PROFILE_KEY, dressKey]);
+    expect(gets).not.toContain(jeansKey);
+    expect(renderedLabels).toEqual([
+      'Person reference 1',
+      'Garment slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress',
+    ]);
+    expect(renderedPrompt).toContain('slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress');
+    expect(renderedPrompt).toContain('slot=BOTTOM; category=BOTTOM; subcategory=JEANS; name=Blue jeans');
+    expect(renderedPrompt).toContain('do not put jeans on a dress');
+    expect(renderedPrompt).toContain('Do not put jeans on a dress.');
+  });
+
   it('fails permanently when the profile has no reference images', async () => {
     await expect(
       runOutfitTryOn(
@@ -180,11 +239,20 @@ describe('createGeminiTryOnClient', () => {
       fetchImpl as unknown as typeof fetch,
     );
 
+    const prompt =
+      'Wear only the listed outfit pieces. Do not put jeans on a dress.';
     await expect(
-      client.render([
-        { label: 'Person reference 1', bytes: JPEG, contentType: 'image/jpeg' },
-        { label: 'Garment TOP', bytes: PNG, contentType: 'image/png' },
-      ]),
+      client.render(
+        [
+          { label: 'Person reference 1', bytes: JPEG, contentType: 'image/jpeg' },
+          {
+            label: 'Garment slot=TOP; category=TOP; subcategory=TSHIRT',
+            bytes: PNG,
+            contentType: 'image/png',
+          },
+        ],
+        prompt,
+      ),
     ).resolves.toEqual(PNG);
 
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -201,9 +269,13 @@ describe('createGeminiTryOnClient', () => {
       { body?: string },
     ];
     const body = JSON.parse(fetchCall[1]?.body ?? '{}') as {
-      contents: Array<{ parts: unknown[] }>;
+      contents: Array<{ parts: Array<Record<string, unknown>> }>;
     };
     expect(body.contents[0].parts.length).toBe(5);
+    expect(body.contents[0].parts[0]).toEqual({ text: prompt });
+    expect(body.contents[0].parts[3]).toEqual({
+      text: 'Garment slot=TOP; category=TOP; subcategory=TSHIRT',
+    });
   });
 
   it('marks safety blocks as permanent failures', async () => {
