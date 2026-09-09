@@ -134,6 +134,9 @@ export type AiProfileStatus = (typeof AI_PROFILE_STATUSES)[number];
  *
  * `referenceImages` may be empty on create; WARDROBE-44 attaches uploads.
  * `label` is set on seeded GENERIC_MODEL rows (WARDROBE-45) for the picker.
+ * `frontImageUrl` / `referenceImageUrls` are short-lived presigned GETs
+ * (WARDROBE-73) — never persisted in Dynamo. Flutter WARDROBE-71 reads
+ * `frontImageUrl`.
  */
 export interface AiProfile {
   aiProfileId: string;
@@ -143,6 +146,17 @@ export interface AiProfile {
   createdAt: string;
   updatedAt: string;
   label?: string;
+  /**
+   * Presigned GET for the frontal reference key. Present when that key
+   * exists and presign succeeds. Soft-omitted on presign failure.
+   */
+  frontImageUrl?: string;
+  /**
+   * Presigned GETs for additional (non-frontal) `referenceImages` keys.
+   * Map of objectKey → URL. Omitted when there are no extra angles or
+   * those presigns fail.
+   */
+  referenceImageUrls?: Record<string, string>;
 }
 
 /** Flutter `AiProfileListResponse` for list / models picker. */

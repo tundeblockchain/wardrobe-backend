@@ -2,6 +2,7 @@ import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-l
 import { AiProfile, DynamoItem } from '../../src/shared/types';
 
 const mockSend = jest.fn();
+const mockGetSignedUrl = jest.fn();
 
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({})),
@@ -33,6 +34,21 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
   })),
 }));
 
+jest.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
+}));
+
+jest.mock('@aws-sdk/client-s3', () => ({
+  S3Client: jest.fn(() => ({})),
+  GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'GetObject',
+    input,
+  })),
+  PutObjectCommand: jest.fn(),
+  ListObjectsV2Command: jest.fn(),
+  DeleteObjectsCommand: jest.fn(),
+}));
+
 import { handler } from '../../src/functions/ai-profiles/handler';
 import { buildGenericModelProfile } from '../../src/functions/ai-profiles/model';
 
@@ -41,6 +57,12 @@ const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
 const PROFILE_ID = 'profile_abc123xy';
 const GENERIC_ID = 'profile_model0001';
+const GENERIC_IMAGE_KEY = 'models/generic/model-a.png';
+const GENERIC_FRONT_KEY = 'shared/ai-profiles/generic/alex/front.png';
+
+function signedUrlFor(objectKey: string): string {
+  return `https://signed.example/${objectKey}`;
+}
 
 interface Command {
   _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
@@ -102,7 +124,7 @@ function dynamoPersonal(
 function dynamoGeneric(): DynamoItem {
   return buildGenericModelProfile({
     aiProfileId: GENERIC_ID,
-    referenceImages: ['models/generic/model-a.png'],
+    referenceImages: [GENERIC_IMAGE_KEY],
     status: 'READY',
     createdAt: '2026-09-06T07:00:00.000Z',
     updatedAt: '2026-09-06T07:00:00.000Z',
@@ -110,13 +132,15 @@ function dynamoGeneric(): DynamoItem {
 }
 
 function genericDto(overrides: Partial<AiProfile> = {}): AiProfile {
+  const referenceImages = overrides.referenceImages ?? [GENERIC_IMAGE_KEY];
   return {
     aiProfileId: GENERIC_ID,
     type: 'GENERIC_MODEL',
-    referenceImages: ['models/generic/model-a.png'],
+    referenceImages,
     status: 'READY',
     createdAt: '2026-09-06T07:00:00.000Z',
     updatedAt: '2026-09-06T07:00:00.000Z',
+    frontImageUrl: signedUrlFor(referenceImages[0]),
     ...overrides,
   };
 }
@@ -213,14 +237,20 @@ function expectFlutterDto(body: AiProfile): void {
   expect(body).not.toHaveProperty('entityType');
 }
 
-describe('ai-profiles handler (WARDROBE-43)', () => {
+describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
+    process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
+    mockGetSignedUrl.mockImplementation(
+      async (_client: unknown, command: { input?: { Key?: string } }) =>
+        signedUrlFor(command.input?.Key ?? ''),
+    );
   });
 
   afterEach(() => {
     delete process.env.TABLE_NAME;
+    delete process.env.MEDIA_BUCKET_NAME;
   });
 
   describe('POST /ai-profiles', () => {
@@ -312,6 +342,7 @@ describe('ai-profiles handler (WARDROBE-43)', () => {
 
       expect(result.statusCode).toBe(201);
       expect((bodyOf(result) as AiProfile).referenceImages).toEqual([key]);
+      expect((bodyOf(result) as AiProfile).frontImageUrl).toBe(signedUrlFor(key));
       const command = mockSend.mock.calls[0][0] as Command;
       expect(command.input.Item?.referenceImages).toEqual([key]);
       expect(command.input.Item?.status).toBe('READY');
@@ -471,7 +502,8 @@ describe('ai-profiles handler (WARDROBE-43)', () => {
             aiProfileId: 'profile_generic_01',
             type: 'GENERIC_MODEL',
             label: 'Alex',
-            referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
+            referenceImages: [GENERIC_FRONT_KEY],
+            frontImageUrl: signedUrlFor(GENERIC_FRONT_KEY),
             status: 'READY',
             createdAt: '2026-09-06T00:00:00.000Z',
             updatedAt: '2026-09-06T00:00:00.000Z',
@@ -545,6 +577,124 @@ describe('ai-profiles handler (WARDROBE-43)', () => {
       expectEnvelope(result, 404, 'AI_PROFILE_NOT_FOUND');
       const first = mockSend.mock.calls[0][0] as Command;
       expect(first.input.Key?.PK).toBe(`USER#${OTHER_ID}`);
+    });
+  });
+
+  describe('presigned frontal GET URLs (WARDROBE-73)', () => {
+    const personalFront =
+      `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/front.jpg`;
+    const personalSide =
+      `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/side.jpg`;
+
+    it('includes frontImageUrl on GET list when a frontal key exists', async () => {
+      mockSend.mockResolvedValue({
+        Items: [
+          dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
+        ],
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        aiProfiles: [
+          personalDto({
+            referenceImages: [personalFront],
+            frontImageUrl: signedUrlFor(personalFront),
+          }),
+        ],
+      });
+    });
+
+    it('includes frontImageUrl on GET profile', async () => {
+      mockSend.mockResolvedValue({
+        Item: dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        personalDto({
+          referenceImages: [personalFront],
+          frontImageUrl: signedUrlFor(personalFront),
+        }),
+      );
+    });
+
+    it('prefers a front.* filename and maps other angles to referenceImageUrls', async () => {
+      mockSend.mockResolvedValue({
+        Item: dynamoPersonal(OWNER_ID, {
+          referenceImages: [personalSide, personalFront],
+        }),
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        personalDto({
+          referenceImages: [personalSide, personalFront],
+          frontImageUrl: signedUrlFor(personalFront),
+          referenceImageUrls: {
+            [personalSide]: signedUrlFor(personalSide),
+          },
+        }),
+      );
+    });
+
+    it('omits frontImageUrl on list when presign fails and still returns 200', async () => {
+      mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
+      mockSend.mockResolvedValue({
+        Items: [
+          dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
+        ],
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+
+      expect(result.statusCode).toBe(200);
+      const listed = personalDto({ referenceImages: [personalFront] });
+      expect(bodyOf(result)).toEqual({ aiProfiles: [listed] });
+      expect(
+        (bodyOf(result) as { aiProfiles: AiProfile[] }).aiProfiles[0],
+      ).not.toHaveProperty('frontImageUrl');
+    });
+
+    it('omits frontImageUrl on get when presign fails and still returns 200', async () => {
+      mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
+      mockSend.mockResolvedValue({
+        Item: dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        personalDto({ referenceImages: [personalFront] }),
+      );
+      expect(bodyOf(result) as AiProfile).not.toHaveProperty('frontImageUrl');
+    });
+
+    it('omits frontImageUrl when referenceImages is empty', async () => {
+      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result) as AiProfile).not.toHaveProperty('frontImageUrl');
+      expect(bodyOf(result) as AiProfile).not.toHaveProperty(
+        'referenceImageUrls',
+      );
+      expect(mockGetSignedUrl).not.toHaveBeenCalled();
     });
   });
 

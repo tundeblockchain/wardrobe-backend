@@ -558,7 +558,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
   });
 
-  test('AiProfilesFn can PutObject for PERSONAL reference-image presign', () => {
+  test('AiProfilesFn can PutObject and GetObject for reference-image URLs', () => {
     type PolicyResource = {
       Properties: {
         PolicyDocument: {
@@ -585,6 +585,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
     expect(
       s3.some((action) => action === 's3:PutObject' || action === 's3:PutObject*'),
+    ).toBe(true);
+    expect(
+      s3.some(
+        (action) => action === 's3:GetObject' || action === 's3:GetObject*',
+      ),
     ).toBe(true);
     expect(s3).not.toContain('s3:DeleteObject');
     expect(s3).not.toContain('s3:*');

@@ -25,7 +25,7 @@ Working in this first cut:
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
-- AI Profile CRUD plus PERSONAL reference-image presign/attach and seeded GENERIC_MODEL catalog
+- AI Profile CRUD plus PERSONAL reference-image presign/attach, seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73)
 - Outfit try-on worker (Gemini `generateContent` image; writes `users/{uid}/outfits/{outfitId}/render.png`)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
@@ -572,7 +572,7 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
-## AI profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45)
+## AI profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73)
 
 Phase-3 foundation. Separate from wardrobe CRUD. Outfit try-on / render is WARDROBE-47.
 
@@ -593,9 +593,9 @@ POST   /ai-profiles/{aiProfileId}/reference-images
 | Route | Behaviour |
 | --- | --- |
 | `POST /ai-profiles` | Create a `PERSONAL` profile for the token UID. Body is optional. Starts `READY` with `referenceImages: []` (nothing to process yet). |
-| `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). |
-| `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). |
-| `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). |
+| `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). Includes `frontImageUrl` when a frontal key can be presigned (WARDROBE-73). |
+| `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). Same DTO, including `frontImageUrl`. |
+| `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). Same `frontImageUrl` contract as list. |
 | `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
 | `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. |
 | `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Attach confirmed `objectKey`(s) into `referenceImages[]`. |
@@ -646,6 +646,57 @@ List / models (`200`):
 ```
 
 `type` is `PERSONAL` \| `GENERIC_MODEL`. `status` is `PENDING` \| `PROCESSING` \| `READY` \| `FAILED`.
+
+### Reference image GET URLs (WARDROBE-73) — Flutter contract
+
+`referenceImages` stays the stored S3 object keys. List and get also add short-lived HTTPS GET URLs (same helper / TTL as clothing-item `originalImageUrl`: `createPresignedGetUrl`, `expiresIn` **900**). URLs are never written to Dynamo.
+
+**Flutter WARDROBE-71 should read `frontImageUrl`.** Do not treat `referenceImages` as display URLs.
+
+| Field | When present |
+| --- | --- |
+| `referenceImages` | Always (may be `[]`). S3 keys only — not HTTPS |
+| `frontImageUrl` | When a frontal key exists and presign succeeds. Soft-omitted if presign fails or there are no refs |
+| `referenceImageUrls` | When additional (non-frontal) keys exist and those presigns succeed. Map of `objectKey` → GET URL. Omitted when there are no extra angles or those presigns fail |
+
+Frontal key: a `referenceImages` entry whose filename starts with `front.` (seeded GENERIC_MODEL `front.png`, WARDROBE-72). Otherwise the first key (PERSONAL attach order).
+
+A presign failure is logged and the URL field is omitted; list / get / create / attach still return `200` / `201`. Same pattern as item `originalImageUrl`.
+
+Example — generic model picker row after a successful frontal presign:
+
+```json
+{
+  "aiProfileId": "profile_generic_01",
+  "type": "GENERIC_MODEL",
+  "label": "Alex",
+  "referenceImages": ["shared/ai-profiles/generic/alex/front.png"],
+  "frontImageUrl": "https://...presigned GetObject for front.png...",
+  "status": "READY",
+  "createdAt": "2026-09-06T00:00:00.000Z",
+  "updatedAt": "2026-09-06T00:00:00.000Z"
+}
+```
+
+Example — PERSONAL with a named frontal plus a side angle:
+
+```json
+{
+  "aiProfileId": "profile_abc123xyz0",
+  "type": "PERSONAL",
+  "referenceImages": [
+    "users/{uid}/ai-profiles/{aiProfileId}/side.jpg",
+    "users/{uid}/ai-profiles/{aiProfileId}/front.jpg"
+  ],
+  "frontImageUrl": "https://...presigned GetObject for front.jpg...",
+  "referenceImageUrls": {
+    "users/{uid}/ai-profiles/{aiProfileId}/side.jpg": "https://...presigned GetObject for side.jpg..."
+  },
+  "status": "READY",
+  "createdAt": "2026-09-06T08:00:00.000Z",
+  "updatedAt": "2026-09-06T08:00:00.000Z"
+}
+```
 
 Missing or other-user personal profiles return `404 AI_PROFILE_NOT_FOUND`. Missing tokens return `401 UNAUTHENTICATED`. Delete / upload / attach on a generic model returns `403 UNAUTHORIZED`.
 
@@ -769,6 +820,7 @@ GET /ai-profiles?type=GENERIC_MODEL
       "type": "GENERIC_MODEL",
       "label": "Alex",
       "referenceImages": ["shared/ai-profiles/generic/alex/front.png"],
+      "frontImageUrl": "https://...presigned GetObject for front.png...",
       "status": "READY",
       "createdAt": "2026-09-06T00:00:00.000Z",
       "updatedAt": "2026-09-06T00:00:00.000Z"

@@ -1,6 +1,8 @@
 import { keys } from '../../shared/dynamodb';
 import { Errors } from '../../shared/errors';
 import { newAiProfileId, nowIso } from '../../shared/ids';
+import { logger } from '../../shared/logger';
+import { createPresignedGetUrl } from '../../shared/s3';
 import {
   AiProfile,
   AiProfileStatus,
@@ -30,6 +32,83 @@ export function toAiProfile(item: DynamoItem): AiProfile {
     updatedAt: String(item.updatedAt),
     ...(label ? { label } : {}),
   };
+}
+
+/** Filename of an S3 object key (`front.png` from `…/alex/front.png`). */
+function objectKeyFileName(objectKey: string): string {
+  const segments = objectKey.split('/');
+  return segments[segments.length - 1] ?? '';
+}
+
+/**
+ * Frontal key for WARDROBE-73 / Flutter WARDROBE-71.
+ * Prefer a `referenceImages` entry whose filename starts with `front.`
+ * (seeded GENERIC_MODEL `front.png`). Otherwise the first key.
+ */
+export function frontalReferenceImageKey(
+  referenceImages: string[],
+): string | undefined {
+  const objectKeys = referenceImages
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const namedFront = objectKeys.find((key) =>
+    /^front\./i.test(objectKeyFileName(key)),
+  );
+  return namedFront ?? objectKeys[0];
+}
+
+/**
+ * WARDROBE-73: Flutter reads top-level HTTPS URLs. Soft-fail so a
+ * presign error cannot 500 list / get / create / attach.
+ */
+export async function toAiProfileDto(item: DynamoItem): Promise<AiProfile> {
+  return withSignedReferenceImageUrls(toAiProfile(item));
+}
+
+export async function withSignedReferenceImageUrls(
+  profile: AiProfile,
+): Promise<AiProfile> {
+  const signed = new Map<string, string>();
+
+  for (const objectKey of profile.referenceImages) {
+    const imageUrl = await signedReferenceImageUrl(objectKey);
+    if (imageUrl) {
+      signed.set(objectKey, imageUrl);
+    }
+  }
+
+  const frontKey = frontalReferenceImageKey(profile.referenceImages);
+  const frontImageUrl = frontKey ? signed.get(frontKey) : undefined;
+  const extraUrls = Object.fromEntries(
+    [...signed.entries()].filter(([key]) => key !== frontKey),
+  );
+
+  return {
+    ...profile,
+    ...(frontImageUrl ? { frontImageUrl } : {}),
+    ...(Object.keys(extraUrls).length > 0
+      ? { referenceImageUrls: extraUrls }
+      : {}),
+  };
+}
+
+async function signedReferenceImageUrl(
+  objectKey: string,
+): Promise<string | undefined> {
+  if (!objectKey.trim()) {
+    return undefined;
+  }
+
+  try {
+    const { imageUrl } = await createPresignedGetUrl({ objectKey });
+    return imageUrl;
+  } catch (error) {
+    logger.warn('Failed to presign AI profile reference image GET URL', {
+      objectKey,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return undefined;
+  }
 }
 
 function normalizeStatus(value: unknown): AiProfile['status'] {

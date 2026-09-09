@@ -47,7 +47,7 @@ import {
 import {
   buildPersonalAiProfile,
   mergeReferenceImages,
-  toAiProfile,
+  toAiProfileDto,
 } from './model';
 
 interface CreateAiProfileBody {
@@ -132,7 +132,9 @@ export async function handler(
     }
 
     if (method === 'GET') {
-      return ok(toAiProfile(await getReadableAiProfile(userId, aiProfileId)));
+      return ok(
+        await toAiProfileDto(await getReadableAiProfile(userId, aiProfileId)),
+      );
     }
 
     if (method === 'DELETE') {
@@ -190,9 +192,11 @@ async function listAiProfiles(
 async function listPersonalProfiles(userId: string): Promise<AiProfileList> {
   const items = await queryByPk(keys.userPk(userId), 'AIPROFILE#');
   return {
-    aiProfiles: items
-      .filter((item) => isPersonalAiProfile(item, userId))
-      .map(toAiProfile),
+    aiProfiles: await Promise.all(
+      items
+        .filter((item) => isPersonalAiProfile(item, userId))
+        .map(toAiProfileDto),
+    ),
   };
 }
 
@@ -205,14 +209,18 @@ async function listGenericModels(): Promise<AiProfileList> {
   );
 
   if (generic.length > 0) {
-    return { aiProfiles: generic.map(toAiProfile) };
+    return {
+      aiProfiles: await Promise.all(generic.map(toAiProfileDto)),
+    };
   }
 
   const catalog = await queryByPk(keys.genericModelPk(), 'AIPROFILE#');
   return {
-    aiProfiles: catalog
-      .filter((item) => isAiProfileItem(item) && item.type === 'GENERIC_MODEL')
-      .map(toAiProfile),
+    aiProfiles: await Promise.all(
+      catalog
+        .filter((item) => isAiProfileItem(item) && item.type === 'GENERIC_MODEL')
+        .map(toAiProfileDto),
+    ),
   };
 }
 
@@ -235,7 +243,7 @@ async function createPersonalProfile(
   });
 
   await putItem(item);
-  return toAiProfile(item);
+  return toAiProfileDto(item);
 }
 
 async function deletePersonalProfile(
@@ -340,5 +348,5 @@ async function attachReferenceImages(
     },
   );
 
-  return toAiProfile(updated);
+  return toAiProfileDto(updated);
 }
