@@ -21,6 +21,10 @@ import {
   PermanentProcessingError,
   RetryableProcessingError,
 } from '../processing/errors';
+import {
+  garmentFromClothingItem,
+  type OutfitTryOnGarment,
+} from '../processing/outfit-context';
 import { runOutfitTryOn } from '../processing/try-on';
 
 /**
@@ -243,13 +247,13 @@ async function loadReadyProfile(
 async function loadGarmentImages(
   job: RenderOutfitJob,
   outfit: DynamoItem,
-): Promise<Array<{ slot: string; objectKey: string }>> {
+): Promise<OutfitTryOnGarment[]> {
   const items = toOutfitItems(outfit.items);
   if (items.length === 0) {
     throw new PermanentProcessingError('Outfit has no items to render.');
   }
 
-  const garments: Array<{ slot: string; objectKey: string }> = [];
+  const garments: OutfitTryOnGarment[] = [];
   for (const { itemId, slot } of items) {
     let item: DynamoItem | undefined;
     try {
@@ -286,7 +290,7 @@ async function loadGarmentImages(
       );
     }
 
-    garments.push({ slot, objectKey });
+    garments.push(garmentFromClothingItem(item, slot, objectKey));
   }
 
   return garments;

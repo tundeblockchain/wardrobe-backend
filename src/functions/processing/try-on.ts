@@ -17,6 +17,12 @@ import {
   resolveGeminiGenerateContentConfig,
   resolveGeminiImageMimeType,
 } from './gemini';
+import {
+  buildTryOnPrompt,
+  composeOutfitTryOn,
+  garmentImageLabel,
+  type OutfitTryOnGarment,
+} from './outfit-context';
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const RENDER_CONTENT_TYPE = 'image/png';
@@ -24,6 +30,7 @@ const MAX_PROFILE_REFERENCE_IMAGES = 3;
 
 export const DEFAULT_GEMINI_MODEL = DEFAULT_GEMINI_TRY_ON_MODEL;
 export { geminiGenerateContentUrl };
+export type { OutfitTryOnGarment };
 
 const TRY_ON_PROMPT =
   'Create a single photorealistic virtual try-on image. The first image(s) show the person or model. The following images are garments from one outfit, each labeled by clothing slot. Dress that same person in those garments. Keep the person\'s face, body shape, skin tone, hair, and pose. Fit the clothes naturally. Do not add extra garments, accessories, logos, or text. Return one full-body PNG.';
@@ -35,7 +42,7 @@ export interface TryOnImage {
 }
 
 export interface TryOnClient {
-  render(images: TryOnImage[]): Promise<Uint8Array>;
+  render(images: TryOnImage[], prompt?: string): Promise<Uint8Array>;
 }
 
 export interface GeminiTryOnConfig {
@@ -109,8 +116,8 @@ export function createGeminiTryOnClient(
   fetchImpl: typeof fetch = fetch,
 ): TryOnClient {
   return {
-    render(images) {
-      return generateTryOnPng(images, config, fetchImpl);
+    render(images, prompt) {
+      return generateTryOnPng(images, config, fetchImpl, prompt);
     },
   };
 }
@@ -120,7 +127,7 @@ export async function runOutfitTryOn(
     userId: string;
     outfitId: string;
     profileImageKeys: string[];
-    garmentImages: Array<{ slot: string; objectKey: string }>;
+    garmentImages: OutfitTryOnGarment[];
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
@@ -137,6 +144,14 @@ export async function runOutfitTryOn(
     throw new PermanentProcessingError('Outfit has no garment images to render.');
   }
 
+  const composed = composeOutfitTryOn(input.garmentImages);
+  const prompt = buildTryOnPrompt(composed);
+  if (composed.worn.length === 0) {
+    throw new PermanentProcessingError(
+      'Outfit has no compatible garments to render together.',
+    );
+  }
+
   const store = deps.store ?? defaultObjectStore();
   const client = deps.client ?? (await defaultClient(deps));
 
@@ -149,16 +164,16 @@ export async function runOutfitTryOn(
       contentType: original.contentType,
     });
   }
-  for (const garment of input.garmentImages) {
+  for (const garment of composed.worn) {
     const original = await readImage(store, garment.objectKey);
     images.push({
-      label: `Garment ${garment.slot}`,
+      label: garmentImageLabel(garment),
       bytes: original.bytes,
       contentType: original.contentType,
     });
   }
 
-  const rendered = await invokeClient(client, images);
+  const rendered = await invokeClient(client, images, prompt);
   const imageKey = outfitRenderObjectKey(input.userId, input.outfitId);
 
   try {
@@ -172,6 +187,8 @@ export async function runOutfitTryOn(
     imageKey,
     profileImages: profileKeys.length,
     garments: input.garmentImages.length,
+    wornGarments: composed.worn.length,
+    omittedGarments: composed.omitted.length,
   });
 
   return imageKey;
@@ -223,10 +240,11 @@ async function readImage(
 async function invokeClient(
   client: TryOnClient,
   images: TryOnImage[],
+  prompt: string,
 ): Promise<Uint8Array> {
   let rendered: Uint8Array;
   try {
-    rendered = await client.render(images);
+    rendered = await client.render(images, prompt);
   } catch (error) {
     if (
       error instanceof PermanentProcessingError ||
@@ -250,8 +268,9 @@ async function generateTryOnPng(
   images: TryOnImage[],
   config: GeminiTryOnConfig,
   fetchImpl: typeof fetch,
+  prompt = TRY_ON_PROMPT,
 ): Promise<Uint8Array> {
-  const parts: Array<Record<string, unknown>> = [{ text: TRY_ON_PROMPT }];
+  const parts: Array<Record<string, unknown>> = [{ text: prompt }];
   for (const image of images) {
     const mimeType = resolveGeminiImageMimeType(image.bytes, image.contentType);
     parts.push({ text: image.label });
