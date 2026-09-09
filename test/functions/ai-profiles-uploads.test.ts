@@ -41,6 +41,10 @@ jest.mock('@aws-sdk/client-s3', () => ({
     _op: 'PutObject',
     input,
   })),
+  GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'GetObject',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
@@ -475,6 +479,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
         aiProfileId: PROFILE_ID,
         type: 'PERSONAL',
         referenceImages: [ownedKey],
+        frontImageUrl: SIGNED_URL,
         status: 'READY',
         createdAt: '2026-09-06T08:00:00.000Z',
         updatedAt: expect.stringMatching(ISO8601),

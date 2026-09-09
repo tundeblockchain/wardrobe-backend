@@ -1,9 +1,24 @@
+const mockGetSignedUrl = jest.fn();
+
+jest.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
+}));
+
+jest.mock('@aws-sdk/client-s3', () => ({
+  S3Client: jest.fn(() => ({})),
+  GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    input,
+  })),
+}));
+
 import {
   buildGenericModelProfile,
   buildPersonalAiProfile,
+  frontalReferenceImageKey,
   mergeReferenceImages,
   SYSTEM_AI_PROFILE_OWNER,
   toAiProfile,
+  withSignedReferenceImageUrls,
 } from '../../src/functions/ai-profiles/model';
 import {
   buildProcessAiProfileJob,
@@ -107,5 +122,60 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     ]);
     const eleven = Array.from({ length: 11 }, (_, i) => `k-${i}.jpg`);
     expect(() => mergeReferenceImages([], eleven)).toThrow();
+  });
+
+  it('picks a front.* filename as the frontal key, else the first key', () => {
+    expect(
+      frontalReferenceImageKey([
+        'users/u/ai-profiles/p/side.jpg',
+        'users/u/ai-profiles/p/front.jpg',
+      ]),
+    ).toBe('users/u/ai-profiles/p/front.jpg');
+    expect(
+      frontalReferenceImageKey([
+        'shared/ai-profiles/generic/alex/side.jpg',
+        'shared/ai-profiles/generic/alex/front.png',
+      ]),
+    ).toBe('shared/ai-profiles/generic/alex/front.png');
+    expect(frontalReferenceImageKey(['users/u/a.jpg', 'users/u/b.jpg'])).toBe(
+      'users/u/a.jpg',
+    );
+    expect(frontalReferenceImageKey([])).toBeUndefined();
+  });
+
+  it('adds frontImageUrl and omits it when presign fails', async () => {
+    const front = 'shared/ai-profiles/generic/alex/front.png';
+    const side = 'shared/ai-profiles/generic/alex/side.jpg';
+    const base = toAiProfile(
+      buildGenericModelProfile({
+        aiProfileId: 'profile_generic_01',
+        label: 'Alex',
+        referenceImages: [side, front],
+        createdAt: '2026-09-06T00:00:00.000Z',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+      }),
+    );
+
+    process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
+    mockGetSignedUrl.mockImplementation(
+      async (_client: unknown, command: { input?: { Key?: string } }) =>
+        `https://signed.example/${command.input?.Key ?? ''}`,
+    );
+
+    await expect(withSignedReferenceImageUrls(base)).resolves.toEqual({
+      ...base,
+      frontImageUrl: `https://signed.example/${front}`,
+      referenceImageUrls: {
+        [side]: `https://signed.example/${side}`,
+      },
+    });
+
+    mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
+    const omitted = await withSignedReferenceImageUrls(base);
+    expect(omitted).toEqual(base);
+    expect(omitted).not.toHaveProperty('frontImageUrl');
+    expect(omitted).not.toHaveProperty('referenceImageUrls');
+
+    delete process.env.MEDIA_BUCKET_NAME;
   });
 });

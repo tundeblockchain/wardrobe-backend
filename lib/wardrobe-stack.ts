@@ -314,7 +314,8 @@ export class WardrobeStack extends cdk.Stack {
       },
     });
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
-    // WARDROBE-43 CRUD + WARDROBE-44 PERSONAL reference-image presign/attach.
+    // WARDROBE-43 CRUD + WARDROBE-44 PERSONAL reference-image presign/attach
+    // + WARDROBE-73 short-lived GET URLs on list/get.
     // Try-on secret is granted to OutfitRenderFn only — not this Lambda.
     // PROCESS_AI_PROFILE is not enqueued here.
     const aiProfilesFn = this.lambda('AiProfilesFn', 'ai-profiles', commonLambdaProps);
@@ -404,8 +405,10 @@ export class WardrobeStack extends cdk.Stack {
     // Worker reads the item then updates processingStatus / AI metadata.
     table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     mediaBucket.grantPut(uploadsFn);
-    // PERSONAL AI profile reference-image presign (WARDROBE-44).
+    // PERSONAL AI profile reference-image presign PUT (WARDROBE-44) and
+    // short-lived GET for frontImageUrl / referenceImageUrls (WARDROBE-73).
     mediaBucket.grantPut(aiProfilesFn);
+    mediaBucket.grantRead(aiProfilesFn);
     // Account wipe lists and deletes objects under users/{uid}/ only.
     mediaBucket.grantRead(meFn);
     mediaBucket.grantDelete(meFn);
