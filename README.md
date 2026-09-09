@@ -509,7 +509,7 @@ aws secretsmanager put-secret-value \
 ```
 
 CDK creates the secret as a placeholder. IAM: `OutfitRenderFn` may `secretsmanager:GetSecretValue` on this secret only. `OutfitsFn` may `sqs:SendMessage` on the try-on queue. The worker may consume the queue, `GetItem` / `Query` / `UpdateItem` on the table, and S3 read + put (no delete). No extra IAM console steps if you deploy via CDK.
-3. Upload GENERIC_MODEL full-body photos if you have not already (WARDROBE-45 keys under `shared/ai-profiles/generic/{slug}/front.jpg`). A missing model photo marks the render `FAILED` with `Image not found: shared/ai-profiles/generic/...`.
+3. Upload GENERIC_MODEL full-body photos if you have not already (WARDROBE-45 / WARDROBE-72 keys under `shared/ai-profiles/generic/{slug}/front.png`). A missing model photo marks the render `FAILED` with `Image not found: shared/ai-profiles/generic/...`.
 4. Confirm: `POST .../outfits/{outfitId}/render` with `{ "aiProfileId": "profile_generic_01" }`, then poll `GET .../render` until `READY` or `FAILED`.
 5. If messages land on `wardrobe-outfit-render-dlq-{stage}`, check CloudWatch alarm `wardrobe-outfit-render-dlq-{stage}` and the worker logs. After filling the secret, redrive or have Flutter retry POST.
 
@@ -749,10 +749,10 @@ Four `READY` `GENERIC_MODEL` profiles are written at deploy by a CDK custom reso
 
 | `aiProfileId` | `label` | Placeholder S3 key |
 | --- | --- | --- |
-| `profile_generic_01` | Alex | `shared/ai-profiles/generic/alex/front.jpg` |
-| `profile_generic_02` | Jordan | `shared/ai-profiles/generic/jordan/front.jpg` |
-| `profile_generic_03` | Sam | `shared/ai-profiles/generic/sam/front.jpg` |
-| `profile_generic_04` | Riley | `shared/ai-profiles/generic/riley/front.jpg` |
+| `profile_generic_01` | Alex | `shared/ai-profiles/generic/alex/front.png` |
+| `profile_generic_02` | Jordan | `shared/ai-profiles/generic/jordan/front.png` |
+| `profile_generic_03` | Sam | `shared/ai-profiles/generic/sam/front.png` |
+| `profile_generic_04` | Riley | `shared/ai-profiles/generic/riley/front.png` |
 
 List (same payload from either route):
 
@@ -768,7 +768,7 @@ GET /ai-profiles?type=GENERIC_MODEL
       "aiProfileId": "profile_generic_01",
       "type": "GENERIC_MODEL",
       "label": "Alex",
-      "referenceImages": ["shared/ai-profiles/generic/alex/front.jpg"],
+      "referenceImages": ["shared/ai-profiles/generic/alex/front.png"],
       "status": "READY",
       "createdAt": "2026-09-06T00:00:00.000Z",
       "updatedAt": "2026-09-06T00:00:00.000Z"
@@ -790,21 +790,21 @@ BUCKET=$(aws cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='MediaBucketName'].OutputValue" \
   --output text)
 
-aws s3 cp ./alex-front.jpg \
-  "s3://$BUCKET/shared/ai-profiles/generic/alex/front.jpg" \
-  --content-type image/jpeg
+aws s3 cp ./alex-front.png \
+  "s3://$BUCKET/shared/ai-profiles/generic/alex/front.png" \
+  --content-type image/png
 
-aws s3 cp ./jordan-front.jpg \
-  "s3://$BUCKET/shared/ai-profiles/generic/jordan/front.jpg" \
-  --content-type image/jpeg
+aws s3 cp ./jordan-front.png \
+  "s3://$BUCKET/shared/ai-profiles/generic/jordan/front.png" \
+  --content-type image/png
 
-aws s3 cp ./sam-front.jpg \
-  "s3://$BUCKET/shared/ai-profiles/generic/sam/front.jpg" \
-  --content-type image/jpeg
+aws s3 cp ./sam-front.png \
+  "s3://$BUCKET/shared/ai-profiles/generic/sam/front.png" \
+  --content-type image/png
 
-aws s3 cp ./riley-front.jpg \
-  "s3://$BUCKET/shared/ai-profiles/generic/riley/front.jpg" \
-  --content-type image/jpeg
+aws s3 cp ./riley-front.png \
+  "s3://$BUCKET/shared/ai-profiles/generic/riley/front.png" \
+  --content-type image/png
 ```
 
 3. Confirm the picker (Firebase ID token required):
@@ -843,7 +843,7 @@ aiProfileId     profile_generic_01
 type            GENERIC_MODEL
 label           Alex
 status          READY
-referenceImages ["shared/ai-profiles/generic/alex/front.jpg"]
+referenceImages ["shared/ai-profiles/generic/alex/front.png"]
 createdAt       2026-09-06T00:00:00.000Z
 updatedAt       2026-09-06T00:00:00.000Z
 ```

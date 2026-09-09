@@ -13,7 +13,10 @@ export const GENERIC_MODEL_IMAGE_PREFIX = 'shared/ai-profiles/generic/';
 export const GENERIC_MODEL_CATALOG_CREATED_AT = '2026-09-06T00:00:00.000Z';
 
 /** Bump when the catalog set changes so the CDK custom resource re-runs. */
-export const GENERIC_MODEL_CATALOG_VERSION = '1';
+export const GENERIC_MODEL_CATALOG_VERSION = '2';
+
+/** Canonical frontal reference for seeded GENERIC_MODEL profiles (WARDROBE-72). */
+export const GENERIC_MODEL_FRONTAL_FILE = 'front.png';
 
 export interface GenericModelSpec {
   aiProfileId: string;
@@ -27,25 +30,25 @@ export const GENERIC_MODEL_SPECS: readonly GenericModelSpec[] = [
     aiProfileId: 'profile_generic_01',
     label: 'Alex',
     slug: 'alex',
-    fileName: 'front.jpg',
+    fileName: GENERIC_MODEL_FRONTAL_FILE,
   },
   {
     aiProfileId: 'profile_generic_02',
     label: 'Jordan',
     slug: 'jordan',
-    fileName: 'front.jpg',
+    fileName: GENERIC_MODEL_FRONTAL_FILE,
   },
   {
     aiProfileId: 'profile_generic_03',
     label: 'Sam',
     slug: 'sam',
-    fileName: 'front.jpg',
+    fileName: GENERIC_MODEL_FRONTAL_FILE,
   },
   {
     aiProfileId: 'profile_generic_04',
     label: 'Riley',
     slug: 'riley',
-    fileName: 'front.jpg',
+    fileName: GENERIC_MODEL_FRONTAL_FILE,
   },
 ];
 
@@ -61,7 +64,7 @@ function isSafeSlug(value: string): boolean {
 
 export function genericModelImageKey(
   slug: string,
-  fileName = 'front.jpg',
+  fileName = GENERIC_MODEL_FRONTAL_FILE,
 ): string {
   if (!isSafeSlug(slug) || !isSafeSlug(fileName)) {
     throw new Error('generic model image slug/fileName is not a valid key segment.');

@@ -80,6 +80,10 @@ describe('generic model seed custom-resource handler', () => {
     const first = mockPutItem.mock.calls[0][0] as DynamoItem;
     expect(first.type).toBe('GENERIC_MODEL');
     expect(first.status).toBe('READY');
+    expect(first.referenceImages).toEqual([
+      expect.stringMatching(/^shared\/ai-profiles\/generic\/[a-z0-9-]+\/front\.png$/),
+    ]);
+    expect((first.referenceImages as string[])[0]).not.toMatch(/front\.jpg$/);
   });
 
   it('re-seeds on Update and is a no-op on Delete', async () => {

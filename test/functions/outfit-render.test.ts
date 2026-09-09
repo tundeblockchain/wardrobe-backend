@@ -96,7 +96,7 @@ function dynamoGenericProfile(): DynamoItem {
     userId: 'SYSTEM',
     aiProfileId: PROFILE_ID,
     type: 'GENERIC_MODEL',
-    referenceImages: ['shared/ai-profiles/generic/alex/front.jpg'],
+    referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
     status: 'READY',
     createdAt: '2026-09-06T00:00:00.000Z',
     updatedAt: '2026-09-06T00:00:00.000Z',
@@ -211,7 +211,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
     expect(mockRunTryOn).toHaveBeenCalledWith({
       userId: OWNER_ID,
       outfitId: OUTFIT_ID,
-      profileImageKeys: ['shared/ai-profiles/generic/alex/front.jpg'],
+      profileImageKeys: ['shared/ai-profiles/generic/alex/front.png'],
       garmentImages: [
         {
           slot: 'TOP',

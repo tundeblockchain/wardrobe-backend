@@ -455,7 +455,7 @@ describe('ai-profiles handler (WARDROBE-43)', () => {
       const seeded = buildGenericModelProfile({
         aiProfileId: 'profile_generic_01',
         label: 'Alex',
-        referenceImages: ['shared/ai-profiles/generic/alex/front.jpg'],
+        referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
         status: 'READY',
         createdAt: '2026-09-06T00:00:00.000Z',
         updatedAt: '2026-09-06T00:00:00.000Z',
@@ -471,7 +471,7 @@ describe('ai-profiles handler (WARDROBE-43)', () => {
             aiProfileId: 'profile_generic_01',
             type: 'GENERIC_MODEL',
             label: 'Alex',
-            referenceImages: ['shared/ai-profiles/generic/alex/front.jpg'],
+            referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
             status: 'READY',
             createdAt: '2026-09-06T00:00:00.000Z',
             updatedAt: '2026-09-06T00:00:00.000Z',

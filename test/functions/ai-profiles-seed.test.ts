@@ -2,6 +2,7 @@ import { keys } from '../../src/shared/dynamodb';
 import { DynamoItem } from '../../src/shared/types';
 import {
   GENERIC_MODEL_CATALOG_CREATED_AT,
+  GENERIC_MODEL_FRONTAL_FILE,
   genericModelCatalog,
 } from '../../src/functions/ai-profiles/catalog';
 import { buildGenericModelProfile } from '../../src/functions/ai-profiles/model';
@@ -108,6 +109,41 @@ describe('seedGenericModels (WARDROBE-45)', () => {
     expect(written?.GSI1SK).toBe(`AIPROFILE#${first.aiProfileId}`);
     expect(written?.createdAt).toBe('2026-01-01T00:00:00.000Z');
     expect(written?.updatedAt).toBe('2026-09-06T12:00:00.000Z');
+  });
+
+  it('updates stale front.jpg frontal keys to canonical front.png', async () => {
+    const first = catalog[0];
+    const slug = first.referenceImages[0].split('/')[3];
+    const stale = catalogItem(first, {
+      referenceImages: [`shared/ai-profiles/generic/${slug}/front.jpg`],
+    });
+
+    const store = new Map<string, DynamoItem>([[`${stale.PK}|${stale.SK}`, stale]]);
+    const putItem = jest.fn(async (item: DynamoItem) => {
+      store.set(`${item.PK}|${item.SK}`, item);
+    });
+    const getItem = jest.fn(async (pk: string, sk: string) => store.get(`${pk}|${sk}`));
+
+    const results = await seedGenericModels({
+      getItem,
+      putItem,
+      nowIso: () => '2026-09-09T12:00:00.000Z',
+    });
+
+    const updated = results.find((row) => row.aiProfileId === first.aiProfileId);
+    expect(updated?.action).toBe('updated');
+    expect(updated?.referenceImages).toEqual([
+      `shared/ai-profiles/generic/${slug}/${GENERIC_MODEL_FRONTAL_FILE}`,
+    ]);
+    expect(updated?.referenceImages[0]).toMatch(/\/front\.png$/);
+    expect(updated?.referenceImages[0]).not.toMatch(/front\.jpg$/);
+
+    const written = store.get(`${stale.PK}|${stale.SK}`);
+    expect(written?.referenceImages).toEqual([
+      `shared/ai-profiles/generic/${slug}/front.png`,
+    ]);
+    expect(written?.createdAt).toBe(GENERIC_MODEL_CATALOG_CREATED_AT);
+    expect(written?.updatedAt).toBe('2026-09-09T12:00:00.000Z');
   });
 
   it('detects catalog row mismatches', () => {
