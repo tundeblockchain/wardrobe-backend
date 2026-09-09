@@ -1029,7 +1029,7 @@ describe('outfits handler (WARDROBE-7)', () => {
         userId: 'SYSTEM',
         aiProfileId: PROFILE_ID,
         type: 'GENERIC_MODEL',
-        referenceImages: ['shared/ai-profiles/generic/alex/front.jpg'],
+        referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
         status: 'READY',
         createdAt: '2026-09-06T00:00:00.000Z',
         updatedAt: '2026-09-06T00:00:00.000Z',

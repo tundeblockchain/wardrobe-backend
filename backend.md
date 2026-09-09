@@ -983,7 +983,7 @@ POST   /ai-profiles/{aiProfileId}/reference-images
 
 Reference photos (WARDROBE-44) use the same presigned-S3 pattern as clothing items. Keys must be under `users/{uid}/ai-profiles/{aiProfileId}/`. Upload and attach are owner-`PERSONAL` only (`GENERIC_MODEL` is `403`). Confirming keys appends them to `referenceImages` and sets `status: READY`. A future `PROCESS_AI_PROFILE` worker may later use `PENDING` → `PROCESSING` → `READY`.
 
-WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`04`) via `buildGenericModelProfile()` plus an idempotent seed Lambda / `npm run seed:generic-models`. Image bytes stay out of git — Tunde uploads them to the documented S3 keys after deploy.
+WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`04`) via `buildGenericModelProfile()` plus an idempotent seed Lambda / `npm run seed:generic-models`. Image bytes stay out of git — Tunde uploads them to the documented S3 keys after deploy. The canonical frontal file is `front.png` (WARDROBE-72), e.g. `shared/ai-profiles/generic/alex/front.png`.
 
 ---
 

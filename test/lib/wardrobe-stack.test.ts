@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
+import { GENERIC_MODEL_CATALOG_VERSION } from '../../src/functions/ai-profiles/catalog';
 import { WardrobeStack } from '../../lib/wardrobe-stack';
 
 jest.setTimeout(180_000);
@@ -517,7 +518,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       Properties: { CatalogVersion?: string; TableName?: unknown };
     }>;
     const seed = customResources.find(
-      (resource) => resource.Properties.CatalogVersion === '1',
+      (resource) =>
+        resource.Properties.CatalogVersion === GENERIC_MODEL_CATALOG_VERSION,
     );
     expect(seed).toBeDefined();
     expect(seed?.Properties.TableName).toBeDefined();

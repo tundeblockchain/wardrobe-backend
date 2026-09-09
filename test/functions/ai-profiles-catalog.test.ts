@@ -1,6 +1,7 @@
 import {
   GENERIC_MODEL_CATALOG_CREATED_AT,
   GENERIC_MODEL_CATALOG_VERSION,
+  GENERIC_MODEL_FRONTAL_FILE,
   GENERIC_MODEL_IMAGE_PREFIX,
   GENERIC_MODEL_SPECS,
   genericModelCatalog,
@@ -21,10 +22,17 @@ describe('GENERIC_MODEL catalog (WARDROBE-45)', () => {
     const ids = genericModelIds();
     expect(new Set(ids).size).toBe(ids.length);
 
+    expect(GENERIC_MODEL_FRONTAL_FILE).toBe('front.png');
+    expect(GENERIC_MODEL_FRONTAL_FILE).not.toBe('front.jpg');
+
     for (const spec of GENERIC_MODEL_SPECS) {
       expect(spec.aiProfileId).toMatch(/^profile_generic_\d{2}$/);
       expect(spec.label.trim().length).toBeGreaterThan(0);
       expect(spec.slug).toMatch(/^[a-z0-9-]+$/);
+      expect(spec.fileName).toBe(GENERIC_MODEL_FRONTAL_FILE);
+      expect(genericModelImageKey(spec.slug)).toBe(
+        `${GENERIC_MODEL_IMAGE_PREFIX}${spec.slug}/front.png`,
+      );
       expect(genericModelImageKey(spec.slug, spec.fileName)).toBe(
         `${GENERIC_MODEL_IMAGE_PREFIX}${spec.slug}/${spec.fileName}`,
       );
@@ -38,8 +46,9 @@ describe('GENERIC_MODEL catalog (WARDROBE-45)', () => {
     for (const entry of catalog) {
       expect(entry.status).toBe('READY');
       expect(entry.referenceImages).toEqual([
-        expect.stringMatching(/^shared\/ai-profiles\/generic\/[a-z0-9-]+\/front\.jpg$/),
+        expect.stringMatching(/^shared\/ai-profiles\/generic\/[a-z0-9-]+\/front\.png$/),
       ]);
+      expect(entry.referenceImages[0]).not.toMatch(/front\.jpg$/);
 
       const item = buildGenericModelProfile({
         aiProfileId: entry.aiProfileId,
@@ -78,7 +87,7 @@ describe('GENERIC_MODEL catalog (WARDROBE-45)', () => {
   });
 
   it('rejects unsafe slug segments', () => {
-    expect(() => genericModelImageKey('../secret', 'front.jpg')).toThrow(
+    expect(() => genericModelImageKey('../secret', 'front.png')).toThrow(
       /not a valid key segment/,
     );
     expect(() => genericModelImageKey('alex', 'a/b.jpg')).toThrow(

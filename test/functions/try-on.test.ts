@@ -15,7 +15,7 @@ const DEFAULT_ENDPOINT = geminiGenerateContentUrl(DEFAULT_GEMINI_MODEL);
 
 const USER_ID = 'firebase-uid-owner';
 const OUTFIT_ID = 'outfit_xyz123ab';
-const PROFILE_KEY = 'shared/ai-profiles/generic/alex/front.jpg';
+const PROFILE_KEY = 'shared/ai-profiles/generic/alex/front.png';
 const GARMENT_KEY = `users/${USER_ID}/items/item_top123abcd/processed.png`;
 const RENDER_KEY = `users/${USER_ID}/outfits/${OUTFIT_ID}/render.png`;
 
