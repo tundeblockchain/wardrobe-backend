@@ -135,8 +135,9 @@ export type AiProfileStatus = (typeof AI_PROFILE_STATUSES)[number];
  * `referenceImages` may be empty on create; WARDROBE-44 attaches uploads.
  * `label` is set on seeded GENERIC_MODEL rows (WARDROBE-45) for the picker.
  * `frontImageUrl` / `referenceImageUrls` are short-lived presigned GETs
- * (WARDROBE-73) — never persisted in Dynamo. Flutter WARDROBE-71 reads
- * `frontImageUrl`.
+ * (WARDROBE-73 / WARDROBE-79) — never persisted in Dynamo. Flutter
+ * WARDROBE-71 reads `frontImageUrl`. PERSONAL rows coerce Dynamo Set /
+ * `{ objectKey }` reference shapes onto the same field.
  */
 export interface AiProfile {
   aiProfileId: string;

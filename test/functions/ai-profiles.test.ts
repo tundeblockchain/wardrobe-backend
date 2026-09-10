@@ -682,6 +682,68 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(bodyOf(result) as AiProfile).not.toHaveProperty('frontImageUrl');
     });
 
+    it('includes frontImageUrl on POST create and omits it when presign fails', async () => {
+      mockSend.mockResolvedValue({});
+      const key = `users/${OWNER_ID}/ai-profiles/tmp/V1StGXR8_Z5jdHi6.jpg`;
+
+      const created = asResult(
+        await handler(event({ method: 'POST', body: { referenceImages: [key] } })),
+      );
+
+      expect(created.statusCode).toBe(201);
+      expect((bodyOf(created) as AiProfile).frontImageUrl).toBe(signedUrlFor(key));
+
+      mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
+      const omitted = asResult(
+        await handler(event({ method: 'POST', body: { referenceImages: [key] } })),
+      );
+
+      expect(omitted.statusCode).toBe(201);
+      expect(bodyOf(omitted) as AiProfile).not.toHaveProperty('frontImageUrl');
+      expect((bodyOf(omitted) as AiProfile).referenceImages).toEqual([key]);
+    });
+
+    it('presigns PERSONAL nanoid keys stored as a Dynamo Set on list and get', async () => {
+      const personalKey =
+        `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/V1StGXR8_Z5jdHi6.jpg`;
+
+      mockSend.mockResolvedValue({
+        Items: [
+          dynamoPersonal(OWNER_ID, {
+            referenceImages: new Set([personalKey]),
+          }),
+        ],
+      });
+
+      const listed = asResult(await handler(event({ method: 'GET' })));
+      expect(listed.statusCode).toBe(200);
+      expect(bodyOf(listed)).toEqual({
+        aiProfiles: [
+          personalDto({
+            referenceImages: [personalKey],
+            frontImageUrl: signedUrlFor(personalKey),
+          }),
+        ],
+      });
+
+      mockSend.mockResolvedValue({
+        Item: dynamoPersonal(OWNER_ID, {
+          referenceImages: new Set([personalKey]),
+        }),
+      });
+
+      const got = asResult(
+        await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
+      );
+      expect(got.statusCode).toBe(200);
+      expect(bodyOf(got)).toEqual(
+        personalDto({
+          referenceImages: [personalKey],
+          frontImageUrl: signedUrlFor(personalKey),
+        }),
+      );
+    });
+
     it('omits frontImageUrl when referenceImages is empty', async () => {
       mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
 

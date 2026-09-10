@@ -16,6 +16,7 @@ import {
   buildPersonalAiProfile,
   frontalReferenceImageKey,
   mergeReferenceImages,
+  normalizeReferenceImageKeys,
   SYSTEM_AI_PROFILE_OWNER,
   toAiProfile,
   withSignedReferenceImageUrls,
@@ -116,12 +117,42 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
   });
 
   it('appends unique reference images and rejects more than 10', () => {
+    expect(
+      mergeReferenceImages(new Set(['a.jpg']), ['a.jpg', 'b.jpg']),
+    ).toEqual(['a.jpg', 'b.jpg']);
     expect(mergeReferenceImages(['a.jpg'], ['a.jpg', 'b.jpg'])).toEqual([
       'a.jpg',
       'b.jpg',
     ]);
     const eleven = Array.from({ length: 11 }, (_, i) => `k-${i}.jpg`);
     expect(() => mergeReferenceImages([], eleven)).toThrow();
+  });
+
+  it('normalizes Dynamo Set and object-shaped PERSONAL reference keys', () => {
+    const key = 'users/uid/ai-profiles/profile_abc/AbCdEfGh12345678.jpg';
+    expect(normalizeReferenceImageKeys(new Set([key]))).toEqual([key]);
+    expect(
+      normalizeReferenceImageKeys([{ objectKey: key }, { key: 'users/u/a.jpg' }]),
+    ).toEqual([key, 'users/u/a.jpg']);
+    expect(normalizeReferenceImageKeys({ objectKey: key })).toEqual([key]);
+    expect(normalizeReferenceImageKeys(key)).toEqual([key]);
+    expect(normalizeReferenceImageKeys([{ S: key }])).toEqual([key]);
+    expect(normalizeReferenceImageKeys(undefined)).toEqual([]);
+  });
+
+  it('maps a PERSONAL Dynamo Set of nanoid keys onto the Flutter DTO', () => {
+    const key = 'users/uid-1/ai-profiles/profile_abc/V1StGXR8_Z5jdHi6.jpg';
+    const dto = toAiProfile(
+      buildPersonalAiProfile({
+        userId: 'uid-1',
+        aiProfileId: 'profile_abc',
+        referenceImages: new Set([key]) as unknown as string[],
+        createdAt: '2026-09-06T08:00:00.000Z',
+        updatedAt: '2026-09-06T08:00:00.000Z',
+      }),
+    );
+
+    expect(dto.referenceImages).toEqual([key]);
   });
 
   it('picks a front.* filename as the frontal key, else the first key', () => {
