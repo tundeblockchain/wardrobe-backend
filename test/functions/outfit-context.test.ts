@@ -5,6 +5,7 @@ import {
   garmentFromClothingItem,
   garmentImageLabel,
   isOnePiece,
+  personImageLabel,
   resolveItemCategory,
   resolveItemSubcategory,
   type OutfitTryOnGarment,
@@ -204,8 +205,15 @@ describe('buildTryOnPrompt (WARDROBE-75)', () => {
         ?.split('Do not wear these incompatible pieces:')[0] ?? '';
     expect(wornSection).toContain('slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress');
     expect(wornSection).not.toContain('JEANS');
+    expect(prompt).toContain('Generate a NEW photorealistic fashion photograph');
+    expect(prompt).toContain('Do not overlay, paste, collage, or composite');
+    expect(prompt).toContain('cute, well-lit room in a house');
+    expect(prompt).not.toContain('Keep the person\'s face, body shape, skin tone, hair, and pose');
+    expect(personImageLabel()).toBe(
+      'Person identity reference — use for face and body only, not as the output canvas',
+    );
     expect(garmentImageLabel(composed.worn[0])).toBe(
-      'Garment slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress',
+      'Garment appearance reference — slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress — reconstruct on the body, do not paste this image',
     );
   });
 

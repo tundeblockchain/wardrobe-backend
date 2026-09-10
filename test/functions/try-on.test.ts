@@ -33,6 +33,11 @@ function geminiImageResponse(data = PNG_BASE64): string {
 }
 
 describe('parseTryOnSecret', () => {
+  it('defaults try-on to gemini-3.1-flash-image, not legacy 2.5 flash-image', () => {
+    expect(DEFAULT_GEMINI_MODEL).toBe('gemini-3.1-flash-image');
+    expect(DEFAULT_GEMINI_MODEL).not.toBe('gemini-2.5-flash-image');
+  });
+
   it('accepts a plain Gemini API key and fills default model + endpoint', () => {
     expect(parseTryOnSecret('  gemini-key  ')).toEqual({
       apiKey: 'gemini-key',
@@ -191,13 +196,45 @@ describe('runOutfitTryOn', () => {
     expect(gets).toEqual([PROFILE_KEY, dressKey]);
     expect(gets).not.toContain(jeansKey);
     expect(renderedLabels).toEqual([
-      'Person reference 1',
-      'Garment slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress',
+      'Person identity reference — use for face and body only, not as the output canvas',
+      'Garment appearance reference — slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress — reconstruct on the body, do not paste this image',
     ]);
     expect(renderedPrompt).toContain('slot=DRESS; category=DRESS; subcategory=DRESS; name=Midi dress');
     expect(renderedPrompt).toContain('slot=BOTTOM; category=BOTTOM; subcategory=JEANS; name=Blue jeans');
     expect(renderedPrompt).toContain('do not put jeans on a dress');
     expect(renderedPrompt).toContain('Do not put jeans on a dress.');
+    expect(renderedPrompt).toContain('Do not overlay, paste, collage, or composite');
+  });
+
+  it('sends only the frontal profile image when several references exist', async () => {
+    const sideKey = 'shared/ai-profiles/generic/alex/side.png';
+    const gets: string[] = [];
+
+    await runOutfitTryOn(
+      {
+        userId: USER_ID,
+        outfitId: OUTFIT_ID,
+        profileImageKeys: [sideKey, PROFILE_KEY],
+        garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY }],
+      },
+      {
+        store: {
+          async getObject(objectKey) {
+            gets.push(objectKey);
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject() {},
+        },
+        client: {
+          async render() {
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(gets).toEqual([PROFILE_KEY, GARMENT_KEY]);
+    expect(gets).not.toContain(sideKey);
   });
 
   it('fails permanently when the profile has no reference images', async () => {
@@ -270,11 +307,22 @@ describe('createGeminiTryOnClient', () => {
     ];
     const body = JSON.parse(fetchCall[1]?.body ?? '{}') as {
       contents: Array<{ parts: Array<Record<string, unknown>> }>;
+      generationConfig?: {
+        responseModalities?: string[];
+        imageConfig?: { aspectRatio?: string; imageSize?: string };
+      };
     };
     expect(body.contents[0].parts.length).toBe(5);
-    expect(body.contents[0].parts[0]).toEqual({ text: prompt });
-    expect(body.contents[0].parts[3]).toEqual({
+    expect(body.contents[0].parts[0]).toEqual({
+      text: 'Person reference 1',
+    });
+    expect(body.contents[0].parts[2]).toEqual({
       text: 'Garment slot=TOP; category=TOP; subcategory=TSHIRT',
+    });
+    expect(body.contents[0].parts[4]).toEqual({ text: prompt });
+    expect(body.generationConfig).toEqual({
+      responseModalities: ['IMAGE'],
+      imageConfig: { aspectRatio: '3:4', imageSize: '1K' },
     });
   });
 
