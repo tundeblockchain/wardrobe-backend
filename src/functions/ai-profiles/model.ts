@@ -13,10 +13,77 @@ import { MAX_AI_PROFILE_REFERENCE_IMAGES } from '../../shared/validation';
 /** Owner written on seeded GENERIC_MODEL rows (WARDROBE-45). */
 export const SYSTEM_AI_PROFILE_OWNER = 'SYSTEM';
 
+/**
+ * Coerce Dynamo `referenceImages` into S3 object keys.
+ *
+ * GENERIC_MODEL catalog rows are written as a JS string[] (Dynamo List) with
+ * `shared/.../front.png`, so WARDROBE-73 already produced `frontImageUrl`.
+ * PERSONAL attach writes a JS string[] as well, but Document Client
+ * unmarshalls a Dynamo String Set (SS) as a native `Set`, and some rows
+ * store `{ objectKey }` maps. `Array.isArray` is false for a Set, so
+ * `toAiProfile` used to drop every personal key and omit `frontImageUrl`
+ * (WARDROBE-79).
+ */
+export function normalizeReferenceImageKeys(value: unknown): string[] {
+  const objectKeys: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of iterateReferenceImageEntries(value)) {
+    const objectKey = objectKeyFromReferenceEntry(entry);
+    if (!objectKey || seen.has(objectKey)) {
+      continue;
+    }
+    seen.add(objectKey);
+    objectKeys.push(objectKey);
+  }
+
+  return objectKeys;
+}
+
+function iterateReferenceImageEntries(value: unknown): unknown[] {
+  if (value == null) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value instanceof Set) {
+    return [...value];
+  }
+  if (typeof value === 'string') {
+    return [value];
+  }
+  if (typeof value === 'object') {
+    return [value];
+  }
+  return [];
+}
+
+function objectKeyFromReferenceEntry(entry: unknown): string | undefined {
+  if (typeof entry === 'string') {
+    const trimmed = entry.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (!entry || typeof entry !== 'object') {
+    return undefined;
+  }
+
+  const record = entry as Record<string, unknown>;
+  const wrapped =
+    record.objectKey ??
+    record.key ??
+    record.imageKey ??
+    record.S ??
+    record.s;
+  if (typeof wrapped === 'string' && wrapped.trim()) {
+    return wrapped.trim();
+  }
+
+  return undefined;
+}
+
 export function toAiProfile(item: DynamoItem): AiProfile {
-  const referenceImages = Array.isArray(item.referenceImages)
-    ? item.referenceImages.map((entry) => String(entry))
-    : [];
+  const referenceImages = normalizeReferenceImageKeys(item.referenceImages);
 
   const label =
     typeof item.label === 'string' && item.label.trim()
@@ -58,8 +125,8 @@ export function frontalReferenceImageKey(
 }
 
 /**
- * WARDROBE-73: Flutter reads top-level HTTPS URLs. Soft-fail so a
- * presign error cannot 500 list / get / create / attach.
+ * WARDROBE-73 / WARDROBE-79: Flutter reads top-level HTTPS URLs. Soft-fail
+ * so a presign error cannot 500 list / get / create / attach.
  */
 export async function toAiProfileDto(item: DynamoItem): Promise<AiProfile> {
   return withSignedReferenceImageUrls(toAiProfile(item));
@@ -153,9 +220,7 @@ export function mergeReferenceImages(
   existing: unknown,
   incoming: string[],
 ): string[] {
-  const current = Array.isArray(existing)
-    ? existing.map((entry) => String(entry))
-    : [];
+  const current = normalizeReferenceImageKeys(existing);
   const merged: string[] = [];
   const seen = new Set<string>();
 

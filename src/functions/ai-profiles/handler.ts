@@ -71,7 +71,8 @@ interface AttachReferenceImagesBody {
 }
 
 /**
- * Authenticated AI Profile CRUD + PERSONAL reference-image upload (WARDROBE-43/44).
+ * Authenticated AI Profile CRUD + PERSONAL reference-image upload (WARDROBE-43/44)
+ * + frontal GET URLs on create/get/list (WARDROBE-73 / WARDROBE-79).
  *
  * Identity comes from the Firebase authorizer (`getUserId`). Body / query /
  * path `userId` is ignored.

@@ -659,7 +659,7 @@ List / models (`200`):
 | `frontImageUrl` | When a frontal key exists and presign succeeds. Soft-omitted if presign fails or there are no refs |
 | `referenceImageUrls` | When additional (non-frontal) keys exist and those presigns succeed. Map of `objectKey` → GET URL. Omitted when there are no extra angles or those presigns fail |
 
-Frontal key: a `referenceImages` entry whose filename starts with `front.` (seeded GENERIC_MODEL `front.png`, WARDROBE-72). Otherwise the first key (PERSONAL attach order).
+Frontal key: a `referenceImages` entry whose filename starts with `front.` (seeded GENERIC_MODEL `front.png`, WARDROBE-72). Otherwise the first key (PERSONAL attach order — upload filenames are `{nanoid}.{ext}`, not `front.*`). PERSONAL get/list/create also coerce a Dynamo String Set or `{ objectKey }` entry into keys before presigning (WARDROBE-79); GENERIC_MODEL catalog rows were already a string list.
 
 A presign failure is logged and the URL field is omitted; list / get / create / attach still return `200` / `201`. Same pattern as item `originalImageUrl`.
 
