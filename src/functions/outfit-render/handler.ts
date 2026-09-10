@@ -21,6 +21,7 @@ import {
   PermanentProcessingError,
   RetryableProcessingError,
 } from '../processing/errors';
+import { clothingItemImageKey } from '../outfits/render';
 import {
   garmentFromClothingItem,
   type OutfitTryOnGarment,
@@ -280,10 +281,7 @@ async function loadGarmentImages(
       );
     }
 
-    const objectKey =
-      (typeof item.processedKey === 'string' && item.processedKey.trim()) ||
-      (typeof item.originalKey === 'string' && item.originalKey.trim()) ||
-      '';
+    const objectKey = clothingItemImageKey(item) ?? '';
     if (!objectKey) {
       throw new PermanentProcessingError(
         `Clothing item ${itemId} has no image to render.`,

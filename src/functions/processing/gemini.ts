@@ -28,10 +28,13 @@ export type GeminiPipelineStage =
 export type GeminiPipelineEvent = 'start' | 'success' | 'fail' | 'skip';
 
 /** Image-edit model used by WARDROBE-26 background removal. */
-export const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
+export const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-3.1-flash-image';
 
-/** Image-generation model used by WARDROBE-47 virtual try-on. */
-export const DEFAULT_GEMINI_TRY_ON_MODEL = DEFAULT_GEMINI_IMAGE_MODEL;
+/**
+ * Image-generation model used by WARDROBE-47 virtual try-on.
+ * Nano Banana 2 — stronger multi-reference than legacy 2.5 flash-image.
+ */
+export const DEFAULT_GEMINI_TRY_ON_MODEL = 'gemini-3.1-flash-image';
 
 /**
  * Classify and colour are hardcoded to 3.1 flash-lite.

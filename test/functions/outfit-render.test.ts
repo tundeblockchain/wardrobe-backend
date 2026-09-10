@@ -215,7 +215,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
       garmentImages: [
         {
           slot: 'TOP',
-          objectKey: `users/${OWNER_ID}/items/${TOP_ITEM_ID}/processed.png`,
+          objectKey: `users/${OWNER_ID}/uploads/tee.jpg`,
           category: 'TOP',
           name: 'Tee',
         },
@@ -249,6 +249,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
               name: 'Midi dress',
               category: 'DRESS',
               subcategory: 'DRESS',
+              originalKey: `users/${OWNER_ID}/uploads/dress.jpg`,
               processedKey: `users/${OWNER_ID}/items/${dressId}/processed.png`,
             },
           };
@@ -262,6 +263,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
               name: 'Blue jeans',
               category: 'BOTTOM',
               subcategory: 'JEANS',
+              originalKey: `users/${OWNER_ID}/uploads/jeans.jpg`,
               processedKey: `users/${OWNER_ID}/items/${jeansId}/processed.png`,
             },
           };
@@ -284,20 +286,58 @@ describe('outfit render worker (WARDROBE-47)', () => {
       garmentImages: [
         {
           slot: 'DRESS',
-          objectKey: `users/${OWNER_ID}/items/${dressId}/processed.png`,
+          objectKey: `users/${OWNER_ID}/uploads/dress.jpg`,
           category: 'DRESS',
           subcategory: 'DRESS',
           name: 'Midi dress',
         },
         {
           slot: 'BOTTOM',
-          objectKey: `users/${OWNER_ID}/items/${jeansId}/processed.png`,
+          objectKey: `users/${OWNER_ID}/uploads/jeans.jpg`,
           category: 'BOTTOM',
           subcategory: 'JEANS',
           name: 'Blue jeans',
         },
       ],
     });
+  });
+
+  it('falls back to processedKey when the original garment photo is missing', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        if (sk.startsWith('ITEM#')) {
+          return {
+            Item: {
+              ...dynamoItem(),
+              originalKey: undefined,
+            },
+          };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: dynamoGenericProfile() };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoOutfit() };
+    });
+
+    const result = await handler(eventFor(job()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(mockRunTryOn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        garmentImages: [
+          expect.objectContaining({
+            objectKey: `users/${OWNER_ID}/items/${TOP_ITEM_ID}/processed.png`,
+          }),
+        ],
+      }),
+    );
   });
 
   it('acks invalid JSON as poison without touching DynamoDB', async () => {

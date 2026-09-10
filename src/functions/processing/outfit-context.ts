@@ -130,9 +130,10 @@ export function composeOutfitTryOn(
 
 export function buildTryOnPrompt(composed: OutfitComposeResult): string {
   const lines = [
-    'Create a single photorealistic virtual try-on image.',
-    'The first image(s) show the person or model. The following images are the garments to wear from this outfit, each labeled by slot, category, and subcategory.',
-    "Dress that same person in only the worn garments below. Keep the person's face, body shape, skin tone, hair, and pose. Fit the clothes naturally.",
+    'Generate a NEW photorealistic fashion photograph of this person wearing the outfit.',
+    'The person image is an identity reference only (face, skin tone, hair, body shape, apparent age).',
+    'The garment images are appearance references only (colour, cut, fabric, print).',
+    'Do not use the person photo as a canvas. Do not keep the original pose, crop, or background.',
     '',
     'Outfit items (ground the render in this list; do not invent pieces):',
     ...composed.garments.map((garment) => `- ${formatGarment(garment)}`),
@@ -153,19 +154,32 @@ export function buildTryOnPrompt(composed: OutfitComposeResult): string {
   lines.push(
     '',
     'Composition rules:',
+    '- Reconstruct each worn garment on the body with realistic 3D drape, folds, occlusion, and contact shadows.',
+    '- Replace whatever the person is already wearing. No double-clothing.',
+    '- Do not overlay, paste, collage, or composite garment pixels onto the person photo.',
+    '- Do not leave floating cutouts, hard sticker edges, or transparent garment layers.',
     '- Wear only the garments listed as worn. Do not add extra garments, accessories, logos, or text.',
     '- A DRESS, JUMPSUIT, or ROMPER is a one-piece that covers the torso and legs.',
     '- Do not put jeans on a dress. Do not layer a BOTTOM (jeans, trousers, shorts, skirt) or a separate TOP on a one-piece.',
     '- TOP and BOTTOM are a pair (top on the torso, bottom on the legs) only when no one-piece is worn.',
     '- OUTERWEAR may go over a dress or over a top. SHOES, ACCESSORY, and BAG may be worn with either core.',
-    'Return one full-body PNG.',
+    '',
+    'Scene (optional):',
+    '- You may place the person in a cute, well-lit room in a house (bedroom, living room, or hallway) with soft natural window light.',
+    '- Or keep a simple studio look. Either is fine.',
+    '- Lighting on the clothes must match the scene.',
+    'Return one full-body PNG. No text, logos, or watermarks.',
   );
 
   return lines.join('\n');
 }
 
+export function personImageLabel(): string {
+  return 'Person identity reference — use for face and body only, not as the output canvas';
+}
+
 export function garmentImageLabel(garment: OutfitTryOnGarment): string {
-  return `Garment ${formatGarment(garment)}`;
+  return `Garment appearance reference — ${formatGarment(garment)} — reconstruct on the body, do not paste this image`;
 }
 
 export function formatGarment(garment: OutfitTryOnGarment): string {

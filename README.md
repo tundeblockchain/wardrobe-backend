@@ -125,12 +125,12 @@ aws secretsmanager put-secret-value \
   --secret-string "sk-your-openai-key"
 ```
 
-Virtual try-on / outfit render (WARDROBE-47) uses **Google Gemini** (`generateContent` image). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash-image`); JSON can override `model` and `endpoint`. Never commit the key.
+Virtual try-on / outfit render (WARDROBE-47) uses **Google Gemini** (`generateContent` image). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-3.1-flash-image`); JSON can override `model` and `endpoint`. Never commit the key.
 
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/gemini-try-on \
-  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash-image"}'
+  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-3.1-flash-image"}'
 ```
 
 A raw key string also works:
@@ -488,14 +488,14 @@ AuthZ / validation:
 
 The clothing-item worker is unchanged (`PROCESS_WARDROBE_ITEM` only). Try-on uses a dedicated queue `wardrobe-outfit-render-{stage}` + `OutfitRenderFn` so item-processing poison handling stays isolated.
 
-**Worker:** Dynamo is the source of truth. It reloads the outfit (owner check), the profile (`getReadableAiProfile` + `READY` + reference images), and each garment (prefer `processedKey`, else `originalKey`). Gemini `generateContent` (image) writes `render.png`. Permanent Gemini / missing-image / profile errors set `FAILED` with `render.error` and ack. Transient errors are SQS batch failures (`maxReceiveCount: 3` then DLQ). Poison messages (invalid JSON, wrong `jobType`, missing fields) are acked.
+**Worker:** Dynamo is the source of truth. It reloads the outfit (owner check), the profile (`getReadableAiProfile` + `READY` + the frontal `front.*` reference image), and each garment (prefer `originalKey`, else `processedKey` — cutouts overlay too easily). Gemini `generateContent` (image, `3:4`) writes `render.png`. Permanent Gemini / missing-image / profile errors set `FAILED` with `render.error` and ack. Transient errors are SQS batch failures (`maxReceiveCount: 3` then DLQ). Poison messages (invalid JSON, wrong `jobType`, missing fields) are acked.
 
 **Secret** `wardrobe/{stage}/gemini-try-on` (stack output `GeminiTryOnSecretName`):
 
 - raw API key, or
 - JSON `{ "apiKey", "model?", "endpoint?" }` (`api_key` / `key` also accepted)
 
-Default model `gemini-2.5-flash-image`. Never commit AI keys.
+Default model `gemini-3.1-flash-image`. Never commit AI keys.
 
 #### After deploy — console / secret steps
 
@@ -505,7 +505,7 @@ Default model `gemini-2.5-flash-image`. Never commit AI keys.
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/gemini-try-on \
-  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-2.5-flash-image"}'
+  --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-3.1-flash-image"}'
 ```
 
 CDK creates the secret as a placeholder. IAM: `OutfitRenderFn` may `secretsmanager:GetSecretValue` on this secret only. `OutfitsFn` may `sqs:SendMessage` on the try-on queue. The worker may consume the queue, `GetItem` / `Query` / `UpdateItem` on the table, and S3 read + put (no delete). No extra IAM console steps if you deploy via CDK.

@@ -17,23 +17,24 @@ import {
   resolveGeminiGenerateContentConfig,
   resolveGeminiImageMimeType,
 } from './gemini';
+import { frontalReferenceImageKey } from '../ai-profiles/model';
 import {
   buildTryOnPrompt,
   composeOutfitTryOn,
   garmentImageLabel,
+  personImageLabel,
   type OutfitTryOnGarment,
 } from './outfit-context';
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const RENDER_CONTENT_TYPE = 'image/png';
-const MAX_PROFILE_REFERENCE_IMAGES = 3;
 
 export const DEFAULT_GEMINI_MODEL = DEFAULT_GEMINI_TRY_ON_MODEL;
 export { geminiGenerateContentUrl };
 export type { OutfitTryOnGarment };
 
 const TRY_ON_PROMPT =
-  'Create a single photorealistic virtual try-on image. The first image(s) show the person or model. The following images are garments from one outfit, each labeled by clothing slot. Dress that same person in those garments. Keep the person\'s face, body shape, skin tone, hair, and pose. Fit the clothes naturally. Do not add extra garments, accessories, logos, or text. Return one full-body PNG.';
+  'Generate a NEW photorealistic fashion photograph of this person wearing the garments. The person image is identity only. Reconstruct each garment on the body with realistic drape. Do not overlay or paste garment images onto the person photo. A cute indoor room is optional. Return one full-body PNG.';
 
 export interface TryOnImage {
   label: string;
@@ -131,10 +132,7 @@ export async function runOutfitTryOn(
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
-  const profileKeys = input.profileImageKeys
-    .map((key) => key.trim())
-    .filter(Boolean)
-    .slice(0, MAX_PROFILE_REFERENCE_IMAGES);
+  const profileKeys = selectTryOnProfileImageKeys(input.profileImageKeys);
   if (profileKeys.length === 0) {
     throw new PermanentProcessingError(
       'AI profile has no reference images to render against.',
@@ -156,10 +154,10 @@ export async function runOutfitTryOn(
   const client = deps.client ?? (await defaultClient(deps));
 
   const images: TryOnImage[] = [];
-  for (const [index, objectKey] of profileKeys.entries()) {
+  for (const objectKey of profileKeys) {
     const original = await readImage(store, objectKey);
     images.push({
-      label: `Person reference ${index + 1}`,
+      label: personImageLabel(),
       bytes: original.bytes,
       contentType: original.contentType,
     });
@@ -203,6 +201,11 @@ function defaultObjectStore(): ObjectStore {
       await putObjectBytes({ objectKey, body: bytes, contentType });
     },
   };
+}
+
+function selectTryOnProfileImageKeys(profileImageKeys: string[]): string[] {
+  const front = frontalReferenceImageKey(profileImageKeys);
+  return front ? [front] : [];
 }
 
 async function defaultClient(deps: TryOnDeps): Promise<TryOnClient> {
@@ -270,7 +273,7 @@ async function generateTryOnPng(
   fetchImpl: typeof fetch,
   prompt = TRY_ON_PROMPT,
 ): Promise<Uint8Array> {
-  const parts: Array<Record<string, unknown>> = [{ text: prompt }];
+  const parts: Array<Record<string, unknown>> = [];
   for (const image of images) {
     const mimeType = resolveGeminiImageMimeType(image.bytes, image.contentType);
     parts.push({ text: image.label });
@@ -281,6 +284,7 @@ async function generateTryOnPng(
       },
     });
   }
+  parts.push({ text: prompt });
 
   const body = {
     contents: [
@@ -290,7 +294,11 @@ async function generateTryOnPng(
       },
     ],
     generationConfig: {
-      responseModalities: ['TEXT', 'IMAGE'],
+      responseModalities: ['IMAGE'],
+      imageConfig: {
+        aspectRatio: '3:4',
+        imageSize: '1K',
+      },
     },
   };
 

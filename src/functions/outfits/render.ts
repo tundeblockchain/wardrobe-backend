@@ -85,12 +85,13 @@ export async function requireReadyRenderableProfile(
   return profile;
 }
 
+/** Prefer the original product photo for try-on; cutouts overlay too easily. */
 export function clothingItemImageKey(item: DynamoItem): string | undefined {
-  if (typeof item.processedKey === 'string' && item.processedKey.trim()) {
-    return item.processedKey.trim();
-  }
   if (typeof item.originalKey === 'string' && item.originalKey.trim()) {
     return item.originalKey.trim();
+  }
+  if (typeof item.processedKey === 'string' && item.processedKey.trim()) {
+    return item.processedKey.trim();
   }
   return undefined;
 }
