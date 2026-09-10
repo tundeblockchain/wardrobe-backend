@@ -401,7 +401,7 @@ describe('validation', () => {
     });
   });
 
-  describe('WARDROBE-80 body context', () => {
+  describe('WARDROBE-80 / WARDROBE-82 body context', () => {
     it('soft-omits missing, null, and blank fields on create', () => {
       expect(parseAiProfileBodyContext(undefined)).toEqual({
         set: {},
@@ -412,6 +412,7 @@ describe('validation', () => {
           heightCm: null,
           weightKg: '',
           clothingSize: '',
+          braSize: '',
           gender: null,
         }),
       ).toEqual({ set: {}, remove: [] });
@@ -427,6 +428,7 @@ describe('validation', () => {
           bodyType: 'slim',
           gender: 'non-binary',
           clothingSize: 'UK 10',
+          braSize: '34B',
         }),
       ).toEqual({
         set: {
@@ -436,6 +438,7 @@ describe('validation', () => {
           bodyType: 'SLIM',
           gender: 'NON_BINARY',
           clothingSize: 'UK 10',
+          braSize: '34B',
         },
         remove: [],
       });
@@ -444,12 +447,12 @@ describe('validation', () => {
     it('clears fields on PATCH when null or blank', () => {
       expect(
         parseAiProfileBodyContext(
-          { heightCm: null, clothingSize: '', weightKg: 70 },
+          { heightCm: null, clothingSize: '', braSize: null, weightKg: 70 },
           { allowClear: true },
         ),
       ).toEqual({
         set: { weightKg: 70 },
-        remove: ['heightCm', 'clothingSize'],
+        remove: ['heightCm', 'clothingSize', 'braSize'],
       });
     });
 
@@ -468,6 +471,9 @@ describe('validation', () => {
       ).toThrow(AppError);
       expect(() =>
         parseAiProfileBodyContext({ ageYears: 28.5 }),
+      ).toThrow(AppError);
+      expect(() =>
+        parseAiProfileBodyContext({ braSize: 34 }),
       ).toThrow(AppError);
     });
   });

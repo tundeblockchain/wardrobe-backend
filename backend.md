@@ -984,6 +984,8 @@ POST   /ai-profiles/{aiProfileId}/reference-images
 
 WARDROBE-80 adds optional body/context fields on the same DTO (`heightCm`, `weightKg`, `bustCm`, `hipsCm`, `clothingSize`, `ageYears`, `bodyType`, `gender`). Units are metric via the field names (cm / kg / years). Create and PATCH accept them for PERSONAL profiles; empty values are soft-omitted. GENERIC_MODEL catalog rows seed height/weight/size/age/bodyType defaults. Try-on copies present fields into the Gemini prompt. See README “Body / context fields (WARDROBE-80)” for the Flutter WARDROBE-81 contract.
 
+WARDROBE-82 adds optional `braSize` (string, free-form e.g. `34B`, `32C`) on the same DTO and persist path. Soft-omit if empty. Create and PATCH accept it for PERSONAL profiles; list/get/create/update return it when stored. Try-on copies it into the Gemini prompt as `bra size: 34B` when present. See README “Bra size (WARDROBE-82)” for the Flutter WARDROBE-83 contract.
+
 Reference photos (WARDROBE-44) use the same presigned-S3 pattern as clothing items. Keys must be under `users/{uid}/ai-profiles/{aiProfileId}/`. Upload and attach are owner-`PERSONAL` only (`GENERIC_MODEL` is `403`). Confirming keys appends them to `referenceImages` and sets `status: READY`. A future `PROCESS_AI_PROFILE` worker may later use `PENDING` → `PROCESSING` → `READY`.
 
 WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`04`) via `buildGenericModelProfile()` plus an idempotent seed Lambda / `npm run seed:generic-models`. Image bytes stay out of git — operators upload them to the documented S3 keys after deploy. The canonical frontal file is `front.png` (WARDROBE-72), e.g. `shared/ai-profiles/generic/alex/front.png`.

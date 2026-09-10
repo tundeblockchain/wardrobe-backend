@@ -5,8 +5,9 @@ import {
 } from '../../shared/types';
 
 /**
- * Read persisted WARDROBE-80 fields. Invalid / empty stored values are
- * soft-omitted so a bad catalog row cannot break get / list / try-on.
+ * Read persisted WARDROBE-80 / WARDROBE-82 fields. Invalid / empty stored
+ * values are soft-omitted so a bad catalog row cannot break get / list /
+ * try-on.
  */
 export function pickAiProfileBodyContext(
   item: Record<string, unknown>,
@@ -19,6 +20,7 @@ export function pickAiProfileBodyContext(
   const hipsCm = asFiniteNumber(item.hipsCm);
   const ageYears = asFiniteNumber(item.ageYears);
   const clothingSize = asNonEmptyString(item.clothingSize);
+  const braSize = asNonEmptyString(item.braSize);
   const bodyType = asNonEmptyString(item.bodyType);
   const gender = asNonEmptyString(item.gender);
 
@@ -39,6 +41,9 @@ export function pickAiProfileBodyContext(
   }
   if (clothingSize) {
     context.clothingSize = clothingSize;
+  }
+  if (braSize) {
+    context.braSize = braSize;
   }
   if (bodyType) {
     context.bodyType = bodyType;
@@ -92,6 +97,7 @@ const PROMPT_LABELS: Record<AiProfileBodyFieldName, string> = {
   bustCm: 'bust',
   hipsCm: 'hips',
   clothingSize: 'clothing size',
+  braSize: 'bra size',
   ageYears: 'age',
   bodyType: 'body type',
   gender: 'gender',

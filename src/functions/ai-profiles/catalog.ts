@@ -2,6 +2,7 @@ import { AiProfileBodyContext } from '../../shared/types';
 
 /**
  * Stable GENERIC_MODEL catalog (WARDROBE-45 / WARDROBE-80).
+ * WARDROBE-82 `braSize` is PERSONAL-only and is not seeded here.
  *
  * Flutter caches these `aiProfileId`s. Do not rename IDs once shipped.
  * Reference keys are documented placeholders under a shared S3 prefix —

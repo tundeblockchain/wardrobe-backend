@@ -362,6 +362,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
               bustCm: 90,
               hipsCm: 98,
               clothingSize: 'M',
+              braSize: '34B',
               ageYears: 28,
               bodyType: 'average',
               gender: 'female',
@@ -378,6 +379,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         bustCm: 90,
         hipsCm: 98,
         clothingSize: 'M',
+        braSize: '34B',
         ageYears: 28,
         bodyType: 'AVERAGE',
         gender: 'FEMALE',
@@ -390,6 +392,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
           heightCm: 170,
           weightKg: 65.5,
           clothingSize: 'M',
+          braSize: '34B',
           ageYears: 28,
           bodyType: 'AVERAGE',
           gender: 'FEMALE',
@@ -408,6 +411,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
               heightCm: null,
               weightKg: '',
               clothingSize: '',
+              braSize: '',
               gender: null,
             },
           }),
@@ -419,6 +423,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(body).not.toHaveProperty('heightCm');
       expect(body).not.toHaveProperty('weightKg');
       expect(body).not.toHaveProperty('clothingSize');
+      expect(body).not.toHaveProperty('braSize');
       expect(body).not.toHaveProperty('gender');
 
       const command = mockSend.mock.calls[0][0] as Command;
@@ -462,7 +467,11 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     it('returns stored body context and soft-omits missing fields', async () => {
       mockSend.mockResolvedValue({
         Items: [
-          dynamoPersonal(OWNER_ID, { heightCm: 175, clothingSize: 'L' }),
+          dynamoPersonal(OWNER_ID, {
+            heightCm: 175,
+            clothingSize: 'L',
+            braSize: '32C',
+          }),
         ],
       });
 
@@ -470,9 +479,12 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
       expect(result.statusCode).toBe(200);
       expect(bodyOf(result)).toEqual({
-        aiProfiles: [personalDto({ heightCm: 175, clothingSize: 'L' })],
+        aiProfiles: [
+          personalDto({ heightCm: 175, clothingSize: 'L', braSize: '32C' }),
+        ],
       });
       const listed = (bodyOf(result) as { aiProfiles: AiProfile[] }).aiProfiles[0];
+      expect(listed.braSize).toBe('32C');
       expect(listed).not.toHaveProperty('weightKg');
       expect(listed).not.toHaveProperty('gender');
     });
@@ -625,6 +637,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
           heightCm: 172,
           weightKg: 64,
           gender: 'NON_BINARY',
+          braSize: '34B',
         }),
       });
 
@@ -638,6 +651,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
           heightCm: 172,
           weightKg: 64,
           gender: 'NON_BINARY',
+          braSize: '34B',
         }),
       );
       expect(bodyOf(result) as AiProfile).not.toHaveProperty('bustCm');
@@ -902,6 +916,9 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
               clothingSize: String(
                 command.input.ExpressionAttributeValues?.[':clothingSize'] ?? '',
               ),
+              braSize: String(
+                command.input.ExpressionAttributeValues?.[':braSize'] ?? '',
+              ),
               updatedAt: String(
                 command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
               ),
@@ -916,7 +933,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
           event({
             method: 'PATCH',
             aiProfileId: PROFILE_ID,
-            body: { heightCm: 172.5, clothingSize: 'M' },
+            body: { heightCm: 172.5, clothingSize: 'M', braSize: '32C' },
           }),
         ),
       );
@@ -926,6 +943,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         personalDto({
           heightCm: 172.5,
           clothingSize: 'M',
+          braSize: '32C',
           updatedAt: expect.stringMatching(ISO8601) as unknown as string,
         }),
       );
@@ -937,6 +955,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         expect.objectContaining({
           ':heightCm': 172.5,
           ':clothingSize': 'M',
+          ':braSize': '32C',
         }),
       );
     });
