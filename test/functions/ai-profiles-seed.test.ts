@@ -24,6 +24,7 @@ describe('seedGenericModels (WARDROBE-45)', () => {
         referenceImages: entry.referenceImages,
         status: entry.status,
         label: entry.label,
+        body: entry.body,
         createdAt: GENERIC_MODEL_CATALOG_CREATED_AT,
         updatedAt: GENERIC_MODEL_CATALOG_CREATED_AT,
       }),
@@ -59,8 +60,15 @@ describe('seedGenericModels (WARDROBE-45)', () => {
           referenceImages: entry.referenceImages,
           createdAt: GENERIC_MODEL_CATALOG_CREATED_AT,
           updatedAt: GENERIC_MODEL_CATALOG_CREATED_AT,
+          heightCm: entry.body?.heightCm,
+          weightKg: entry.body?.weightKg,
+          clothingSize: entry.body?.clothingSize,
+          ageYears: entry.body?.ageYears,
+          bodyType: entry.body?.bodyType,
         }),
       );
+      expect(item).not.toHaveProperty('bustCm');
+      expect(item).not.toHaveProperty('gender');
     }
   });
 
@@ -155,5 +163,6 @@ describe('seedGenericModels (WARDROBE-45)', () => {
       catalogRowMatches({ ...item, referenceImages: ['other.jpg'] }, item),
     ).toBe(false);
     expect(catalogRowMatches({ ...item, GSI1PK: undefined }, item)).toBe(false);
+    expect(catalogRowMatches({ ...item, heightCm: 150 }, item)).toBe(false);
   });
 });

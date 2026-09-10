@@ -55,6 +55,7 @@ describe('GENERIC_MODEL catalog (WARDROBE-45)', () => {
         referenceImages: entry.referenceImages,
         status: entry.status,
         label: entry.label,
+        body: entry.body,
         createdAt: GENERIC_MODEL_CATALOG_CREATED_AT,
         updatedAt: GENERIC_MODEL_CATALOG_CREATED_AT,
       });
@@ -75,7 +76,11 @@ describe('GENERIC_MODEL catalog (WARDROBE-45)', () => {
         status: 'READY',
         createdAt: GENERIC_MODEL_CATALOG_CREATED_AT,
         updatedAt: GENERIC_MODEL_CATALOG_CREATED_AT,
+        ...entry.body,
       });
+      expect(entry.body?.heightCm).toBeDefined();
+      expect(dto).not.toHaveProperty('bustCm');
+      expect(dto).not.toHaveProperty('gender');
       expect(dto).not.toHaveProperty('userId');
       expect(dto).not.toHaveProperty('PK');
     }

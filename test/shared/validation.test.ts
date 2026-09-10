@@ -1,9 +1,13 @@
 import {
+  hasAiProfileBodyWrite,
+  optionalFiniteNumber,
   optionalInteger,
+  optionalIntegerInRange,
   optionalNonEmptyString,
   optionalQueryString,
   optionalReferenceImages,
   optionalStringArray,
+  parseAiProfileBodyContext,
   requireAiProfileType,
   requireAttachReferenceImageKeys,
   requireCategory,
@@ -393,6 +397,77 @@ describe('validation', () => {
     it('rejects an empty attach body', () => {
       expect(() =>
         requireAttachReferenceImageKeys({}, userId, 'profile_abc'),
+      ).toThrow(AppError);
+    });
+  });
+
+  describe('WARDROBE-80 body context', () => {
+    it('soft-omits missing, null, and blank fields on create', () => {
+      expect(parseAiProfileBodyContext(undefined)).toEqual({
+        set: {},
+        remove: [],
+      });
+      expect(
+        parseAiProfileBodyContext({
+          heightCm: null,
+          weightKg: '',
+          clothingSize: '',
+          gender: null,
+        }),
+      ).toEqual({ set: {}, remove: [] });
+      expect(hasAiProfileBodyWrite({ set: {}, remove: [] })).toBe(false);
+    });
+
+    it('parses metric numbers and canonicalizes known tokens', () => {
+      expect(
+        parseAiProfileBodyContext({
+          heightCm: 172.5,
+          weightKg: 64,
+          ageYears: 28,
+          bodyType: 'slim',
+          gender: 'non-binary',
+          clothingSize: 'UK 10',
+        }),
+      ).toEqual({
+        set: {
+          heightCm: 172.5,
+          weightKg: 64,
+          ageYears: 28,
+          bodyType: 'SLIM',
+          gender: 'NON_BINARY',
+          clothingSize: 'UK 10',
+        },
+        remove: [],
+      });
+    });
+
+    it('clears fields on PATCH when null or blank', () => {
+      expect(
+        parseAiProfileBodyContext(
+          { heightCm: null, clothingSize: '', weightKg: 70 },
+          { allowClear: true },
+        ),
+      ).toEqual({
+        set: { weightKg: 70 },
+        remove: ['heightCm', 'clothingSize'],
+      });
+    });
+
+    it('rejects out-of-range and non-numeric measurements', () => {
+      expect(() => optionalFiniteNumber('170', 'heightCm', 50, 250)).toThrow(
+        AppError,
+      );
+      expect(() => optionalFiniteNumber(10, 'heightCm', 50, 250)).toThrow(
+        AppError,
+      );
+      expect(() => optionalIntegerInRange(0, 'ageYears', 1, 120)).toThrow(
+        AppError,
+      );
+      expect(() =>
+        parseAiProfileBodyContext({ heightCm: 999 }),
+      ).toThrow(AppError);
+      expect(() =>
+        parseAiProfileBodyContext({ ageYears: 28.5 }),
       ).toThrow(AppError);
     });
   });

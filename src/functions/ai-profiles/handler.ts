@@ -33,10 +33,12 @@ import {
 } from '../../shared/s3';
 import { AiProfile, AiProfileList } from '../../shared/types';
 import {
+  hasAiProfileBodyWrite,
   optionalAiProfileType,
   optionalInteger,
   optionalNonEmptyString,
   optionalReferenceImages,
+  parseAiProfileBodyContext,
   requireAttachReferenceImageKeys,
   requireCreatePersonalType,
   requireNonEmptyString,
@@ -55,7 +57,17 @@ interface CreateAiProfileBody {
   referenceImages?: unknown;
   userId?: unknown;
   status?: unknown;
+  heightCm?: unknown;
+  weightKg?: unknown;
+  bustCm?: unknown;
+  hipsCm?: unknown;
+  clothingSize?: unknown;
+  ageYears?: unknown;
+  bodyType?: unknown;
+  gender?: unknown;
 }
+
+type UpdateAiProfileBody = CreateAiProfileBody;
 
 interface CreateReferenceUploadBody {
   contentType?: unknown;
@@ -72,7 +84,8 @@ interface AttachReferenceImagesBody {
 
 /**
  * Authenticated AI Profile CRUD + PERSONAL reference-image upload (WARDROBE-43/44)
- * + frontal GET URLs on create/get/list (WARDROBE-73 / WARDROBE-79).
+ * + frontal GET URLs on create/get/list (WARDROBE-73 / WARDROBE-79)
+ * + optional body/context fields on create/update (WARDROBE-80).
  *
  * Identity comes from the Firebase authorizer (`getUserId`). Body / query /
  * path `userId` is ignored.
@@ -135,6 +148,16 @@ export async function handler(
     if (method === 'GET') {
       return ok(
         await toAiProfileDto(await getReadableAiProfile(userId, aiProfileId)),
+      );
+    }
+
+    if (method === 'PATCH') {
+      return ok(
+        await updatePersonalProfile(
+          userId,
+          aiProfileId,
+          parseJsonBody(event),
+        ),
       );
     }
 
@@ -231,12 +254,16 @@ async function createPersonalProfile(
 ): Promise<AiProfile> {
   requireCreatePersonalType(body.type);
   const referenceImages = optionalReferenceImages(body.referenceImages, userId);
+  const { set: bodyContext } = parseAiProfileBodyContext(
+    body as Record<string, unknown>,
+  );
   const timestamp = nowIso();
 
   const item = buildPersonalAiProfile({
     userId,
     aiProfileId: newAiProfileId(),
     referenceImages,
+    body: bodyContext,
     // Empty refs: nothing to process. Attach (WARDROBE-44) keeps READY.
     status: 'READY',
     createdAt: timestamp,
@@ -245,6 +272,34 @@ async function createPersonalProfile(
 
   await putItem(item);
   return toAiProfileDto(item);
+}
+
+async function updatePersonalProfile(
+  userId: string,
+  aiProfileId: string,
+  body: UpdateAiProfileBody,
+): Promise<AiProfile> {
+  await requireOwnedPersonalForMutation(
+    userId,
+    aiProfileId,
+    'GENERIC_MODEL profiles cannot be updated.',
+  );
+
+  const write = parseAiProfileBodyContext(body as Record<string, unknown>, {
+    allowClear: true,
+  });
+  if (!hasAiProfileBodyWrite(write)) {
+    throw Errors.validation('At least one body context field is required.');
+  }
+
+  const updated = await updateAttributes(
+    keys.userPk(userId),
+    keys.aiProfileSk(aiProfileId),
+    { ...write.set, updatedAt: nowIso() },
+    write.remove.length > 0 ? { remove: write.remove } : undefined,
+  );
+
+  return toAiProfileDto(updated);
 }
 
 async function deletePersonalProfile(

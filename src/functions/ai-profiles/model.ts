@@ -5,10 +5,16 @@ import { logger } from '../../shared/logger';
 import { createPresignedGetUrl } from '../../shared/s3';
 import {
   AiProfile,
+  AiProfileBodyContext,
   AiProfileStatus,
   DynamoItem,
 } from '../../shared/types';
 import { MAX_AI_PROFILE_REFERENCE_IMAGES } from '../../shared/validation';
+import {
+  applyAiProfileBodyContext,
+  isEmptyAiProfileBodyContext,
+  pickAiProfileBodyContext,
+} from './body-context';
 
 /** Owner written on seeded GENERIC_MODEL rows (WARDROBE-45). */
 export const SYSTEM_AI_PROFILE_OWNER = 'SYSTEM';
@@ -90,6 +96,8 @@ export function toAiProfile(item: DynamoItem): AiProfile {
       ? item.label.trim()
       : undefined;
 
+  const body = pickAiProfileBodyContext(item);
+
   return {
     aiProfileId: String(item.aiProfileId),
     type: item.type === 'GENERIC_MODEL' ? 'GENERIC_MODEL' : 'PERSONAL',
@@ -98,6 +106,7 @@ export function toAiProfile(item: DynamoItem): AiProfile {
     createdAt: String(item.createdAt),
     updatedAt: String(item.updatedAt),
     ...(label ? { label } : {}),
+    ...body,
   };
 }
 
@@ -197,22 +206,26 @@ export function buildPersonalAiProfile(input: {
   status?: AiProfileStatus;
   createdAt?: string;
   updatedAt?: string;
+  body?: AiProfileBodyContext;
 }): DynamoItem {
   const aiProfileId = input.aiProfileId ?? newAiProfileId();
   const timestamp = input.createdAt ?? nowIso();
 
-  return {
-    PK: keys.userPk(input.userId),
-    SK: keys.aiProfileSk(aiProfileId),
-    entityType: 'AIPROFILE',
-    userId: input.userId,
-    aiProfileId,
-    type: 'PERSONAL',
-    referenceImages: input.referenceImages ?? [],
-    status: input.status ?? 'READY',
-    createdAt: timestamp,
-    updatedAt: input.updatedAt ?? timestamp,
-  };
+  return applyAiProfileBodyContext(
+    {
+      PK: keys.userPk(input.userId),
+      SK: keys.aiProfileSk(aiProfileId),
+      entityType: 'AIPROFILE',
+      userId: input.userId,
+      aiProfileId,
+      type: 'PERSONAL',
+      referenceImages: input.referenceImages ?? [],
+      status: input.status ?? 'READY',
+      createdAt: timestamp,
+      updatedAt: input.updatedAt ?? timestamp,
+    },
+    isEmptyAiProfileBodyContext(input.body) ? undefined : input.body,
+  );
 }
 
 /** Append unique confirmed keys. Existing order is preserved. */
@@ -252,24 +265,28 @@ export function buildGenericModelProfile(input: {
   createdAt?: string;
   updatedAt?: string;
   label?: string;
+  body?: AiProfileBodyContext;
 } = {}): DynamoItem {
   const aiProfileId = input.aiProfileId ?? newAiProfileId();
   const timestamp = input.createdAt ?? nowIso();
   const label = input.label?.trim();
 
-  return {
-    PK: keys.genericModelPk(),
-    SK: keys.aiProfileSk(aiProfileId),
-    GSI1PK: keys.gsi1GenericTypePk(),
-    GSI1SK: keys.gsi1AiProfileSk(aiProfileId),
-    entityType: 'AIPROFILE',
-    userId: input.userId ?? SYSTEM_AI_PROFILE_OWNER,
-    aiProfileId,
-    type: 'GENERIC_MODEL',
-    referenceImages: input.referenceImages ?? [],
-    status: input.status ?? 'READY',
-    createdAt: timestamp,
-    updatedAt: input.updatedAt ?? timestamp,
-    ...(label ? { label } : {}),
-  };
+  return applyAiProfileBodyContext(
+    {
+      PK: keys.genericModelPk(),
+      SK: keys.aiProfileSk(aiProfileId),
+      GSI1PK: keys.gsi1GenericTypePk(),
+      GSI1SK: keys.gsi1AiProfileSk(aiProfileId),
+      entityType: 'AIPROFILE',
+      userId: input.userId ?? SYSTEM_AI_PROFILE_OWNER,
+      aiProfileId,
+      type: 'GENERIC_MODEL',
+      referenceImages: input.referenceImages ?? [],
+      status: input.status ?? 'READY',
+      createdAt: timestamp,
+      updatedAt: input.updatedAt ?? timestamp,
+      ...(label ? { label } : {}),
+    },
+    isEmptyAiProfileBodyContext(input.body) ? undefined : input.body,
+  );
 }

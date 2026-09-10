@@ -72,6 +72,7 @@ interface Command {
     Item?: DynamoItem;
     Key?: { PK: string; SK: string };
     KeyConditionExpression?: string;
+    UpdateExpression?: string;
     ExpressionAttributeValues?: Record<string, unknown>;
   };
 }
@@ -348,6 +349,92 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(command.input.Item?.status).toBe('READY');
     });
 
+    it('persists optional body context and returns it on create', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            body: {
+              heightCm: 170,
+              weightKg: 65.5,
+              bustCm: 90,
+              hipsCm: 98,
+              clothingSize: 'M',
+              ageYears: 28,
+              bodyType: 'average',
+              gender: 'female',
+            },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(201);
+      const body = bodyOf(result) as AiProfile;
+      expect(body).toMatchObject({
+        heightCm: 170,
+        weightKg: 65.5,
+        bustCm: 90,
+        hipsCm: 98,
+        clothingSize: 'M',
+        ageYears: 28,
+        bodyType: 'AVERAGE',
+        gender: 'FEMALE',
+      });
+      expectFlutterDto(body);
+
+      const command = mockSend.mock.calls[0][0] as Command;
+      expect(command.input.Item).toEqual(
+        expect.objectContaining({
+          heightCm: 170,
+          weightKg: 65.5,
+          clothingSize: 'M',
+          ageYears: 28,
+          bodyType: 'AVERAGE',
+          gender: 'FEMALE',
+        }),
+      );
+    });
+
+    it('soft-omits empty body context so create still succeeds', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            body: {
+              heightCm: null,
+              weightKg: '',
+              clothingSize: '',
+              gender: null,
+            },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(201);
+      const body = bodyOf(result) as AiProfile;
+      expect(body).not.toHaveProperty('heightCm');
+      expect(body).not.toHaveProperty('weightKg');
+      expect(body).not.toHaveProperty('clothingSize');
+      expect(body).not.toHaveProperty('gender');
+
+      const command = mockSend.mock.calls[0][0] as Command;
+      expect(command.input.Item).not.toHaveProperty('heightCm');
+      expect(command.input.Item).not.toHaveProperty('weightKg');
+    });
+
+    it('rejects out-of-range heightCm on create', async () => {
+      const result = asResult(
+        await handler(event({ method: 'POST', body: { heightCm: 10 } })),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('rejects another user referenceImages key', async () => {
       const result = asResult(
         await handler(
@@ -372,6 +459,24 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
   });
 
   describe('GET /ai-profiles', () => {
+    it('returns stored body context and soft-omits missing fields', async () => {
+      mockSend.mockResolvedValue({
+        Items: [
+          dynamoPersonal(OWNER_ID, { heightCm: 175, clothingSize: 'L' }),
+        ],
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        aiProfiles: [personalDto({ heightCm: 175, clothingSize: 'L' })],
+      });
+      const listed = (bodyOf(result) as { aiProfiles: AiProfile[] }).aiProfiles[0];
+      expect(listed).not.toHaveProperty('weightKg');
+      expect(listed).not.toHaveProperty('gender');
+    });
+
     it('lists only the caller PERSONAL profiles', async () => {
       const owned = dynamoPersonal(OWNER_ID);
       mockSend.mockResolvedValue({
@@ -514,6 +619,30 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
   });
 
   describe('GET /ai-profiles/{aiProfileId}', () => {
+    it('returns persisted body context on get', async () => {
+      mockSend.mockResolvedValue({
+        Item: dynamoPersonal(OWNER_ID, {
+          heightCm: 172,
+          weightKg: 64,
+          gender: 'NON_BINARY',
+        }),
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        personalDto({
+          heightCm: 172,
+          weightKg: 64,
+          gender: 'NON_BINARY',
+        }),
+      );
+      expect(bodyOf(result) as AiProfile).not.toHaveProperty('bustCm');
+    });
+
     it('returns the owned PERSONAL DTO', async () => {
       mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
 
@@ -757,6 +886,148 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         'referenceImageUrls',
       );
       expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PATCH /ai-profiles/{aiProfileId}', () => {
+    it('updates body context on an owned PERSONAL profile', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get') {
+          return { Item: dynamoPersonal(OWNER_ID, { heightCm: 160 }) };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoPersonal(OWNER_ID, {
+              heightCm: command.input.ExpressionAttributeValues?.[':heightCm'],
+              clothingSize: String(
+                command.input.ExpressionAttributeValues?.[':clothingSize'] ?? '',
+              ),
+              updatedAt: String(
+                command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+              ),
+            }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: PROFILE_ID,
+            body: { heightCm: 172.5, clothingSize: 'M' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        personalDto({
+          heightCm: 172.5,
+          clothingSize: 'M',
+          updatedAt: expect.stringMatching(ISO8601) as unknown as string,
+        }),
+      );
+
+      const update = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Update',
+      )?.[0] as Command;
+      expect(update.input.ExpressionAttributeValues).toEqual(
+        expect.objectContaining({
+          ':heightCm': 172.5,
+          ':clothingSize': 'M',
+        }),
+      );
+    });
+
+    it('clears a field with null and keeps frontImageUrl working', async () => {
+      const front = `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/front.jpg`;
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get') {
+          return {
+            Item: dynamoPersonal(OWNER_ID, {
+              referenceImages: [front],
+              heightCm: 170,
+              bustCm: 90,
+            }),
+          };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoPersonal(OWNER_ID, {
+              referenceImages: [front],
+              heightCm: 170,
+            }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: PROFILE_ID,
+            body: { bustCm: null },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as AiProfile;
+      expect(body.frontImageUrl).toBe(signedUrlFor(front));
+      expect(body.referenceImages).toEqual([front]);
+      expect(body).not.toHaveProperty('bustCm');
+      expect(body.heightCm).toBe(170);
+
+      const update = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Update',
+      )?.[0] as Command;
+      expect(update.input.UpdateExpression).toContain('REMOVE');
+    });
+
+    it('returns 403 when updating a GENERIC_MODEL profile', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
+          return {};
+        }
+        if (
+          command._op === 'Get' &&
+          command.input.Key?.PK === 'AIPROFILE#GENERIC_MODEL'
+        ) {
+          return { Item: dynamoGeneric() };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: GENERIC_ID,
+            body: { heightCm: 170 },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 403, 'UNAUTHORIZED');
+    });
+
+    it('returns 400 when no body context field is sent', async () => {
+      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: PROFILE_ID,
+            body: { type: 'PERSONAL' },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
     });
   });
 

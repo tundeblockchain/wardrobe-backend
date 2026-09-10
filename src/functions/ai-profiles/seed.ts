@@ -1,6 +1,7 @@
 import { keys } from '../../shared/dynamodb';
 import { nowIso as defaultNowIso } from '../../shared/ids';
 import { DynamoItem } from '../../shared/types';
+import { sameAiProfileBodyContext } from './body-context';
 import {
   GENERIC_MODEL_CATALOG_CREATED_AT,
   genericModelCatalog,
@@ -46,7 +47,8 @@ export function catalogRowMatches(
     existing.GSI1PK === next.GSI1PK &&
     existing.GSI1SK === next.GSI1SK &&
     existing.label === next.label &&
-    sameStringArray(existing.referenceImages, next.referenceImages)
+    sameStringArray(existing.referenceImages, next.referenceImages) &&
+    sameAiProfileBodyContext(existing, next)
   );
 }
 
@@ -54,8 +56,8 @@ export function catalogRowMatches(
  * Idempotent write of READY GENERIC_MODEL catalog rows.
  *
  * Re-runs preserve `createdAt` and skip Put when GSI keys, label, status,
- * and reference image keys already match. Missing GSI attributes (pre-45
- * rows) are backfilled.
+ * reference image keys, and WARDROBE-80 body/context fields already match.
+ * Missing GSI attributes (pre-45 rows) are backfilled.
  */
 export async function seedGenericModels(
   deps: SeedDeps,
@@ -78,6 +80,7 @@ export async function seedGenericModels(
       referenceImages: entry.referenceImages,
       status: entry.status,
       label: entry.label,
+      body: entry.body,
       createdAt,
       updatedAt: createdAt,
     });

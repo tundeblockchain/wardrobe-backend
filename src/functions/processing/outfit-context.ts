@@ -1,4 +1,5 @@
 import {
+  AiProfileBodyContext,
   CLOTHING_CATEGORIES,
   CLOTHING_SUBCATEGORIES,
   ClothingCategory,
@@ -6,6 +7,7 @@ import {
   DynamoItem,
   GarmentAiMetadata,
 } from '../../shared/types';
+import { formatAiProfileBodyContextForPrompt } from '../ai-profiles/body-context';
 
 /**
  * WARDROBE-75 — ground try-on in the outfit's actual garments.
@@ -128,13 +130,18 @@ export function composeOutfitTryOn(
   return { garments, worn, omitted };
 }
 
-export function buildTryOnPrompt(composed: OutfitComposeResult): string {
+export function buildTryOnPrompt(
+  composed: OutfitComposeResult,
+  bodyContext?: AiProfileBodyContext,
+): string {
+  const bodyLines = formatAiProfileBodyContextForPrompt(bodyContext);
   const lines = [
     'Generate a NEW photorealistic fashion photograph of this person wearing the outfit.',
     'The person image is an identity reference only (face, skin tone, hair, body shape, apparent age).',
     'The garment images are appearance references only (colour, cut, fabric, print).',
     'Do not use the person photo as a canvas. Do not keep the original pose, crop, or background.',
     '',
+    ...(bodyLines.length > 0 ? [...bodyLines, ''] : []),
     'Outfit items (ground the render in this list; do not invent pieces):',
     ...composed.garments.map((garment) => `- ${formatGarment(garment)}`),
     '',
@@ -155,6 +162,7 @@ export function buildTryOnPrompt(composed: OutfitComposeResult): string {
     '',
     'Composition rules:',
     '- Reconstruct each worn garment on the body with realistic 3D drape, folds, occlusion, and contact shadows.',
+    '- When body context is provided, fit garments to that height, size, and proportions. Do not invent missing measurements.',
     '- Replace whatever the person is already wearing. No double-clothing.',
     '- Do not overlay, paste, collage, or composite garment pixels onto the person photo.',
     '- Do not leave floating cutouts, hard sticker edges, or transparent garment layers.',

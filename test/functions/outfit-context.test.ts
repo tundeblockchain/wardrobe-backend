@@ -229,4 +229,41 @@ describe('buildTryOnPrompt (WARDROBE-75)', () => {
     expect(prompt).toContain('slot=BOTTOM; category=BOTTOM; subcategory=TROUSERS');
     expect(prompt).not.toContain('Do not wear these incompatible pieces:');
   });
+
+  it('includes present body context and soft-omits missing fields', () => {
+    const prompt = buildTryOnPrompt(
+      composeOutfitTryOn([
+        garment({ slot: 'TOP', category: 'TOP', subcategory: 'SHIRT' }),
+      ]),
+      {
+        heightCm: 175,
+        weightKg: 70,
+        clothingSize: 'M',
+        gender: 'FEMALE',
+      },
+    );
+
+    expect(prompt).toContain('Person body context');
+    expect(prompt).toContain('- height: 175 cm');
+    expect(prompt).toContain('- weight: 70 kg');
+    expect(prompt).toContain('- clothing size: M');
+    expect(prompt).toContain('- gender: FEMALE');
+    expect(prompt).not.toContain('bust');
+    expect(prompt).not.toContain('hips');
+    expect(prompt).not.toContain('age:');
+    expect(prompt).toContain(
+      'When body context is provided, fit garments to that height, size, and proportions.',
+    );
+  });
+
+  it('omits the body context section when no measurements are set', () => {
+    const prompt = buildTryOnPrompt(
+      composeOutfitTryOn([
+        garment({ slot: 'TOP', category: 'TOP', subcategory: 'SHIRT' }),
+      ]),
+    );
+
+    expect(prompt).not.toContain('Person body context');
+    expect(prompt).not.toContain('- height:');
+  });
 });
