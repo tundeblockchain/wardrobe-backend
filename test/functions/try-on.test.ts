@@ -262,6 +262,73 @@ describe('runOutfitTryOn', () => {
     expect(renderedPrompt).toContain('Do not overlay, paste, collage, or composite');
   });
 
+  it('includes AI profile body context in the Gemini prompt and omits empty fields', async () => {
+    let renderedPrompt = '';
+
+    await runOutfitTryOn(
+      {
+        userId: USER_ID,
+        outfitId: OUTFIT_ID,
+        profileImageKeys: [PROFILE_KEY],
+        garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY, category: 'TOP' }],
+        profileBody: {
+          heightCm: 175,
+          clothingSize: 'M',
+          ageYears: 28,
+        },
+      },
+      {
+        store: {
+          async getObject() {
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject() {},
+        },
+        client: {
+          async render(_images, prompt) {
+            renderedPrompt = prompt ?? '';
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(renderedPrompt).toContain('- height: 175 cm');
+    expect(renderedPrompt).toContain('- clothing size: M');
+    expect(renderedPrompt).toContain('- age: 28 years');
+    expect(renderedPrompt).not.toContain('weight');
+    expect(renderedPrompt).not.toContain('bust');
+  });
+
+  it('does not fail try-on when profile body context is omitted', async () => {
+    let renderedPrompt = '';
+
+    await runOutfitTryOn(
+      {
+        userId: USER_ID,
+        outfitId: OUTFIT_ID,
+        profileImageKeys: [PROFILE_KEY],
+        garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY }],
+      },
+      {
+        store: {
+          async getObject() {
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject() {},
+        },
+        client: {
+          async render(_images, prompt) {
+            renderedPrompt = prompt ?? '';
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(renderedPrompt).not.toContain('Person body context');
+  });
+
   it('sends only the frontal profile image when several references exist', async () => {
     const sideKey = 'shared/ai-profiles/generic/alex/side.png';
     const gets: string[] = [];

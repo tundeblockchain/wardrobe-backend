@@ -26,6 +26,8 @@ import {
   personImageLabel,
   type OutfitTryOnGarment,
 } from './outfit-context';
+import { AiProfileBodyContext } from '../../shared/types';
+import { isEmptyAiProfileBodyContext } from '../ai-profiles/body-context';
 
 const RENDER_OBJECT_CONTENT_TYPE = 'image/png';
 
@@ -129,6 +131,7 @@ export async function runOutfitTryOn(
     outfitId: string;
     profileImageKeys: string[];
     garmentImages: OutfitTryOnGarment[];
+    profileBody?: AiProfileBodyContext;
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
@@ -143,7 +146,12 @@ export async function runOutfitTryOn(
   }
 
   const composed = composeOutfitTryOn(input.garmentImages);
-  const prompt = buildTryOnPrompt(composed);
+  const prompt = buildTryOnPrompt(
+    composed,
+    isEmptyAiProfileBodyContext(input.profileBody)
+      ? undefined
+      : input.profileBody,
+  );
   if (composed.worn.length === 0) {
     throw new PermanentProcessingError(
       'Outfit has no compatible garments to render together.',

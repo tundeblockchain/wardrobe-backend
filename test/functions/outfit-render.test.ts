@@ -223,6 +223,49 @@ describe('outfit render worker (WARDROBE-47)', () => {
     });
   });
 
+  it('forwards AI profile body context into try-on and soft-omits when empty', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        if (sk.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return {
+            Item: {
+              ...dynamoGenericProfile(),
+              heightCm: 175,
+              weightKg: 70,
+              clothingSize: 'M',
+              ageYears: 28,
+              bodyType: 'AVERAGE',
+            },
+          };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoOutfit() };
+    });
+
+    await handler(eventFor(job()));
+
+    expect(mockRunTryOn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profileBody: {
+          heightCm: 175,
+          weightKg: 70,
+          clothingSize: 'M',
+          ageYears: 28,
+          bodyType: 'AVERAGE',
+        },
+      }),
+    );
+  });
+
   it('passes each item category/subcategory so try-on can ground outfit context', async () => {
     const dressId = 'item_dress12abcd';
     const jeansId = 'item_jeans12abcd';

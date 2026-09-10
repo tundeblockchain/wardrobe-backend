@@ -1110,6 +1110,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'POST /ai-profiles',
       'GET /ai-profiles/models',
       'GET /ai-profiles/{aiProfileId}',
+      'PATCH /ai-profiles/{aiProfileId}',
       'DELETE /ai-profiles/{aiProfileId}',
       'POST /ai-profiles/{aiProfileId}/uploads',
       'POST /ai-profiles/{aiProfileId}/reference-images',

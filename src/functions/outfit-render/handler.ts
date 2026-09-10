@@ -10,12 +10,18 @@ import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import { parseRenderOutfitJob } from '../../shared/sqs';
 import {
+  AiProfileBodyContext,
   DynamoItem,
   OutfitItem,
   OutfitRender,
   RenderOutfitJob,
   RenderStatus,
 } from '../../shared/types';
+import {
+  isEmptyAiProfileBodyContext,
+  pickAiProfileBodyContext,
+} from '../ai-profiles/body-context';
+import { normalizeReferenceImageKeys } from '../ai-profiles/model';
 import {
   isRetryableProcessingFailure,
   PermanentProcessingError,
@@ -120,6 +126,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
       outfitId: job.outfitId,
       profileImageKeys: profile.referenceImages,
       garmentImages: garments,
+      ...(isEmptyAiProfileBodyContext(profile.body)
+        ? {}
+        : { profileBody: profile.body }),
     });
     await setRender(job, {
       status: 'READY',
@@ -208,7 +217,7 @@ async function loadOutfitForJob(
 async function loadReadyProfile(
   userId: string,
   aiProfileId: string,
-): Promise<{ referenceImages: string[] }> {
+): Promise<{ referenceImages: string[]; body: AiProfileBodyContext }> {
   let profile: DynamoItem;
   try {
     profile = await getReadableAiProfile(userId, aiProfileId);
@@ -235,14 +244,12 @@ async function loadReadyProfile(
     );
   }
 
-  const referenceImages = Array.isArray(profile.referenceImages)
-    ? profile.referenceImages.map((entry) => String(entry).trim()).filter(Boolean)
-    : [];
+  const referenceImages = normalizeReferenceImageKeys(profile.referenceImages);
   if (referenceImages.length === 0) {
     throw new PermanentProcessingError('AI profile has no reference images.');
   }
 
-  return { referenceImages };
+  return { referenceImages, body: pickAiProfileBodyContext(profile) };
 }
 
 async function loadGarmentImages(

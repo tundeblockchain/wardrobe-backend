@@ -2,6 +2,8 @@ import { Errors } from './errors';
 import { aiProfileReferencePrefix } from './s3';
 import {
   AI_PROFILE_TYPES,
+  AiProfileBodyContext,
+  AiProfileBodyFieldName,
   AiProfileType,
   CLOTHING_CATEGORIES,
   CLOTHING_COLOURS,
@@ -349,4 +351,216 @@ export function optionalInteger(
   }
 
   return value;
+}
+
+export function optionalIntegerInRange(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number,
+): number | undefined {
+  const parsed = optionalInteger(value, field);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  if (parsed < min || parsed > max) {
+    throw Errors.validation(`${field} must be between ${min} and ${max}.`);
+  }
+  return parsed;
+}
+
+/** Finite JSON number (integers and decimals). Soft-omit null / blank. */
+export function optionalFiniteNumber(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number,
+): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw Errors.validation(`${field} must be a number.`);
+  }
+  if (value < min || value > max) {
+    throw Errors.validation(`${field} must be between ${min} and ${max}.`);
+  }
+  return value;
+}
+
+/** Recommended gender tokens (WARDROBE-80). Other non-empty strings are kept. */
+export const AI_PROFILE_GENDERS = [
+  'FEMALE',
+  'MALE',
+  'NON_BINARY',
+  'UNSPECIFIED',
+] as const;
+
+/** Recommended body-type tokens (WARDROBE-80). Other non-empty strings are kept. */
+export const AI_PROFILE_BODY_TYPES = [
+  'SLIM',
+  'AVERAGE',
+  'ATHLETIC',
+  'CURVY',
+  'PLUS',
+  'PETITE',
+] as const;
+
+export const AI_PROFILE_HEIGHT_CM = { min: 50, max: 250 } as const;
+export const AI_PROFILE_WEIGHT_KG = { min: 15, max: 400 } as const;
+export const AI_PROFILE_BUST_CM = { min: 40, max: 200 } as const;
+export const AI_PROFILE_HIPS_CM = { min: 40, max: 200 } as const;
+export const AI_PROFILE_AGE_YEARS = { min: 1, max: 120 } as const;
+
+export interface AiProfileBodyContextWrite {
+  set: AiProfileBodyContext;
+  remove: AiProfileBodyFieldName[];
+}
+
+/**
+ * Parse optional WARDROBE-80 body/context fields.
+ *
+ * Missing / null / blank values are soft-omitted on create.
+ * On PATCH (`allowClear`), null / blank removes a previously stored field.
+ * Present but invalid values are `400 VALIDATION_ERROR`.
+ */
+export function parseAiProfileBodyContext(
+  body: Record<string, unknown> | undefined,
+  options?: { allowClear?: boolean },
+): AiProfileBodyContextWrite {
+  const source = body ?? {};
+  const set: AiProfileBodyContext = {};
+  const remove: AiProfileBodyFieldName[] = [];
+  const allowClear = options?.allowClear === true;
+
+  assignMeasurement(source, 'heightCm', AI_PROFILE_HEIGHT_CM, set, remove, allowClear);
+  assignMeasurement(source, 'weightKg', AI_PROFILE_WEIGHT_KG, set, remove, allowClear);
+  assignMeasurement(source, 'bustCm', AI_PROFILE_BUST_CM, set, remove, allowClear);
+  assignMeasurement(source, 'hipsCm', AI_PROFILE_HIPS_CM, set, remove, allowClear);
+
+  assignOptionalString(source, 'clothingSize', 32, set, remove, allowClear);
+  assignAgeYears(source, set, remove, allowClear);
+  assignToken(
+    source,
+    'bodyType',
+    AI_PROFILE_BODY_TYPES,
+    set,
+    remove,
+    allowClear,
+  );
+  assignToken(source, 'gender', AI_PROFILE_GENDERS, set, remove, allowClear);
+
+  return { set, remove };
+}
+
+export function hasAiProfileBodyWrite(write: AiProfileBodyContextWrite): boolean {
+  return Object.keys(write.set).length > 0 || write.remove.length > 0;
+}
+
+function assignMeasurement(
+  source: Record<string, unknown>,
+  field: 'heightCm' | 'weightKg' | 'bustCm' | 'hipsCm',
+  range: { min: number; max: number },
+  set: AiProfileBodyContext,
+  remove: AiProfileBodyFieldName[],
+  allowClear: boolean,
+): void {
+  if (!(field in source)) {
+    return;
+  }
+  const value = source[field];
+  if (isClearValue(value)) {
+    if (allowClear) {
+      remove.push(field);
+    }
+    return;
+  }
+  const parsed = optionalFiniteNumber(value, field, range.min, range.max);
+  if (parsed !== undefined) {
+    set[field] = parsed;
+  }
+}
+
+function assignAgeYears(
+  source: Record<string, unknown>,
+  set: AiProfileBodyContext,
+  remove: AiProfileBodyFieldName[],
+  allowClear: boolean,
+): void {
+  if (!('ageYears' in source)) {
+    return;
+  }
+  const value = source.ageYears;
+  if (isClearValue(value)) {
+    if (allowClear) {
+      remove.push('ageYears');
+    }
+    return;
+  }
+  const parsed = optionalIntegerInRange(
+    value,
+    'ageYears',
+    AI_PROFILE_AGE_YEARS.min,
+    AI_PROFILE_AGE_YEARS.max,
+  );
+  if (parsed !== undefined) {
+    set.ageYears = parsed;
+  }
+}
+
+function assignOptionalString(
+  source: Record<string, unknown>,
+  field: 'clothingSize',
+  maxLength: number,
+  set: AiProfileBodyContext,
+  remove: AiProfileBodyFieldName[],
+  allowClear: boolean,
+): void {
+  if (!(field in source)) {
+    return;
+  }
+  const value = source[field];
+  if (isClearValue(value)) {
+    if (allowClear) {
+      remove.push(field);
+    }
+    return;
+  }
+  const parsed = optionalNonEmptyString(value, field, maxLength);
+  if (parsed !== undefined) {
+    set[field] = parsed;
+  }
+}
+
+function assignToken(
+  source: Record<string, unknown>,
+  field: 'bodyType' | 'gender',
+  known: readonly string[],
+  set: AiProfileBodyContext,
+  remove: AiProfileBodyFieldName[],
+  allowClear: boolean,
+): void {
+  if (!(field in source)) {
+    return;
+  }
+  const value = source[field];
+  if (isClearValue(value)) {
+    if (allowClear) {
+      remove.push(field);
+    }
+    return;
+  }
+  const parsed = optionalNonEmptyString(value, field, 32);
+  if (parsed !== undefined) {
+    set[field] = canonicalizeKnownToken(parsed, known);
+  }
+}
+
+function canonicalizeKnownToken(value: string, known: readonly string[]): string {
+  const normalized = value.toUpperCase().replace(/[\s-]+/g, '_');
+  return known.includes(normalized) ? normalized : value;
+}
+
+function isClearValue(value: unknown): boolean {
+  return value === null || value === '';
 }

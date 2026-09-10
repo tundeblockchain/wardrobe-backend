@@ -974,12 +974,15 @@ GET    /ai-profiles
 GET    /ai-profiles?type=GENERIC_MODEL
 GET    /ai-profiles/models
 GET    /ai-profiles/{aiProfileId}
+PATCH  /ai-profiles/{aiProfileId}
 DELETE /ai-profiles/{aiProfileId}
 POST   /ai-profiles/{aiProfileId}/uploads
 POST   /ai-profiles/{aiProfileId}/reference-images
 ```
 
 `POST` creates `PERSONAL` for the caller (`status: READY` when `referenceImages` is empty). Users cannot create or delete `GENERIC_MODEL` rows — those are seeded (WARDROBE-45) under `PK=AIPROFILE#GENERIC_MODEL` with sparse GSI1 `TYPE#GENERIC_MODEL`. Flutter DTOs omit `PK` / `SK`. Seeded generic models expose optional `label` and placeholder `referenceImages` under `shared/ai-profiles/generic/`. List, get, and create add a short-lived `frontImageUrl` (WARDROBE-73 / WARDROBE-79, same `createPresignedGetUrl` / 900s TTL as item `originalImageUrl`). Flutter WARDROBE-71 reads `frontImageUrl`. PERSONAL rows coerce a Dynamo String Set or `{ objectKey }` shape onto keys before presigning; GENERIC_MODEL catalog rows were already a string list. Extra angles, when present, are in `referenceImageUrls` (`objectKey` → URL). Presign failures omit the URL field and do not 500.
+
+WARDROBE-80 adds optional body/context fields on the same DTO (`heightCm`, `weightKg`, `bustCm`, `hipsCm`, `clothingSize`, `ageYears`, `bodyType`, `gender`). Units are metric via the field names (cm / kg / years). Create and PATCH accept them for PERSONAL profiles; empty values are soft-omitted. GENERIC_MODEL catalog rows seed height/weight/size/age/bodyType defaults. Try-on copies present fields into the Gemini prompt. See README “Body / context fields (WARDROBE-80)” for the Flutter WARDROBE-81 contract.
 
 Reference photos (WARDROBE-44) use the same presigned-S3 pattern as clothing items. Keys must be under `users/{uid}/ai-profiles/{aiProfileId}/`. Upload and attach are owner-`PERSONAL` only (`GENERIC_MODEL` is `403`). Confirming keys appends them to `referenceImages` and sets `status: READY`. A future `PROCESS_AI_PROFILE` worker may later use `PENDING` → `PROCESSING` → `READY`.
 
@@ -1107,6 +1110,7 @@ POST   /ai-profiles
 GET    /ai-profiles
 GET    /ai-profiles/models
 GET    /ai-profiles/{aiProfileId}
+PATCH  /ai-profiles/{aiProfileId}
 DELETE /ai-profiles/{aiProfileId}
 POST   /ai-profiles/{aiProfileId}/uploads
 POST   /ai-profiles/{aiProfileId}/reference-images
