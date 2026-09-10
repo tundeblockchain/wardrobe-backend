@@ -56,7 +56,7 @@ export function catalogRowMatches(
  * Idempotent write of READY GENERIC_MODEL catalog rows.
  *
  * Re-runs preserve `createdAt` and skip Put when GSI keys, label, status,
- * reference image keys, and WARDROBE-80 body/context fields already match.
+ * reference image keys, and WARDROBE-80 / WARDROBE-82 body/context fields already match.
  * Missing GSI attributes (pre-45 rows) are backfilled.
  */
 export async function seedGenericModels(

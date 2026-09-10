@@ -62,6 +62,7 @@ interface CreateAiProfileBody {
   bustCm?: unknown;
   hipsCm?: unknown;
   clothingSize?: unknown;
+  braSize?: unknown;
   ageYears?: unknown;
   bodyType?: unknown;
   gender?: unknown;
@@ -85,7 +86,7 @@ interface AttachReferenceImagesBody {
 /**
  * Authenticated AI Profile CRUD + PERSONAL reference-image upload (WARDROBE-43/44)
  * + frontal GET URLs on create/get/list (WARDROBE-73 / WARDROBE-79)
- * + optional body/context fields on create/update (WARDROBE-80).
+ * + optional body/context fields on create/update (WARDROBE-80 / WARDROBE-82).
  *
  * Identity comes from the Firebase authorizer (`getUserId`). Body / query /
  * path `userId` is ignored.

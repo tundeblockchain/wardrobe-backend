@@ -239,6 +239,7 @@ describe('buildTryOnPrompt (WARDROBE-75)', () => {
         heightCm: 175,
         weightKg: 70,
         clothingSize: 'M',
+        braSize: '34B',
         gender: 'FEMALE',
       },
     );
@@ -247,6 +248,7 @@ describe('buildTryOnPrompt (WARDROBE-75)', () => {
     expect(prompt).toContain('- height: 175 cm');
     expect(prompt).toContain('- weight: 70 kg');
     expect(prompt).toContain('- clothing size: M');
+    expect(prompt).toContain('- bra size: 34B');
     expect(prompt).toContain('- gender: FEMALE');
     expect(prompt).not.toContain('bust');
     expect(prompt).not.toContain('hips');

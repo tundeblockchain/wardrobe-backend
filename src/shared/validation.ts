@@ -418,7 +418,7 @@ export interface AiProfileBodyContextWrite {
 }
 
 /**
- * Parse optional WARDROBE-80 body/context fields.
+ * Parse optional WARDROBE-80 / WARDROBE-82 body/context fields.
  *
  * Missing / null / blank values are soft-omitted on create.
  * On PATCH (`allowClear`), null / blank removes a previously stored field.
@@ -439,6 +439,7 @@ export function parseAiProfileBodyContext(
   assignMeasurement(source, 'hipsCm', AI_PROFILE_HIPS_CM, set, remove, allowClear);
 
   assignOptionalString(source, 'clothingSize', 32, set, remove, allowClear);
+  assignOptionalString(source, 'braSize', 32, set, remove, allowClear);
   assignAgeYears(source, set, remove, allowClear);
   assignToken(
     source,
@@ -510,7 +511,7 @@ function assignAgeYears(
 
 function assignOptionalString(
   source: Record<string, unknown>,
-  field: 'clothingSize',
+  field: 'clothingSize' | 'braSize',
   maxLength: number,
   set: AiProfileBodyContext,
   remove: AiProfileBodyFieldName[],

@@ -274,6 +274,7 @@ describe('runOutfitTryOn', () => {
         profileBody: {
           heightCm: 175,
           clothingSize: 'M',
+          braSize: '34B',
           ageYears: 28,
         },
       },
@@ -295,6 +296,7 @@ describe('runOutfitTryOn', () => {
 
     expect(renderedPrompt).toContain('- height: 175 cm');
     expect(renderedPrompt).toContain('- clothing size: M');
+    expect(renderedPrompt).toContain('- bra size: 34B');
     expect(renderedPrompt).toContain('- age: 28 years');
     expect(renderedPrompt).not.toContain('weight');
     expect(renderedPrompt).not.toContain('bust');

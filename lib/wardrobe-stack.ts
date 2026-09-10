@@ -316,7 +316,7 @@ export class WardrobeStack extends cdk.Stack {
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
     // WARDROBE-43 CRUD + WARDROBE-44 PERSONAL reference-image presign/attach
     // + WARDROBE-73 short-lived GET URLs on list/get
-    // + WARDROBE-80 optional body/context fields (PATCH PERSONAL).
+    // + WARDROBE-80 / WARDROBE-82 optional body/context fields (PATCH PERSONAL).
     // Try-on secret is granted to OutfitRenderFn only — not this Lambda.
     // PROCESS_AI_PROFILE is not enqueued here.
     const aiProfilesFn = this.lambda('AiProfilesFn', 'ai-profiles', commonLambdaProps);

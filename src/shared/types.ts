@@ -130,11 +130,14 @@ export const AI_PROFILE_STATUSES = [
 export type AiProfileStatus = (typeof AI_PROFILE_STATUSES)[number];
 
 /**
- * Optional body / context for Gemini try-on (WARDROBE-80).
+ * Optional body / context for Gemini try-on (WARDROBE-80 / WARDROBE-82).
  *
  * Same camelCase names in Dynamo, the Flutter DTO, and the try-on prompt.
  * Units are encoded in the field names (cm / kg / years). Soft-omit empty
  * values — none of these are required.
+ *
+ * `braSize` is free-form (e.g. `34B`, `32C`) — no stronger existing
+ * convention (`cupSize` / `bra_size`) was found.
  */
 export const AI_PROFILE_BODY_FIELD_NAMES = [
   'heightCm',
@@ -142,6 +145,7 @@ export const AI_PROFILE_BODY_FIELD_NAMES = [
   'bustCm',
   'hipsCm',
   'clothingSize',
+  'braSize',
   'ageYears',
   'bodyType',
   'gender',
@@ -155,6 +159,7 @@ export interface AiProfileBodyContext {
   bustCm?: number;
   hipsCm?: number;
   clothingSize?: string;
+  braSize?: string;
   ageYears?: number;
   bodyType?: string;
   gender?: string;
@@ -169,8 +174,9 @@ export interface AiProfileBodyContext {
  * (WARDROBE-73 / WARDROBE-79) — never persisted in Dynamo. Flutter
  * WARDROBE-71 reads `frontImageUrl`. PERSONAL rows coerce Dynamo Set /
  * `{ objectKey }` reference shapes onto the same field.
- * Optional body/context fields (WARDROBE-80) use the same names in Dynamo
- * and the try-on prompt. Flutter WARDROBE-81 should adopt these.
+ * Optional body/context fields (WARDROBE-80 / WARDROBE-82) use the same
+ * names in Dynamo and the try-on prompt. Flutter WARDROBE-81 / WARDROBE-83
+ * should adopt these.
  */
 export interface AiProfile extends AiProfileBodyContext {
   aiProfileId: string;

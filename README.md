@@ -488,7 +488,7 @@ AuthZ / validation:
 
 The clothing-item worker is unchanged (`PROCESS_WARDROBE_ITEM` only). Try-on uses a dedicated queue `wardrobe-outfit-render-{stage}` + `OutfitRenderFn` so item-processing poison handling stays isolated.
 
-**Worker:** Dynamo is the source of truth. It reloads the outfit (owner check), the profile (`getReadableAiProfile` + `READY` + the frontal `front.*` reference image + optional WARDROBE-80 body/context fields), and each garment (prefer `originalKey`, else `processedKey` — cutouts overlay too easily). Gemini `generateContent` (image, `3:4`) writes `render.png`. Present body fields are added to the prompt (`height: 175 cm`, …); missing fields are omitted and do not fail render. Permanent Gemini / missing-image / profile errors set `FAILED` with `render.error` and ack. Transient errors are SQS batch failures (`maxReceiveCount: 3` then DLQ). Poison messages (invalid JSON, wrong `jobType`, missing fields) are acked.
+**Worker:** Dynamo is the source of truth. It reloads the outfit (owner check), the profile (`getReadableAiProfile` + `READY` + the frontal `front.*` reference image + optional WARDROBE-80 / WARDROBE-82 body/context fields), and each garment (prefer `originalKey`, else `processedKey` — cutouts overlay too easily). Gemini `generateContent` (image, `3:4`) writes `render.png`. Present body fields are added to the prompt (`height: 175 cm`, `bra size: 34B`, …); missing fields are omitted and do not fail render. Permanent Gemini / missing-image / profile errors set `FAILED` with `render.error` and ack. Transient errors are SQS batch failures (`maxReceiveCount: 3` then DLQ). Poison messages (invalid JSON, wrong `jobType`, missing fields) are acked.
 
 **Secret** `wardrobe/{stage}/gemini-try-on` (stack output `GeminiTryOnSecretName`):
 
@@ -572,7 +572,7 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
-## AI profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80)
+## AI profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80 / WARDROBE-82)
 
 Phase-3 foundation. Separate from wardrobe CRUD. Outfit try-on / render is WARDROBE-47.
 
@@ -597,7 +597,7 @@ POST   /ai-profiles/{aiProfileId}/reference-images
 | `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). Includes `frontImageUrl` when a frontal key can be presigned (WARDROBE-73). |
 | `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). Same DTO, including `frontImageUrl`. |
 | `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). Same `frontImageUrl` contract as list. |
-| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only. Update optional body/context fields (WARDROBE-80). `GENERIC_MODEL` is `403`. |
+| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only. Update optional body/context fields (WARDROBE-80 / WARDROBE-82). `GENERIC_MODEL` is `403`. |
 | `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
 | `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. |
 | `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Attach confirmed `objectKey`(s) into `referenceImages[]`. |
@@ -613,6 +613,7 @@ Create body (all fields optional):
   "bustCm": 90,
   "hipsCm": 98,
   "clothingSize": "M",
+  "braSize": "34B",
   "ageYears": 28,
   "bodyType": "AVERAGE",
   "gender": "FEMALE"
@@ -621,7 +622,7 @@ Create body (all fields optional):
 
 - `type` — omit or `PERSONAL`. `GENERIC_MODEL` is rejected (`400`); those rows are seeded (WARDROBE-45).
 - `referenceImages` — omit or `[]` on create. If sent, each key must be under `users/{uid}/`. Prefer the presign + attach flow below.
-- Body/context fields (WARDROBE-80) — all optional; omit, `null`, or `""` to skip. See the Flutter contract below.
+- Body/context fields (WARDROBE-80 / WARDROBE-82) — all optional; omit, `null`, or `""` to skip. See the Flutter contract below.
 - Body `userId` / `status` are ignored.
 
 Flutter `AiProfile` DTO (`201` / `200`) — never includes Dynamo `PK` / `SK` / `GSI1*` / `userId`:
@@ -637,7 +638,7 @@ Flutter `AiProfile` DTO (`201` / `200`) — never includes Dynamo `PK` / `SK` / 
 }
 ```
 
-Seeded generic models also include optional `label` (picker display name) plus seeded body/context defaults (WARDROBE-80). PERSONAL rows omit `label`. Empty body/context fields are **soft-omitted** from every response — they are never required and never sent as `null`.
+Seeded generic models also include optional `label` (picker display name) plus seeded body/context defaults (WARDROBE-80). PERSONAL rows omit `label`. Empty body/context fields (including `braSize`) are **soft-omitted** from every response — they are never required and never sent as `null`.
 
 List / models (`200`):
 
@@ -669,6 +670,7 @@ Same camelCase names in the JSON DTO, Dynamo attributes, and the Gemini try-on p
 | `bustCm` | number (int or decimal) | centimetres | no | Range 40–200 |
 | `hipsCm` | number (int or decimal) | centimetres | no | Range 40–200 |
 | `clothingSize` | string | — | no | Free-form clothing size, max 32 chars. Examples: `XS`, `S`, `M`, `L`, `XL`, `UK 10`, `US 8` |
+| `braSize` | string | — | no | Free-form bra / cup size, max 32 chars. Examples: `34B`, `32C`, `36DD`. Not canonicalized. Flutter WARDROBE-83 should send this name. |
 | `ageYears` | integer | years | no | Range 1–120 |
 | `bodyType` | string | — | no | Recommended: `SLIM`, `AVERAGE`, `ATHLETIC`, `CURVY`, `PLUS`, `PETITE`. Other non-empty strings are stored. Known tokens are canonicalized (`slim` → `SLIM`). |
 | `gender` | string | — | no | Recommended: `FEMALE`, `MALE`, `NON_BINARY`, `UNSPECIFIED`. Other non-empty strings are stored. Known tokens are canonicalized (`non-binary` → `NON_BINARY`). |
@@ -697,6 +699,35 @@ PATCH /ai-profiles/{aiProfileId}
 ```
 
 `bustCm: null` removes a previously stored bust. GENERIC_MODEL rows cannot be patched (`403`).
+
+### Bra size (WARDROBE-82) — Flutter WARDROBE-83 contract
+
+**Field name:** `braSize` (string). Same camelCase in the JSON DTO, Dynamo, and the Gemini try-on prompt. No stronger existing convention was found (`cupSize` / `bra_size` are not used). Flutter WARDROBE-83 should adopt `braSize`.
+
+| JSON / Dynamo field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `braSize` | string | no | Free-form, max 32 chars. Examples: `34B`, `32C`, `36DD`. Stored as sent (trimmed). Not canonicalized. |
+
+Same soft-omit rules as the WARDROBE-80 body/context fields:
+
+- **Create (`POST /ai-profiles`)** — omit `braSize`, or send `null` / `""`, to skip it. Non-string values are `400 VALIDATION_ERROR`. Missing `braSize` must not break create.
+- **Update (`PATCH /ai-profiles/{aiProfileId}`)** — owner `PERSONAL` only. `null` or `""` **clears** a previously stored `braSize`. Omitted fields are left unchanged. WARDROBE-80 fields stay independently writable.
+- **Responses** — present only when a value is stored. Never `null`. List, get, create, and update all use this DTO.
+- **Try-on** — when stored, copied into the Gemini prompt as `bra size: 34B`. Missing `braSize` is not mentioned and does not fail render.
+- **Images** — `frontImageUrl` / `referenceImages` / `referenceImageUrls` are unchanged (WARDROBE-73 / WARDROBE-79).
+- **GENERIC_MODEL** — catalog seeds do not set `braSize`. The field is for PERSONAL profiles.
+
+PATCH example:
+
+```http
+PATCH /ai-profiles/{aiProfileId}
+```
+
+```json
+{
+  "braSize": "32C"
+}
+```
 
 ### Reference image GET URLs (WARDROBE-73) — Flutter contract
 

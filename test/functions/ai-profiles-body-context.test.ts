@@ -10,13 +10,14 @@ import {
   toAiProfile,
 } from '../../src/functions/ai-profiles/model';
 
-describe('AI profile body context (WARDROBE-80)', () => {
+describe('AI profile body context (WARDROBE-80 / WARDROBE-82)', () => {
   const full = {
     heightCm: 170,
     weightKg: 65,
     bustCm: 90,
     hipsCm: 98,
     clothingSize: 'M',
+    braSize: '34B',
     ageYears: 28,
     bodyType: 'AVERAGE',
     gender: 'FEMALE',
@@ -31,6 +32,7 @@ describe('AI profile body context (WARDROBE-80)', () => {
         bustCm: '90',
         hipsCm: Number.NaN,
         clothingSize: '   ',
+        braSize: '   ',
         ageYears: 28.5,
         bodyType: 1,
         gender: undefined,
@@ -64,6 +66,7 @@ describe('AI profile body context (WARDROBE-80)', () => {
     expect(empty).not.toHaveProperty('heightCm');
     expect(empty).not.toHaveProperty('weightKg');
     expect(empty).not.toHaveProperty('clothingSize');
+    expect(empty).not.toHaveProperty('braSize');
     expect(empty).not.toHaveProperty('gender');
   });
 
@@ -74,11 +77,13 @@ describe('AI profile body context (WARDROBE-80)', () => {
     const lines = formatAiProfileBodyContextForPrompt({
       heightCm: 175,
       clothingSize: 'M',
+      braSize: '34B',
       gender: 'FEMALE',
     });
     expect(lines[0]).toContain('Person body context');
     expect(lines).toContain('- height: 175 cm');
     expect(lines).toContain('- clothing size: M');
+    expect(lines).toContain('- bra size: 34B');
     expect(lines).toContain('- gender: FEMALE');
     expect(lines.join('\n')).not.toContain('weight');
     expect(lines.join('\n')).not.toContain('bust');
