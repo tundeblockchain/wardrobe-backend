@@ -502,11 +502,38 @@ export function geminiBlockReason(payload: unknown): string | undefined {
 }
 
 export function extractGeminiInlineImage(payload: unknown): Uint8Array | undefined {
+  let last: Uint8Array | undefined;
   for (const part of geminiParts(payload)) {
     const bytes = decodeInlineImage(part);
     if (bytes) {
-      return bytes;
+      last = bytes;
     }
+  }
+  return last;
+}
+
+/** Magic-byte sniff for Gemini image output. Undefined when the bytes are not png/jpeg/webp. */
+export function detectGeminiImageMimeType(
+  bytes: Uint8Array,
+): 'image/png' | 'image/jpeg' | 'image/webp' | undefined {
+  if (bytes.length >= 8 && PNG_MAGIC.equals(Buffer.from(bytes.subarray(0, 8)))) {
+    return 'image/png';
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return 'image/webp';
   }
   return undefined;
 }
@@ -609,24 +636,5 @@ function decodeInlineImage(part: unknown): Uint8Array | undefined {
 }
 
 function inferImageMimeType(bytes: Uint8Array): string {
-  if (bytes.length >= 8 && PNG_MAGIC.equals(Buffer.from(bytes.subarray(0, 8)))) {
-    return 'image/png';
-  }
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return 'image/jpeg';
-  }
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  ) {
-    return 'image/webp';
-  }
-  return 'image/jpeg';
+  return detectGeminiImageMimeType(bytes) ?? 'image/jpeg';
 }

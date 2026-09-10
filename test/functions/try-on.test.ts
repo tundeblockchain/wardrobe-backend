@@ -146,6 +146,62 @@ describe('runOutfitTryOn', () => {
     expect(puts).toEqual([{ key: RENDER_KEY, type: 'image/png' }]);
   });
 
+  it('accepts a JPEG from Gemini 3.1 flash-image and stores it as image/jpeg', async () => {
+    const puts: Array<{ key: string; type: string }> = [];
+
+    await runOutfitTryOn(
+      {
+        userId: USER_ID,
+        outfitId: OUTFIT_ID,
+        profileImageKeys: [PROFILE_KEY],
+        garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY }],
+      },
+      {
+        store: {
+          async getObject() {
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject(objectKey, _bytes, contentType) {
+            puts.push({ key: objectKey, type: contentType });
+          },
+        },
+        client: {
+          async render() {
+            return JPEG;
+          },
+        },
+      },
+    );
+
+    expect(puts).toEqual([{ key: RENDER_KEY, type: 'image/jpeg' }]);
+  });
+
+  it('fails permanently when Gemini returns non-image bytes', async () => {
+    await expect(
+      runOutfitTryOn(
+        {
+          userId: USER_ID,
+          outfitId: OUTFIT_ID,
+          profileImageKeys: [PROFILE_KEY],
+          garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY }],
+        },
+        {
+          store: {
+            async getObject() {
+              return { bytes: JPEG, contentType: 'image/jpeg' };
+            },
+            async putObject() {},
+          },
+          client: {
+            async render() {
+              return Uint8Array.from([0x00, 0x01, 0x02]);
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow('Outfit try-on did not return a PNG or JPEG image.');
+  });
+
   it('grounds Gemini in outfit categories and omits jeans when a dress is present', async () => {
     const dressKey = `users/${USER_ID}/items/item_dress/processed.png`;
     const jeansKey = `users/${USER_ID}/items/item_jeans/processed.png`;
@@ -324,6 +380,42 @@ describe('createGeminiTryOnClient', () => {
       responseModalities: ['IMAGE'],
       imageConfig: { aspectRatio: '3:4', imageSize: '1K' },
     });
+  });
+
+  it('extracts a JPEG when Gemini 3.1 flash-image returns image/jpeg', async () => {
+    const jpegBase64 = Buffer.from(JPEG).toString('base64');
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { inlineData: { mimeType: 'image/jpeg', data: jpegBase64 } },
+                ],
+              },
+              finishReason: 'STOP',
+            },
+          ],
+        }),
+    }));
+
+    const client = createGeminiTryOnClient(
+      {
+        apiKey: 'gemini-key',
+        model: DEFAULT_GEMINI_MODEL,
+        endpoint: DEFAULT_ENDPOINT,
+      },
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    await expect(
+      client.render(
+        [{ label: 'Person reference 1', bytes: JPEG, contentType: 'image/jpeg' }],
+        'Generate a new fashion photograph.',
+      ),
+    ).resolves.toEqual(JPEG);
   });
 
   it('marks safety blocks as permanent failures', async () => {

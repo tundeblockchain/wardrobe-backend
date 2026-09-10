@@ -6,6 +6,8 @@ import {
   GEMINI_GOOGLE_API_VERSION,
   INTERIOR_GEMINI_REQUEST_HEADERS,
   classifyGeminiHttpStatus,
+  detectGeminiImageMimeType,
+  extractGeminiInlineImage,
   extractGeminiText,
   fetchGeminiGenerateContent,
   geminiBlockReason,
@@ -146,6 +148,29 @@ describe('Gemini generateContent helpers', () => {
 
     expect(parseGeminiJsonText('```json\n{"a":1}\n```')).toEqual({ a: 1 });
     expect(parseGeminiJsonText('{"b":2}')).toEqual({ b: 2 });
+  });
+
+  it('sniffs PNG and JPEG magic and prefers the last inline image', () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0x01]);
+    expect(detectGeminiImageMimeType(png)).toBe('image/png');
+    expect(detectGeminiImageMimeType(jpeg)).toBe('image/jpeg');
+    expect(detectGeminiImageMimeType(Uint8Array.from([0x00, 0x01]))).toBeUndefined();
+
+    expect(
+      extractGeminiInlineImage({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { inlineData: { mimeType: 'image/png', data: Buffer.from(png).toString('base64') } },
+                { inlineData: { mimeType: 'image/jpeg', data: Buffer.from(jpeg).toString('base64') } },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toEqual(jpeg);
   });
 
   it('detects prompt and finish-reason safety blocks', () => {

@@ -9,6 +9,7 @@ import { getSecretString } from '../../shared/secrets';
 import { PermanentProcessingError, RetryableProcessingError } from './errors';
 import {
   DEFAULT_GEMINI_TRY_ON_MODEL,
+  detectGeminiImageMimeType,
   extractGeminiInlineImage,
   fetchGeminiGenerateContent,
   geminiBlockReason,
@@ -26,15 +27,14 @@ import {
   type OutfitTryOnGarment,
 } from './outfit-context';
 
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const RENDER_CONTENT_TYPE = 'image/png';
+const RENDER_OBJECT_CONTENT_TYPE = 'image/png';
 
 export const DEFAULT_GEMINI_MODEL = DEFAULT_GEMINI_TRY_ON_MODEL;
 export { geminiGenerateContentUrl };
 export type { OutfitTryOnGarment };
 
 const TRY_ON_PROMPT =
-  'Generate a NEW photorealistic fashion photograph of this person wearing the garments. The person image is identity only. Reconstruct each garment on the body with realistic drape. Do not overlay or paste garment images onto the person photo. A cute indoor room is optional. Return one full-body PNG.';
+  'Generate a NEW photorealistic fashion photograph of this person wearing the garments. The person image is identity only. Reconstruct each garment on the body with realistic drape. Do not overlay or paste garment images onto the person photo. A cute indoor room is optional. Return one full-body image.';
 
 export interface TryOnImage {
   label: string;
@@ -173,9 +173,11 @@ export async function runOutfitTryOn(
 
   const rendered = await invokeClient(client, images, prompt);
   const imageKey = outfitRenderObjectKey(input.userId, input.outfitId);
+  const contentType =
+    detectGeminiImageMimeType(rendered) ?? RENDER_OBJECT_CONTENT_TYPE;
 
   try {
-    await store.putObject(imageKey, rendered, RENDER_CONTENT_TYPE);
+    await store.putObject(imageKey, rendered, contentType);
   } catch (error) {
     throw toRetryable(error, 'Failed to write outfit render image');
   }
@@ -258,9 +260,9 @@ async function invokeClient(
     throw toRetryable(error, 'Outfit try-on failed');
   }
 
-  if (!isPng(rendered)) {
+  if (!detectGeminiImageMimeType(rendered)) {
     throw new PermanentProcessingError(
-      'Outfit try-on did not return a PNG image.',
+      'Outfit try-on did not return a PNG or JPEG image.',
     );
   }
 
@@ -346,13 +348,6 @@ function mapReadError(error: unknown, objectKey: string): never {
   }
 
   throw toRetryable(error, `Failed to read image ${objectKey}`);
-}
-
-function isPng(bytes: Uint8Array): boolean {
-  if (bytes.length < PNG_MAGIC.length) {
-    return false;
-  }
-  return PNG_MAGIC.equals(Buffer.from(bytes.subarray(0, PNG_MAGIC.length)));
 }
 
 function toRetryable(error: unknown, fallback: string): RetryableProcessingError {

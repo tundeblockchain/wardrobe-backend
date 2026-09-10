@@ -168,7 +168,7 @@ export function buildTryOnPrompt(composed: OutfitComposeResult): string {
     '- You may place the person in a cute, well-lit room in a house (bedroom, living room, or hallway) with soft natural window light.',
     '- Or keep a simple studio look. Either is fine.',
     '- Lighting on the clothes must match the scene.',
-    'Return one full-body PNG. No text, logos, or watermarks.',
+    'Return one full-body image. No text, logos, or watermarks.',
   );
 
   return lines.join('\n');
