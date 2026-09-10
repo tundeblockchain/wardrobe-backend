@@ -497,7 +497,7 @@ The clothing-item worker is unchanged (`PROCESS_WARDROBE_ITEM` only). Try-on use
 
 Default model `gemini-2.5-flash-image`. Never commit AI keys.
 
-#### After deploy — Tunde console / secret steps
+#### After deploy — console / secret steps
 
 1. Deploy the stack (`npm run deploy` or the pipeline). Note `ApiUrl`, `MediaBucketName`, `GeminiTryOnSecretName`, `OutfitRenderQueueUrl`.
 2. Populate the try-on secret (same Gemini key as background-removal is fine):
@@ -831,7 +831,7 @@ GET /ai-profiles?type=GENERIC_MODEL
 
 The seed writes Dynamo rows only. It does **not** upload image bytes. Keys above are documented placeholders under a shared prefix — never commit model photos or API keys.
 
-#### After deploy — Tunde uploads real model images
+#### After deploy — upload real model images
 
 1. Note `MediaBucketName` and `GenericModelCatalogIds` from the stack outputs.
 2. Upload one full-body photo per model (JPEG/PNG/WebP/HEIC) to the exact placeholder key. Example:
@@ -1027,7 +1027,7 @@ The first GitHub connection use may need a one-time handshake in the AWS console
 
 ## Support mail (WARDROBE-38)
 
-Flutter **Contact us** / **Report a bug** forms POST through this API. Resend sends from a custom-domain address to Tunde’s mailbox. Inbound mail on that domain is webhook-forwarded to the same mailbox.
+Flutter **Contact us** / **Report a bug** forms POST through this API. Resend sends from a custom-domain address to the operator mailbox. Inbound mail on that domain is webhook-forwarded to the same mailbox.
 
 ```text
 Flutter (Firebase ID token)
@@ -1055,7 +1055,7 @@ Support webhook Lambda
 Resend Send API  (same from/to; Idempotency-Key inbound:{email_id})
 ```
 
-Flutter UI is WARDROBE-34 (out of scope here). DNS is configured in the Resend dashboard by Tunde — this repo only documents the records and webhook URL.
+Flutter UI is WARDROBE-34 (out of scope here). Configure DNS in the Resend dashboard — this repo only documents the records and webhook URL.
 
 ### Flutter endpoint contracts
 
@@ -1134,7 +1134,7 @@ Conceptual keys (loaded from those secrets; env overrides win — useful in unit
 | `RESEND_API_KEY` | Resend Send / Receiving API bearer token |
 | `RESEND_WEBHOOK_SECRET` | Webhook signing secret (`whsec_…`) from the Resend webhook page |
 | `SUPPORT_FROM_EMAIL` | Custom-domain From, e.g. `Wardrobe Support <support@your-domain>` |
-| `SUPPORT_FORWARD_TO` | Tunde’s personal mailbox |
+| `SUPPORT_FORWARD_TO` | Operator mailbox |
 
 Lambdas never receive raw keys as environment variables in the deployed stack.
 
@@ -1147,14 +1147,14 @@ aws secretsmanager put-secret-value \
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/support-mail \
-  --secret-string '{"fromEmail":"Wardrobe Support <support@your-domain>","forwardTo":"tunde@your-mailbox"}'
+  --secret-string '{"fromEmail":"Wardrobe Support <support@your-domain>","forwardTo":"operator@your-mailbox"}'
 ```
 
 A raw API key also works for `wardrobe/{stage}/resend` if `webhookSecret` / addresses are supplied in the other secret or as test env vars. All four fields may live in one JSON blob on either secret.
 
 Stack outputs: `ResendSecretName`, `SupportMailSecretName`, `SupportWebhookUrl`.
 
-### Domain DNS (Tunde — do not configure from this PR)
+### Domain DNS (operators — do not configure from this PR)
 
 In the Resend dashboard, add the custom sending + receiving domain and copy the DNS records Resend shows. Typical set:
 
