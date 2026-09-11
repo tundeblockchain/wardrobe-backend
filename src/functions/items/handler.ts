@@ -209,6 +209,7 @@ async function updateItem(
   await getOwnedItem(userId, wardrobeId, itemId);
 
   const updates: Record<string, unknown> = {};
+  const remove: string[] = [];
 
   if (body.name !== undefined) {
     updates.name = requireNonEmptyString(body.name, 'name');
@@ -216,8 +217,18 @@ async function updateItem(
   if (body.category !== undefined) {
     updates.category = requireCategory(body.category);
   }
+  // WARDROBE-87: omitted → no change; null / blank / whitespace → REMOVE.
   if (body.subcategory !== undefined) {
-    updates.subcategory = requireNonEmptyString(body.subcategory, 'subcategory');
+    const raw =
+      typeof body.subcategory === 'string'
+        ? body.subcategory.trim()
+        : body.subcategory;
+    const subcategory = optionalNonEmptyString(raw, 'subcategory');
+    if (subcategory === undefined) {
+      remove.push('subcategory');
+    } else {
+      updates.subcategory = subcategory;
+    }
   }
   if (body.colours !== undefined) {
     const colours = optionalStringArray(body.colours, 'colours');
@@ -233,7 +244,7 @@ async function updateItem(
     updates.originalKey = requireOwnedImageKey(body.imageKey, userId);
   }
 
-  if (Object.keys(updates).length === 0) {
+  if (Object.keys(updates).length === 0 && remove.length === 0) {
     throw Errors.validation('At least one field is required.');
   }
 
@@ -241,6 +252,7 @@ async function updateItem(
     keys.wardrobePk(wardrobeId),
     keys.itemSk(itemId),
     { ...updates, updatedAt: nowIso() },
+    remove.length > 0 ? { remove } : undefined,
   );
 
   return toClothingItem(updated);

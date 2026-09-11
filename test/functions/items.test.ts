@@ -224,6 +224,32 @@ function event(options: {
   } as unknown as APIGatewayProxyEventV2;
 }
 
+function mockOwnedItemThenUpdate(
+  attributes: DynamoItem | ((command: Command) => DynamoItem),
+): void {
+  mockSend.mockImplementation(async (command: Command) => {
+    if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+      return { Item: dynamoWardrobe() };
+    }
+    if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+      return { Item: dynamoItem() };
+    }
+    if (command._op === 'Update') {
+      return {
+        Attributes:
+          typeof attributes === 'function' ? attributes(command) : attributes,
+      };
+    }
+    throw new Error(`unexpected op ${command._op}`);
+  });
+}
+
+function patchUpdateCommand(): Command {
+  return mockSend.mock.calls.find(
+    (call) => (call[0] as Command)._op === 'Update',
+  )?.[0] as Command;
+}
+
 function expectEnvelope(
   result: APIGatewayProxyStructuredResultV2,
   statusCode: number,
@@ -444,6 +470,33 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
           originalImageKey: OWNER_IMAGE_KEY,
         }),
       });
+    });
+
+    it('soft-omits null and blank subcategory on create', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Put') {
+          return {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const { subcategory: _omit, ...required } = createBody();
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            body: { ...required, subcategory: null },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(201);
+      expect(bodyOf(result) as ClothingItem).not.toHaveProperty('subcategory');
+
+      const put = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Put',
+      )?.[0] as Command;
+      expect(put.input.Item?.subcategory).toBeUndefined();
     });
 
     it('accepts an owned non-uploads path as imageKey', async () => {
@@ -1140,6 +1193,144 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
       ).toBe(false);
+    });
+
+    it('leaves subcategory unchanged when the field is omitted (WARDROBE-87)', async () => {
+      mockOwnedItemThenUpdate((command) => ({
+        ...dynamoItem(),
+        name: String(command.input.ExpressionAttributeValues?.[':name'] ?? ''),
+        updatedAt: String(
+          command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+        ),
+      }));
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            itemId: ITEM_ID,
+            body: { name: 'White Shirt' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect((bodyOf(result) as ClothingItem).subcategory).toBe('TSHIRT');
+
+      const update = patchUpdateCommand();
+      expect(update.input.UpdateExpression).not.toMatch(/subcategory/i);
+      expect(update.input.ExpressionAttributeValues).not.toHaveProperty(
+        ':subcategory',
+      );
+      expect(update.input.ExpressionAttributeNames ?? {}).not.toHaveProperty(
+        '#subcategory',
+      );
+    });
+
+    it.each([
+      ['null', null],
+      ['blank', ''],
+      ['whitespace-only', '   '],
+    ])(
+      'clears subcategory when PATCH sends %s (WARDROBE-87)',
+      async (_label, subcategory) => {
+        mockOwnedItemThenUpdate((command) => {
+          const { subcategory: _cleared, ...rest } = dynamoItem();
+          return {
+            ...rest,
+            updatedAt: String(
+              command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+            ),
+          };
+        });
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { subcategory },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        expect(bodyOf(result) as ClothingItem).not.toHaveProperty('subcategory');
+
+        const update = patchUpdateCommand();
+        expect(update.input.UpdateExpression).toContain('REMOVE #subcategory');
+        expect(update.input.ExpressionAttributeNames).toEqual(
+          expect.objectContaining({ '#subcategory': 'subcategory' }),
+        );
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(
+          ':subcategory',
+        );
+        expect(update.input.ExpressionAttributeValues).toEqual(
+          expect.objectContaining({
+            ':updatedAt': expect.stringMatching(ISO8601),
+          }),
+        );
+      },
+    );
+
+    it('returns 400 VALIDATION_ERROR when PATCH subcategory is not a string', async () => {
+      mockOwnedItemThenUpdate(dynamoItem());
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            itemId: ITEM_ID,
+            body: { subcategory: 12 },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(400);
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'subcategory must be a string.',
+        },
+      });
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
+      ).toBe(false);
+    });
+
+    it('sets subcategory to a trimmed non-empty string (WARDROBE-87)', async () => {
+      mockOwnedItemThenUpdate((command) => ({
+        ...dynamoItem(),
+        subcategory: String(
+          command.input.ExpressionAttributeValues?.[':subcategory'] ?? '',
+        ),
+        updatedAt: String(
+          command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+        ),
+      }));
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            itemId: ITEM_ID,
+            body: { subcategory: '  JEANS  ' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect((bodyOf(result) as ClothingItem).subcategory).toBe('JEANS');
+
+      const update = patchUpdateCommand();
+      expect(update.input.UpdateExpression).toContain('#subcategory = :subcategory');
+      expect(update.input.UpdateExpression).not.toContain('REMOVE');
+      expect(update.input.ExpressionAttributeValues).toEqual(
+        expect.objectContaining({
+          ':subcategory': 'JEANS',
+          ':updatedAt': expect.stringMatching(ISO8601),
+        }),
+      );
     });
   });
 
