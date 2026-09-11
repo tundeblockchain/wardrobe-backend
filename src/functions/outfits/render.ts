@@ -1,9 +1,11 @@
 import { getReadableAiProfile } from '../../shared/dynamodb';
 import { Errors } from '../../shared/errors';
+import { logger } from '../../shared/logger';
 import { createPresignedGetUrl } from '../../shared/s3';
 import {
   DynamoItem,
   OutfitRender,
+  OutfitRenderHistoryEntry,
   RENDER_STATUSES,
   RenderStatus,
 } from '../../shared/types';
@@ -39,6 +41,112 @@ function isRenderStatus(value: unknown): value is RenderStatus {
   return (RENDER_STATUSES as readonly string[]).includes(String(value));
 }
 
+/** Internal request id stored on Dynamo `render` — not part of the Flutter DTO. */
+export function renderRequestId(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.renderId !== 'string' || !raw.renderId.trim()) {
+    return undefined;
+  }
+  return raw.renderId.trim();
+}
+
+export function toRenderHistory(value: unknown): OutfitRenderHistoryEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const entries: OutfitRenderHistoryEntry[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const entry = toRenderHistoryEntry(raw);
+    if (!entry || seen.has(entry.imageKey)) {
+      continue;
+    }
+    seen.add(entry.imageKey);
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function toRenderHistoryEntry(
+  value: unknown,
+): OutfitRenderHistoryEntry | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const imageKey =
+    typeof raw.imageKey === 'string' ? raw.imageKey.trim() : '';
+  const createdAt =
+    typeof raw.createdAt === 'string' ? raw.createdAt.trim() : '';
+  const aiProfileId =
+    typeof raw.aiProfileId === 'string' ? raw.aiProfileId.trim() : '';
+  if (!imageKey || !createdAt) {
+    return undefined;
+  }
+
+  return { imageKey, createdAt, aiProfileId };
+}
+
+/** Append a successful try-on. Dedupes by imageKey so redeliveries stay append-only. */
+export function appendSuccessfulRender(
+  history: OutfitRenderHistoryEntry[],
+  entry: OutfitRenderHistoryEntry,
+): OutfitRenderHistoryEntry[] {
+  if (history.some((existing) => existing.imageKey === entry.imageKey)) {
+    return history;
+  }
+  return [...history, entry];
+}
+
+/**
+ * Keep a previous READY try-on when `render` is about to be overwritten
+ * (POST PENDING) or when a legacy row has no `renderHistory` yet.
+ */
+export function seedHistoryFromCurrentRender(
+  history: OutfitRenderHistoryEntry[],
+  render: OutfitRender | undefined,
+  fallbackCreatedAt: string,
+): OutfitRenderHistoryEntry[] {
+  if (!render || render.status !== 'READY' || !render.imageKey) {
+    return history;
+  }
+  return appendSuccessfulRender(history, {
+    imageKey: render.imageKey,
+    createdAt: fallbackCreatedAt,
+    aiProfileId: render.aiProfileId,
+  });
+}
+
+export function newestFirstHistory(
+  history: OutfitRenderHistoryEntry[],
+): OutfitRenderHistoryEntry[] {
+  return [...history].reverse();
+}
+
+export async function signedRenderImageUrl(
+  objectKey: string,
+): Promise<string | undefined> {
+  if (!objectKey.trim()) {
+    return undefined;
+  }
+
+  try {
+    const { imageUrl } = await createPresignedGetUrl({ objectKey });
+    return imageUrl;
+  } catch (error) {
+    logger.warn('Failed to presign outfit render image GET URL', {
+      objectKey,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return undefined;
+  }
+}
+
 export async function withSignedRenderUrl(
   render: OutfitRender,
 ): Promise<OutfitRender> {
@@ -46,14 +154,38 @@ export async function withSignedRenderUrl(
     return render;
   }
 
-  try {
-    const { imageUrl } = await createPresignedGetUrl({
-      objectKey: render.imageKey,
-    });
-    return { ...render, imageUrl };
-  } catch {
-    return render;
+  const imageUrl = await signedRenderImageUrl(render.imageKey);
+  return imageUrl ? { ...render, imageUrl } : render;
+}
+
+/**
+ * Newest-first history plus the ordered URL list. A failed presign omits
+ * that URL only — the rest of the outfit still returns.
+ */
+export async function withSignedRenderHistory(
+  history: OutfitRenderHistoryEntry[],
+): Promise<{
+  renderHistory?: OutfitRenderHistoryEntry[];
+  renderImageUrls?: string[];
+}> {
+  if (history.length === 0) {
+    return {};
   }
+
+  const signed: OutfitRenderHistoryEntry[] = [];
+  const urls: string[] = [];
+  for (const entry of newestFirstHistory(history)) {
+    const imageUrl = await signedRenderImageUrl(entry.imageKey);
+    signed.push(imageUrl ? { ...entry, imageUrl } : { ...entry });
+    if (imageUrl) {
+      urls.push(imageUrl);
+    }
+  }
+
+  return {
+    renderHistory: signed,
+    ...(urls.length > 0 ? { renderImageUrls: urls } : {}),
+  };
 }
 
 export function profileReferenceImages(profile: DynamoItem): string[] {
@@ -96,9 +228,13 @@ export function clothingItemImageKey(item: DynamoItem): string | undefined {
   return undefined;
 }
 
-export function pendingRender(aiProfileId: string): OutfitRender {
+export function pendingRender(
+  aiProfileId: string,
+  renderId: string,
+): OutfitRender & { renderId: string } {
   return {
     status: 'PENDING',
     aiProfileId,
+    renderId,
   };
 }

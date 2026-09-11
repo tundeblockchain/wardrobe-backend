@@ -146,6 +146,41 @@ describe('runOutfitTryOn', () => {
     expect(puts).toEqual([{ key: RENDER_KEY, type: 'image/png' }]);
   });
 
+  it('writes a unique renders/{renderId}.png key so earlier try-ons are kept', async () => {
+    const puts: string[] = [];
+    const renderId = 'rend_hist01abcd';
+    const uniqueKey = `users/${USER_ID}/outfits/${OUTFIT_ID}/renders/${renderId}.png`;
+
+    const imageKey = await runOutfitTryOn(
+      {
+        userId: USER_ID,
+        outfitId: OUTFIT_ID,
+        profileImageKeys: [PROFILE_KEY],
+        garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY }],
+        renderId,
+      },
+      {
+        store: {
+          async getObject() {
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject(objectKey) {
+            puts.push(objectKey);
+          },
+        },
+        client: {
+          async render() {
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(imageKey).toBe(uniqueKey);
+    expect(puts).toEqual([uniqueKey]);
+    expect(imageKey).not.toBe(RENDER_KEY);
+  });
+
   it('accepts a JPEG from Gemini 3.1 flash-image and stores it as image/jpeg', async () => {
     const puts: Array<{ key: string; type: string }> = [];
 

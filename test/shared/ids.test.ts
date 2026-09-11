@@ -2,6 +2,7 @@ import {
   newWardrobeId,
   newItemId,
   newOutfitId,
+  newOutfitRenderId,
   newAiProfileId,
   newUploadId,
   nowIso,
@@ -40,6 +41,18 @@ describe('ids', () => {
 
     it('should generate unique IDs', () => {
       const ids = new Set(Array.from({ length: 100 }, () => newOutfitId()));
+      expect(ids.size).toBe(100);
+    });
+  });
+
+  describe('newOutfitRenderId', () => {
+    it('should return a string prefixed with "rend_"', () => {
+      const id = newOutfitRenderId();
+      expect(id).toMatch(/^rend_[A-Za-z0-9_-]{12}$/);
+    });
+
+    it('should generate unique IDs', () => {
+      const ids = new Set(Array.from({ length: 100 }, () => newOutfitRenderId()));
       expect(ids.size).toBe(100);
     });
   });

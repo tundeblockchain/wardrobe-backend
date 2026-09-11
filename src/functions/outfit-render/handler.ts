@@ -6,7 +6,7 @@ import {
   updateAttributes,
 } from '../../shared/dynamodb';
 import { AppError } from '../../shared/errors';
-import { nowIso } from '../../shared/ids';
+import { newOutfitRenderId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import { parseRenderOutfitJob } from '../../shared/sqs';
 import {
@@ -14,6 +14,7 @@ import {
   DynamoItem,
   OutfitItem,
   OutfitRender,
+  OutfitRenderHistoryEntry,
   RenderOutfitJob,
   RenderStatus,
 } from '../../shared/types';
@@ -27,7 +28,14 @@ import {
   PermanentProcessingError,
   RetryableProcessingError,
 } from '../processing/errors';
-import { clothingItemImageKey } from '../outfits/render';
+import {
+  appendSuccessfulRender,
+  clothingItemImageKey,
+  renderRequestId,
+  seedHistoryFromCurrentRender,
+  toOutfitRender,
+  toRenderHistory,
+} from '../outfits/render';
 import {
   garmentFromClothingItem,
   type OutfitTryOnGarment,
@@ -102,17 +110,27 @@ async function processRecord(record: SQSRecord): Promise<void> {
   }
 
   const current = outfitRender(outfit);
-  if (current?.status === 'READY' && current.aiProfileId === job.aiProfileId) {
+  const currentRenderId = renderRequestId(outfit.render);
+  if (shouldSkipCompletedRender(current, currentRenderId, job)) {
     logger.info('Outfit render already READY; skipping try-on', {
       outfitId: job.outfitId,
       wardrobeId: job.wardrobeId,
+      renderId: job.renderId,
     });
     return;
   }
 
+  const renderId = job.renderId ?? newOutfitRenderId();
+  const baselineHistory = seedHistoryFromCurrentRender(
+    toRenderHistory(outfit.renderHistory),
+    current,
+    outfit.updatedAt,
+  );
+
   const marked = await setRender(job, {
     status: 'PROCESSING',
     aiProfileId: job.aiProfileId,
+    renderId,
   });
   if (!marked) {
     return;
@@ -126,20 +144,33 @@ async function processRecord(record: SQSRecord): Promise<void> {
       outfitId: job.outfitId,
       profileImageKeys: profile.referenceImages,
       garmentImages: garments,
+      renderId,
       ...(isEmptyAiProfileBodyContext(profile.body)
         ? {}
         : { profileBody: profile.body }),
     });
-    await setRender(job, {
-      status: 'READY',
-      aiProfileId: job.aiProfileId,
+    const renderHistory = appendSuccessfulRender(baselineHistory, {
       imageKey,
+      createdAt: nowIso(),
+      aiProfileId: job.aiProfileId,
     });
+    await setRender(
+      job,
+      {
+        status: 'READY',
+        aiProfileId: job.aiProfileId,
+        imageKey,
+        renderId,
+      },
+      renderHistory,
+    );
     logger.info('Outfit render completed', {
       outfitId: job.outfitId,
       wardrobeId: job.wardrobeId,
       status: 'READY',
       imageKey,
+      renderId,
+      historyCount: renderHistory.length,
     });
   } catch (error) {
     if (error instanceof PermanentProcessingError) {
@@ -152,6 +183,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         status: 'FAILED',
         aiProfileId: job.aiProfileId,
         error: error.message,
+        renderId,
       });
       return;
     }
@@ -302,27 +334,21 @@ async function loadGarmentImages(
 }
 
 function outfitRender(item: DynamoItem): OutfitRender | undefined {
-  const raw = item.render;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return undefined;
+  return toOutfitRender(item.render);
+}
+
+function shouldSkipCompletedRender(
+  current: OutfitRender | undefined,
+  currentRenderId: string | undefined,
+  job: RenderOutfitJob,
+): boolean {
+  if (current?.status !== 'READY') {
+    return false;
   }
-  const record = raw as Record<string, unknown>;
-  const status = record.status;
-  if (
-    status !== 'PENDING' &&
-    status !== 'PROCESSING' &&
-    status !== 'READY' &&
-    status !== 'FAILED'
-  ) {
-    return undefined;
+  if (job.renderId) {
+    return currentRenderId === job.renderId;
   }
-  return {
-    status,
-    aiProfileId:
-      typeof record.aiProfileId === 'string' ? record.aiProfileId : '',
-    ...(typeof record.imageKey === 'string' ? { imageKey: record.imageKey } : {}),
-    ...(typeof record.error === 'string' ? { error: record.error } : {}),
-  };
+  return current.aiProfileId === job.aiProfileId;
 }
 
 function toOutfitItems(value: unknown): OutfitItem[] {
@@ -347,13 +373,19 @@ async function setRender(
     aiProfileId: string;
     imageKey?: string;
     error?: string;
+    renderId?: string;
   },
+  renderHistory?: OutfitRenderHistoryEntry[],
 ): Promise<boolean> {
   try {
     await updateAttributes(
       keys.wardrobePk(job.wardrobeId),
       keys.outfitSk(job.outfitId),
-      { render, updatedAt: nowIso() },
+      {
+        render,
+        updatedAt: nowIso(),
+        ...(renderHistory ? { renderHistory } : {}),
+      },
     );
     return true;
   } catch (error) {

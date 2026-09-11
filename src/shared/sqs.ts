@@ -126,6 +126,7 @@ export function parseRenderOutfitJob(body: string): RenderOutfitJob | undefined 
   const wardrobeId = requiredJobField(raw.wardrobeId);
   const outfitId = requiredJobField(raw.outfitId);
   const aiProfileId = requiredJobField(raw.aiProfileId);
+  const renderId = requiredJobField(raw.renderId);
 
   if (!userId || !wardrobeId || !outfitId || !aiProfileId) {
     return undefined;
@@ -137,6 +138,7 @@ export function parseRenderOutfitJob(body: string): RenderOutfitJob | undefined 
     wardrobeId,
     outfitId,
     aiProfileId,
+    ...(renderId ? { renderId } : {}),
   };
 }
 
@@ -153,6 +155,7 @@ export async function enqueueRenderOutfit(job: {
   wardrobeId: string;
   outfitId: string;
   aiProfileId: string;
+  renderId?: string;
 }): Promise<void> {
   const message: RenderOutfitJob = {
     jobType: RENDER_OUTFIT_JOB,
@@ -160,6 +163,7 @@ export async function enqueueRenderOutfit(job: {
     wardrobeId: job.wardrobeId,
     outfitId: job.outfitId,
     aiProfileId: job.aiProfileId,
+    ...(job.renderId ? { renderId: job.renderId } : {}),
   };
 
   try {

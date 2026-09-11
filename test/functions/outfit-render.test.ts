@@ -155,6 +155,14 @@ function renderUpdates(): Array<Record<string, unknown>> {
     );
 }
 
+function historyUpdates(): unknown[] {
+  return commands()
+    .filter((command) => command._op === 'Update')
+    .map(
+      (command) => command.input.ExpressionAttributeValues?.[':renderHistory'],
+    );
+}
+
 function throttleError(): Error {
   const error = new Error('Throughput exceeds the current capacity');
   error.name = 'ThrottlingException';
@@ -220,6 +228,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
           name: 'Tee',
         },
       ],
+      renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
     });
   });
 
@@ -344,6 +353,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
           name: 'Blue jeans',
         },
       ],
+      renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
     });
   });
 
@@ -424,6 +434,120 @@ describe('outfit render worker (WARDROBE-47)', () => {
 
     expect(result).toEqual({ batchItemFailures: [] });
     expect(renderUpdates()).toEqual([]);
+  });
+
+  it('appends a new READY imageKey without overwriting earlier history', async () => {
+    const previousKey = `users/${OWNER_ID}/outfits/${OUTFIT_ID}/render.png`;
+    const nextKey = `users/${OWNER_ID}/outfits/${OUTFIT_ID}/renders/rend_new1abcd.png`;
+    mockRunTryOn.mockResolvedValue(nextKey);
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('OUTFIT#')) {
+          return {
+            Item: dynamoOutfit({
+              render: {
+                status: 'PENDING',
+                aiProfileId: PROFILE_ID,
+                renderId: 'rend_new1abcd',
+              },
+              renderHistory: [
+                {
+                  imageKey: previousKey,
+                  createdAt: '2026-09-10T08:00:00.000Z',
+                  aiProfileId: PROFILE_ID,
+                },
+              ],
+            }),
+          };
+        }
+        if (sk.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: dynamoGenericProfile() };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoOutfit() };
+    });
+
+    const result = await handler(eventFor(job({ renderId: 'rend_new1abcd' })));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    const readyHistory = historyUpdates().find((value) => Array.isArray(value));
+    expect(readyHistory).toEqual([
+      {
+        imageKey: previousKey,
+        createdAt: '2026-09-10T08:00:00.000Z',
+        aiProfileId: PROFILE_ID,
+      },
+      {
+        imageKey: nextKey,
+        createdAt: expect.stringMatching(
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+        ),
+        aiProfileId: PROFILE_ID,
+      },
+    ]);
+    expect(renderUpdates()[1]).toMatchObject({
+      status: 'READY',
+      imageKey: nextKey,
+      renderId: 'rend_new1abcd',
+    });
+    expect(renderUpdates()[1].imageKey).not.toBe(previousKey);
+  });
+
+  it('runs a new request id even when the outfit is already READY for the same profile', async () => {
+    const previousKey = RENDER_KEY;
+    const nextKey = `users/${OWNER_ID}/outfits/${OUTFIT_ID}/renders/rend_new2abcd.png`;
+    mockRunTryOn.mockResolvedValue(nextKey);
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('OUTFIT#')) {
+          return {
+            Item: dynamoOutfit({
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: previousKey,
+                renderId: 'rend_old1abcd',
+              },
+              renderHistory: [
+                {
+                  imageKey: previousKey,
+                  createdAt: '2026-09-10T08:00:00.000Z',
+                  aiProfileId: PROFILE_ID,
+                },
+              ],
+            }),
+          };
+        }
+        if (sk.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: dynamoGenericProfile() };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoOutfit() };
+    });
+
+    const result = await handler(eventFor(job({ renderId: 'rend_new2abcd' })));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(mockRunTryOn).toHaveBeenCalled();
+    const readyHistory = historyUpdates().find((value) => Array.isArray(value));
+    expect(readyHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ imageKey: previousKey }),
+        expect.objectContaining({ imageKey: nextKey }),
+      ]),
+    );
   });
 
   it('skips try-on when the outfit is already READY for the same profile', async () => {

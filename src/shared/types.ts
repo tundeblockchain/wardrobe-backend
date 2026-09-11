@@ -225,6 +225,11 @@ export interface RenderOutfitJob {
   wardrobeId: string;
   outfitId: string;
   aiProfileId: string;
+  /**
+   * Per-request id (WARDROBE-85). Present on new POSTs so a second try-on
+   * with the same profile appends history. Optional on in-flight legacy jobs.
+   */
+  renderId?: string;
 }
 
 export interface Wardrobe {
@@ -292,8 +297,9 @@ export const RENDER_STATUSES = [
 export type RenderStatus = (typeof RENDER_STATUSES)[number];
 
 /**
- * Flutter `OutfitRender` on the outfit (architecture §24).
+ * Flutter `OutfitRender` on the outfit (architecture §24 / WARDROBE-47).
  * `imageUrl` is a short-lived presigned GET — never persisted in Dynamo.
+ * WARDROBE-85 keeps these fields as the current / latest try-on.
  */
 export interface OutfitRender {
   status: RenderStatus;
@@ -303,12 +309,35 @@ export interface OutfitRender {
   error?: string;
 }
 
+/**
+ * One successful try-on in append-only history (WARDROBE-85).
+ * Stored in Dynamo without `imageUrl`. List/get add a presigned GET
+ * and soft-omit that field when presign fails.
+ */
+export interface OutfitRenderHistoryEntry {
+  imageKey: string;
+  createdAt: string;
+  aiProfileId: string;
+  imageUrl?: string;
+}
+
 export interface Outfit {
   outfitId: string;
   wardrobeId: string;
   name: string;
   items: OutfitItem[];
   render?: OutfitRender;
+  /**
+   * Successful try-ons, newest first (WARDROBE-85 / Flutter WARDROBE-84).
+   * Includes the latest READY image. Soft-omitted when empty.
+   */
+  renderHistory?: OutfitRenderHistoryEntry[];
+  /**
+   * Presigned GET URLs for successful try-ons, newest first.
+   * `[0]` is the latest when that presign succeeded.
+   * Soft-omitted when empty (no history or every presign failed).
+   */
+  renderImageUrls?: string[];
   createdAt: string;
   updatedAt: string;
 }

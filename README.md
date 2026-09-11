@@ -26,7 +26,7 @@ Working in this first cut:
 - Owner-only outfit recommendations (derived, never auto-saved)
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
 - AI Profile CRUD plus PERSONAL reference-image presign/attach, seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73)
-- Outfit try-on worker (Gemini `generateContent` image; writes `users/{uid}/outfits/{outfitId}/render.png`)
+- Outfit try-on worker (Gemini `generateContent` image; writes a unique `users/{uid}/outfits/{outfitId}/renders/{renderId}.png` and appends it to outfit history)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 
 ## Prerequisites
@@ -424,7 +424,7 @@ Create body (`name` and `items` required):
 
 `name` is trimmed, 1–100 characters. `items` must contain at least one entry. `slot` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `ACCESSORY` may appear more than once; other slots may appear only once. Duplicate `itemId` values are rejected.
 
-Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Create / PATCH never accept a client-supplied `render` object.
+Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render` / `renderHistory` / `renderImageUrls`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Create / PATCH never accept a client-supplied `render` or `renderHistory` object.
 
 ### Outfit try-on / render (WARDROBE-47)
 
@@ -456,13 +456,13 @@ GET /render  (Flutter poll)
 GET /wardrobes/{wardrobeId}/outfits/{outfitId}  (same render object)
 ```
 
-POST returns `202` with the Flutter `Outfit` DTO including `render`. GET `/render` returns the Flutter `OutfitRender` record. GET outfit includes `render` when one has been requested. List includes `render` without `imageUrl` (use GET outfit or GET `/render` for the presigned URL).
+POST returns `202` with the Flutter `Outfit` DTO including `render` (and history when earlier try-ons exist). GET `/render` returns the Flutter `OutfitRender` record for the current request (poll). GET outfit and list include `render` plus append-only history (WARDROBE-85) — see **Outfit render history** below.
 
 ```json
 {
   "status": "READY",
   "aiProfileId": "profile_generic_01",
-  "imageKey": "users/uid/outfits/outfit_xyz123ab/render.png",
+  "imageKey": "users/uid/outfits/outfit_xyz123ab/renders/rend_new1abcd.png",
   "imageUrl": "https://...presigned GetObject..."
 }
 ```
@@ -471,8 +471,8 @@ POST returns `202` with the Flutter `Outfit` DTO including `render`. GET `/rende
 | --- | --- |
 | `status` | Always: `PENDING` \| `PROCESSING` \| `READY` \| `FAILED` |
 | `aiProfileId` | Profile used for this request |
-| `imageKey` | `READY` — S3 object `users/{uid}/outfits/{outfitId}/render.png` |
-| `imageUrl` | `READY` on GET outfit / GET `/render` — 15-minute presigned GET |
+| `imageKey` | `READY` — S3 object `users/{uid}/outfits/{outfitId}/renders/{renderId}.png` (legacy rows may still use `…/render.png`) |
+| `imageUrl` | `READY` on list / GET outfit / GET `/render` — 15-minute presigned GET. Soft-omitted if that presign fails |
 | `error` | `FAILED` — human-readable reason (Gemini block, missing image, profile not READY, …) |
 
 AuthZ / validation:
@@ -488,7 +488,86 @@ AuthZ / validation:
 
 The clothing-item worker is unchanged (`PROCESS_WARDROBE_ITEM` only). Try-on uses a dedicated queue `wardrobe-outfit-render-{stage}` + `OutfitRenderFn` so item-processing poison handling stays isolated.
 
-**Worker:** Dynamo is the source of truth. It reloads the outfit (owner check), the profile (`getReadableAiProfile` + `READY` + the frontal `front.*` reference image + optional WARDROBE-80 / WARDROBE-82 body/context fields), and each garment (prefer `originalKey`, else `processedKey` — cutouts overlay too easily). Gemini `generateContent` (image, `3:4`) writes `render.png`. Present body fields are added to the prompt (`height: 175 cm`, `bra size: 34B`, …); missing fields are omitted and do not fail render. Permanent Gemini / missing-image / profile errors set `FAILED` with `render.error` and ack. Transient errors are SQS batch failures (`maxReceiveCount: 3` then DLQ). Poison messages (invalid JSON, wrong `jobType`, missing fields) are acked.
+**Worker:** Dynamo is the source of truth. It reloads the outfit (owner check), the profile (`getReadableAiProfile` + `READY` + the frontal `front.*` reference image + optional WARDROBE-80 / WARDROBE-82 body/context fields), and each garment (prefer `originalKey`, else `processedKey` — cutouts overlay too easily). Gemini `generateContent` (image, `3:4`) writes a **new** `renders/{renderId}.png` and **appends** that key to `renderHistory` — it does not overwrite earlier successful try-ons. Present body fields are added to the prompt (`height: 175 cm`, `bra size: 34B`, …); missing fields are omitted and do not fail render. Permanent Gemini / missing-image / profile errors set `FAILED` with `render.error` and ack (history of earlier successes is kept). Transient errors are SQS batch failures (`maxReceiveCount: 3` then DLQ). Poison messages (invalid JSON, wrong `jobType`, missing fields) are acked.
+
+### Outfit render history (WARDROBE-85) — Flutter WARDROBE-84 contract
+
+Successful try-ons are **append-only**. A later POST `/render` updates the current `render` status (`PENDING` → worker → `READY` / `FAILED`) but does **not** replace earlier READY images in S3 or Dynamo.
+
+**Shape:** existing `render` (current / latest try-on) **plus** a newest-first history array **plus** a newest-first URL list. Latest is clearly `render.imageUrl` when the current render is `READY` and that presign succeeds, and is also `renderImageUrls[0]` / `renderHistory[0]` when those fields are present.
+
+Owner-only, same as today. Identity comes from the Firebase authorizer. List and get use this DTO. GET `/render` stays the single current `OutfitRender` poll record (WARDROBE-47) — it does not include history.
+
+```json
+{
+  "outfitId": "outfit_xyz123ab",
+  "wardrobeId": "wd_abc123xyz0",
+  "name": "Friday Night",
+  "items": [
+    { "itemId": "item_...", "slot": "TOP" },
+    { "itemId": "item_...", "slot": "BOTTOM" }
+  ],
+  "render": {
+    "status": "READY",
+    "aiProfileId": "profile_generic_01",
+    "imageKey": "users/{uid}/outfits/outfit_xyz123ab/renders/rend_new1abcd.png",
+    "imageUrl": "https://...presigned GetObject for latest..."
+  },
+  "renderHistory": [
+    {
+      "imageKey": "users/{uid}/outfits/outfit_xyz123ab/renders/rend_new1abcd.png",
+      "imageUrl": "https://...presigned GetObject for latest...",
+      "createdAt": "2026-09-11T08:00:00.000Z",
+      "aiProfileId": "profile_generic_01"
+    },
+    {
+      "imageKey": "users/{uid}/outfits/outfit_xyz123ab/render.png",
+      "imageUrl": "https://...presigned GetObject for earlier...",
+      "createdAt": "2026-09-10T08:00:00.000Z",
+      "aiProfileId": "profile_generic_01"
+    }
+  ],
+  "renderImageUrls": [
+    "https://...presigned GetObject for latest...",
+    "https://...presigned GetObject for earlier..."
+  ],
+  "createdAt": "2026-09-03T19:10:00.000Z",
+  "updatedAt": "2026-09-11T08:00:00.000Z"
+}
+```
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `render` | object | no | Current try-on. Same WARDROBE-47 fields: `status`, `aiProfileId`, optional `imageKey` / `imageUrl` / `error`. Flutter that only reads `render` keeps working. |
+| `render.status` | string | when `render` present | `PENDING` \| `PROCESSING` \| `READY` \| `FAILED` |
+| `render.aiProfileId` | string | when `render` present | Profile used for the current request |
+| `render.imageKey` | string | `READY` only | Latest S3 key. Legacy single-file rows may still be `…/outfits/{outfitId}/render.png` |
+| `render.imageUrl` | string | no | Latest presigned GET (900s). Present when current status is `READY` and that presign succeeds |
+| `render.error` | string | `FAILED` only | Worker reason |
+| `renderHistory` | array | no | Successful try-ons, **newest first**, including the latest. Soft-omitted when there are none. Never includes PENDING / FAILED |
+| `renderHistory[].imageKey` | string | yes | Stored S3 key. Not an HTTPS URL |
+| `renderHistory[].createdAt` | string | yes | ISO 8601 when that try-on became READY |
+| `renderHistory[].aiProfileId` | string | yes | Profile used for that try-on |
+| `renderHistory[].imageUrl` | string | no | Presigned GET for that key. Soft-omitted when that presign fails |
+| `renderImageUrls` | string[] | no | Presigned GET URLs only, **newest first**. `[0]` is the latest URL that presigned successfully. Soft-omitted when empty |
+
+Soft-omit rules (must not break list / get / create / PATCH / POST `/render`):
+
+- **Presign failure** — omit that URL only (`render.imageUrl` and/or that `renderHistory[].imageUrl`, and drop it from `renderImageUrls`). Do **not** fail the whole response. List / get still return `200`.
+- **All history presigns fail** — omit `renderImageUrls`. Keep `renderHistory` entries without `imageUrl`. Keep `render.status` / `imageKey`.
+- **No successful try-ons yet** — omit `renderHistory` and `renderImageUrls`.
+- **Current render is PENDING / PROCESSING / FAILED** — `render` has no `imageUrl`. Previous successes still appear in `renderHistory` / `renderImageUrls`.
+- **Legacy outfit** with only `render.imageKey` and no stored `renderHistory` — list/get still return that image as a one-entry newest-first list (seeded from the current READY key).
+- **URLs are never written to Dynamo.** Same helper / TTL as clothing-item `originalImageUrl` (`createPresignedGetUrl`, `expiresIn` **900**).
+- **Create / PATCH** never accept client-supplied `render`, `renderHistory`, or `renderImageUrls`.
+- **Auth** — owner-only, same as outfit CRUD. Other-user / missing wardrobe or outfit stays `404`.
+
+Flutter WARDROBE-84 should:
+
+1. Keep using `render.status` / `render.imageUrl` for the current try-on (poll GET `/render` or GET outfit until `READY` / `FAILED`).
+2. Bind the gallery to `renderImageUrls` (newest first; index `0` is latest when present).
+3. Use `renderHistory` when a timestamp or `aiProfileId` caption is needed. Skip entries with no `imageUrl`.
+4. Treat a missing `renderImageUrls` as an empty gallery, not an error.
 
 **Secret** `wardrobe/{stage}/gemini-try-on` (stack output `GeminiTryOnSecretName`):
 
@@ -1040,7 +1119,7 @@ src/functions/
   me/                  owner-only clear-content + delete-account (WARDROBE-36)
   wardrobes/
   items/
-  outfits/             CRUD + POST/GET render (WARDROBE-47)
+  outfits/             CRUD + POST/GET render (WARDROBE-47) + append-only history (WARDROBE-85)
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   uploads/
   ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45); body context (80)

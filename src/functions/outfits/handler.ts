@@ -20,7 +20,7 @@ import {
   parseJsonBody,
   routeKey,
 } from '../../shared/http';
-import { newOutfitId, nowIso } from '../../shared/ids';
+import { newOutfitId, newOutfitRenderId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import { enqueueRenderOutfit } from '../../shared/sqs';
 import {
@@ -35,7 +35,10 @@ import {
   clothingItemImageKey,
   pendingRender,
   requireReadyRenderableProfile,
+  seedHistoryFromCurrentRender,
   toOutfitRender,
+  toRenderHistory,
+  withSignedRenderHistory,
   withSignedRenderUrl,
 } from './render';
 
@@ -105,9 +108,7 @@ export async function handler(
 
     if (method === 'GET') {
       return ok(
-        await toOutfitDto(await getOwnedOutfit(userId, wardrobeId, outfitId), {
-          signRenderUrl: true,
-        }),
+        await toOutfitDto(await getOwnedOutfit(userId, wardrobeId, outfitId)),
       );
     }
 
@@ -144,14 +145,13 @@ async function listOutfits(
 ): Promise<Outfit[]> {
   await getOwnedWardrobe(userId, wardrobeId);
   const items = await queryByPk(keys.wardrobePk(wardrobeId), 'OUTFIT#');
-  return items
-    .filter(
-      (item) =>
-        item.entityType === 'OUTFIT' &&
-        item.userId === userId &&
-        item.wardrobeId === wardrobeId,
-    )
-    .map((item) => toOutfit(item));
+  const outfits = items.filter(
+    (item) =>
+      item.entityType === 'OUTFIT' &&
+      item.userId === userId &&
+      item.wardrobeId === wardrobeId,
+  );
+  return Promise.all(outfits.map((item) => toOutfitDto(item)));
 }
 
 async function createOutfit(
@@ -214,7 +214,7 @@ async function updateOutfit(
     { ...updates, updatedAt: nowIso() },
   );
 
-  return toOutfitDto(updated, { signRenderUrl: true });
+  return toOutfitDto(updated);
 }
 
 async function removeOutfit(
@@ -262,10 +262,17 @@ async function requestOutfitRender(
   await assertItemsBelongToWardrobe(userId, wardrobeId, garmentItems);
   await assertItemsHaveImages(userId, wardrobeId, garmentItems);
 
-  const render = pendingRender(aiProfileId);
+  const renderId = newOutfitRenderId();
+  const render = pendingRender(aiProfileId, renderId);
+  const renderHistory = seedHistoryFromCurrentRender(
+    toRenderHistory(existing.renderHistory),
+    toOutfitRender(previousRender),
+    existing.updatedAt,
+  );
   const updates: Record<string, unknown> = {
     render,
     updatedAt: nowIso(),
+    ...(renderHistory.length > 0 ? { renderHistory } : {}),
   };
   if (body.items !== undefined || body.itemIds !== undefined) {
     updates.items = garmentItems;
@@ -283,6 +290,7 @@ async function requestOutfitRender(
       wardrobeId,
       outfitId,
       aiProfileId,
+      renderId,
     });
   } catch (error) {
     try {
@@ -303,7 +311,7 @@ async function requestOutfitRender(
     throw error;
   }
 
-  return toOutfitDto(updated, { signRenderUrl: true });
+  return toOutfitDto(updated);
 }
 
 function resolveItemsFromIds(
@@ -377,6 +385,14 @@ async function assertItemsHaveImages(
   }
 }
 
+function storedRenderHistory(item: DynamoItem) {
+  return seedHistoryFromCurrentRender(
+    toRenderHistory(item.renderHistory),
+    toOutfitRender(item.render),
+    item.updatedAt,
+  );
+}
+
 function toOutfit(item: DynamoItem): Outfit {
   const render = toOutfitRender(item.render);
   return {
@@ -390,17 +406,16 @@ function toOutfit(item: DynamoItem): Outfit {
   };
 }
 
-async function toOutfitDto(
-  item: DynamoItem,
-  options: { signRenderUrl: boolean },
-): Promise<Outfit> {
+async function toOutfitDto(item: DynamoItem): Promise<Outfit> {
   const outfit = toOutfit(item);
-  if (!options.signRenderUrl || !outfit.render) {
-    return outfit;
+  const signedHistory = await withSignedRenderHistory(storedRenderHistory(item));
+  if (!outfit.render) {
+    return { ...outfit, ...signedHistory };
   }
   return {
     ...outfit,
     render: await withSignedRenderUrl(outfit.render),
+    ...signedHistory,
   };
 }
 

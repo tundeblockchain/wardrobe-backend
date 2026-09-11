@@ -48,6 +48,7 @@ export function buildRenderOutfitJob(
   wardrobeId: string,
   outfitId: string,
   aiProfileId: string,
+  renderId?: string,
 ): RenderOutfitJob {
   return {
     jobType: RENDER_OUTFIT_JOB,
@@ -55,6 +56,7 @@ export function buildRenderOutfitJob(
     wardrobeId,
     outfitId,
     aiProfileId,
+    ...(renderId ? { renderId } : {}),
   };
 }
 
