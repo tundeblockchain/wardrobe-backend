@@ -12,6 +12,11 @@ export function newOutfitId(): string {
   return `outfit_${nanoid(12)}`;
 }
 
+/** Per try-on request id — unique S3 object + worker idempotency (WARDROBE-85). */
+export function newOutfitRenderId(): string {
+  return `rend_${nanoid(12)}`;
+}
+
 export function newAiProfileId(): string {
   return `profile_${nanoid(12)}`;
 }

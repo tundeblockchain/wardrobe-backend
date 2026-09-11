@@ -91,14 +91,31 @@ export function processedImageObjectKey(userId: string, itemId: string): string 
   return `users/${userId}/items/${itemId}/processed.png`;
 }
 
-/** Architecture §24: users/{uid}/outfits/{outfitId}/render.png */
-export function outfitRenderObjectKey(userId: string, outfitId: string): string {
+/**
+ * Architecture §24 / WARDROBE-85.
+ * Legacy single file: users/{uid}/outfits/{outfitId}/render.png
+ * Append-only try-on: users/{uid}/outfits/{outfitId}/renders/{renderId}.png
+ */
+export function outfitRenderObjectKey(
+  userId: string,
+  outfitId: string,
+  renderId?: string,
+): string {
   const uid = userId.trim();
   const id = outfitId.trim();
   if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
     throw Errors.internal(
       'Refusing to build an outfit render key for an invalid id.',
     );
+  }
+  if (renderId !== undefined) {
+    const entryId = renderId.trim();
+    if (!isSafeObjectKeySegment(entryId)) {
+      throw Errors.internal(
+        'Refusing to build an outfit render key for an invalid id.',
+      );
+    }
+    return `users/${uid}/outfits/${id}/renders/${entryId}.png`;
   }
   return `users/${uid}/outfits/${id}/render.png`;
 }

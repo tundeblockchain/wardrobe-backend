@@ -193,8 +193,17 @@ describe('s3 helpers (WARDROBE-8)', () => {
       );
     });
 
+    it('uses a unique renders/{renderId}.png key when a renderId is given', () => {
+      expect(outfitRenderObjectKey('uid-1', 'outfit_abc', 'rend_new1abcd')).toBe(
+        'users/uid-1/outfits/outfit_abc/renders/rend_new1abcd.png',
+      );
+    });
+
     it('rejects path-like ids', () => {
       expect(() => outfitRenderObjectKey('uid-1', '../secret')).toThrow(AppError);
+      expect(() =>
+        outfitRenderObjectKey('uid-1', 'outfit_abc', '../secret'),
+      ).toThrow(AppError);
     });
   });
 

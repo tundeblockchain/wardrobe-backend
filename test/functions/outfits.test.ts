@@ -1113,15 +1113,18 @@ describe('outfits handler (WARDROBE-7)', () => {
         status: 'PENDING',
         aiProfileId: PROFILE_ID,
       });
-      expect(SendMessageCommand).toHaveBeenCalledWith({
-        QueueUrl: process.env.TRY_ON_QUEUE_URL,
-        MessageBody: JSON.stringify({
-          jobType: 'RENDER_OUTFIT',
-          userId: OWNER_ID,
-          wardrobeId: WARDROBE_ID,
-          outfitId: OUTFIT_ID,
-          aiProfileId: PROFILE_ID,
-        }),
+      expect(body.render).not.toHaveProperty('renderId');
+      const sent = JSON.parse(
+        (SendMessageCommand as unknown as jest.Mock).mock.calls[0][0]
+          .MessageBody as string,
+      );
+      expect(sent).toEqual({
+        jobType: 'RENDER_OUTFIT',
+        userId: OWNER_ID,
+        wardrobeId: WARDROBE_ID,
+        outfitId: OUTFIT_ID,
+        aiProfileId: PROFILE_ID,
+        renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
       });
     });
 
@@ -1265,6 +1268,235 @@ describe('outfits handler (WARDROBE-7)', () => {
       );
 
       expectEnvelope(result, 404, 'RENDER_NOT_FOUND');
+    });
+  });
+
+  describe('outfit render history (WARDROBE-85)', () => {
+    const OLD_KEY = `users/${OWNER_ID}/outfits/${OUTFIT_ID}/render.png`;
+    const NEW_KEY = `users/${OWNER_ID}/outfits/${OUTFIT_ID}/renders/rend_new1abcd.png`;
+
+    function historyOutfit(): DynamoItem {
+      return dynamoOutfit(OWNER_ID, {
+        render: {
+          status: 'READY',
+          aiProfileId: PROFILE_ID,
+          imageKey: NEW_KEY,
+        },
+        renderHistory: [
+          {
+            imageKey: OLD_KEY,
+            createdAt: '2026-09-10T08:00:00.000Z',
+            aiProfileId: PROFILE_ID,
+          },
+          {
+            imageKey: NEW_KEY,
+            createdAt: '2026-09-11T08:00:00.000Z',
+            aiProfileId: PROFILE_ID,
+          },
+        ],
+      });
+    }
+
+    function signedUrl(key: string): string {
+      return `https://signed.example/${key}`;
+    }
+
+    beforeEach(() => {
+      mockGetSignedUrl.mockImplementation(
+        async (_client: unknown, command: { input?: { Key?: string } }) =>
+          signedUrl(command.input?.Key ?? 'missing'),
+      );
+    });
+
+    it('returns newest-first URLs on GET outfit, with latest on render.imageUrl', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return { Item: historyOutfit() };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', outfitId: OUTFIT_ID })),
+      );
+      const body = bodyOf(result) as Outfit;
+
+      expect(result.statusCode).toBe(200);
+      expect(body.render).toEqual({
+        status: 'READY',
+        aiProfileId: PROFILE_ID,
+        imageKey: NEW_KEY,
+        imageUrl: signedUrl(NEW_KEY),
+      });
+      expect(body.renderImageUrls).toEqual([signedUrl(NEW_KEY), signedUrl(OLD_KEY)]);
+      expect(body.renderHistory?.[0]).toMatchObject({
+        imageKey: NEW_KEY,
+        imageUrl: signedUrl(NEW_KEY),
+      });
+      expect(body.renderHistory?.[1]).toMatchObject({
+        imageKey: OLD_KEY,
+        imageUrl: signedUrl(OLD_KEY),
+      });
+    });
+
+    it('returns the same ordered URLs on list outfits', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [historyOutfit()] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+      const body = bodyOf(result) as { outfits: Outfit[] };
+
+      expect(result.statusCode).toBe(200);
+      expect(body.outfits).toHaveLength(1);
+      expect(body.outfits[0].renderImageUrls).toEqual([
+        signedUrl(NEW_KEY),
+        signedUrl(OLD_KEY),
+      ]);
+      expect(body.outfits[0].render?.imageUrl).toBe(signedUrl(NEW_KEY));
+    });
+
+    it('soft-omits a failed history presign and still returns the outfit', async () => {
+      mockGetSignedUrl.mockImplementation(
+        async (_client: unknown, command: { input?: { Key?: string } }) => {
+          const key = command.input?.Key ?? '';
+          if (key === OLD_KEY) {
+            throw new Error('presign failed');
+          }
+          return signedUrl(key);
+        },
+      );
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return { Item: historyOutfit() };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', outfitId: OUTFIT_ID })),
+      );
+      const body = bodyOf(result) as Outfit;
+
+      expect(result.statusCode).toBe(200);
+      expect(body.renderImageUrls).toEqual([signedUrl(NEW_KEY)]);
+      expect(body.render?.imageUrl).toBe(signedUrl(NEW_KEY));
+      expect(body.renderHistory?.[1]).toEqual({
+        imageKey: OLD_KEY,
+        createdAt: '2026-09-10T08:00:00.000Z',
+        aiProfileId: PROFILE_ID,
+      });
+      expect(body.renderHistory?.[1]).not.toHaveProperty('imageUrl');
+    });
+
+    it('seeds a legacy READY render.png onto list/get when history is missing', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return {
+            Item: dynamoOutfit(OWNER_ID, {
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: OLD_KEY,
+              },
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', outfitId: OUTFIT_ID })),
+      );
+      const body = bodyOf(result) as Outfit;
+
+      expect(body.renderImageUrls).toEqual([signedUrl(OLD_KEY)]);
+      expect(body.renderHistory).toEqual([
+        {
+          imageKey: OLD_KEY,
+          createdAt: body.updatedAt,
+          aiProfileId: PROFILE_ID,
+          imageUrl: signedUrl(OLD_KEY),
+        },
+      ]);
+    });
+
+    it('persists previous READY into renderHistory when a new try-on is posted', async () => {
+      mockOwnedItemsThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return {
+            Item: dynamoOutfit(OWNER_ID, {
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: OLD_KEY,
+              },
+            }),
+          };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('AIPROFILE#')) {
+          return {
+            Item: {
+              PK: 'AIPROFILE#GENERIC_MODEL',
+              SK: `AIPROFILE#${PROFILE_ID}`,
+              entityType: 'AIPROFILE',
+              userId: 'SYSTEM',
+              aiProfileId: PROFILE_ID,
+              type: 'GENERIC_MODEL',
+              referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
+              status: 'READY',
+              createdAt: '2026-09-06T00:00:00.000Z',
+              updatedAt: '2026-09-06T00:00:00.000Z',
+            },
+          };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoOutfit(OWNER_ID, {
+              render: {
+                status: 'PENDING',
+                aiProfileId: PROFILE_ID,
+              },
+              renderHistory:
+                command.input.ExpressionAttributeValues?.[':renderHistory'] ?? [],
+              updatedAt: '2026-09-11T09:00:00.000Z',
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      const body = bodyOf(result) as Outfit;
+      const update = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Update',
+      )?.[0] as Command;
+
+      expect(result.statusCode).toBe(202);
+      expect(body.render).toEqual({
+        status: 'PENDING',
+        aiProfileId: PROFILE_ID,
+      });
+      expect(update.input.ExpressionAttributeValues?.[':renderHistory']).toEqual([
+        {
+          imageKey: OLD_KEY,
+          createdAt: '2026-09-03T19:10:00.000Z',
+          aiProfileId: PROFILE_ID,
+        },
+      ]);
+      expect(body.renderImageUrls).toEqual([signedUrl(OLD_KEY)]);
     });
   });
 

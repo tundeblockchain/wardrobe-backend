@@ -132,6 +132,8 @@ export async function runOutfitTryOn(
     profileImageKeys: string[];
     garmentImages: OutfitTryOnGarment[];
     profileBody?: AiProfileBodyContext;
+    /** Unique per try-on so S3 does not overwrite earlier READY images. */
+    renderId?: string;
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
@@ -180,7 +182,11 @@ export async function runOutfitTryOn(
   }
 
   const rendered = await invokeClient(client, images, prompt);
-  const imageKey = outfitRenderObjectKey(input.userId, input.outfitId);
+  const imageKey = outfitRenderObjectKey(
+    input.userId,
+    input.outfitId,
+    input.renderId,
+  );
   const contentType =
     detectGeminiImageMimeType(rendered) ?? RENDER_OBJECT_CONTENT_TYPE;
 

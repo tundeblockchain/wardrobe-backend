@@ -165,6 +165,14 @@ describe('sqs helpers (WARDROBE-16)', () => {
       expect(parseRenderOutfitJob(JSON.stringify(valid))).toEqual(valid);
     });
 
+    it('keeps an optional renderId for append-only try-on history', () => {
+      expect(
+        parseRenderOutfitJob(
+          JSON.stringify({ ...valid, renderId: 'rend_abc123xyz0' }),
+        ),
+      ).toEqual({ ...valid, renderId: 'rend_abc123xyz0' });
+    });
+
     it('returns undefined for invalid JSON, wrong job type, or missing fields', () => {
       expect(parseRenderOutfitJob('not-json')).toBeUndefined();
       expect(
@@ -183,6 +191,7 @@ describe('sqs helpers (WARDROBE-16)', () => {
         wardrobeId: 'wd_abc123xyz0',
         outfitId: 'outfit_xyz123ab',
         aiProfileId: 'profile_generic_01',
+        renderId: 'rend_abc123xyz0',
       });
 
       expect(SendMessageCommand).toHaveBeenCalledWith({
@@ -193,6 +202,7 @@ describe('sqs helpers (WARDROBE-16)', () => {
           wardrobeId: 'wd_abc123xyz0',
           outfitId: 'outfit_xyz123ab',
           aiProfileId: 'profile_generic_01',
+          renderId: 'rend_abc123xyz0',
         }),
       });
     });

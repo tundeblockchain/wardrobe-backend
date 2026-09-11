@@ -403,6 +403,7 @@ users/{userId}/items/{itemId}/original.jpg
 users/{userId}/items/{itemId}/processed.png
 
 users/{userId}/outfits/{outfitId}/render.png
+users/{userId}/outfits/{outfitId}/renders/{renderId}.png
 
 users/{userId}/ai-profiles/{profileId}/reference-1.jpg
 ```
@@ -994,7 +995,7 @@ WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`
 
 ## 24. Outfit Render Data
 
-An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47).
+An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47). WARDROBE-85 appends each successful try-on to `renderHistory` (S3 key `users/{uid}/outfits/{outfitId}/renders/{renderId}.png`) and list/get add newest-first presigned `renderImageUrls`. Existing `render` fields stay the current / latest try-on. See README “Outfit render history (WARDROBE-85)” for the Flutter WARDROBE-84 contract.
 
 Example:
 
@@ -1002,7 +1003,7 @@ Example:
 {
   "render": {
     "status": "READY",
-    "imageKey": "users/uid/outfits/outfit123/render.png",
+    "imageKey": "users/uid/outfits/outfit123/renders/rend_new1abcd.png",
     "aiProfileId": "profile123"
   }
 }
