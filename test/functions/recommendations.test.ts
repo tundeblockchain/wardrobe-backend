@@ -40,6 +40,7 @@ import {
   handler,
   resolveRecommenderStrategy,
 } from '../../src/functions/recommendations/handler';
+import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
 
 const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
@@ -171,6 +172,9 @@ function expectEnvelope(
 
 function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   mockSend.mockImplementation(async (command: Command) => {
+    if (isEntitlementGet(command)) {
+      return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+    }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
     }
@@ -250,6 +254,38 @@ describe('recommendations handler (WARDROBE-23)', () => {
           ['Put', 'Update', 'Delete'].includes((call[0] as Command)._op),
         ),
       ).toBe(false);
+    });
+
+    it('rejects recommendations on Basic with ENTITLEMENT_AI_REQUIRED', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return { Item: dynamoEntitlement(OWNER_ID, 'BASIC') };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event()));
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+    });
+
+    it('rejects recommendations on Free with ENTITLEMENT_AI_REQUIRED', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return {};
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event()));
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
     });
 
     it('returns 200 with an empty list when the wardrobe has no READY items', async () => {

@@ -32,6 +32,8 @@ export const keys = {
   itemSk: (itemId: string) => `ITEM#${itemId}`,
   outfitSk: (outfitId: string) => `OUTFIT#${outfitId}`,
   profileSk: 'PROFILE',
+  /** WARDROBE-91 Superwall-verified subscription row. */
+  entitlementSk: 'ENTITLEMENT',
   aiProfileSk: (aiProfileId: string) => `AIPROFILE#${aiProfileId}`,
   /** Catalog partition for seeded GENERIC_MODEL rows (WARDROBE-45). */
   genericModelPk: () => 'AIPROFILE#GENERIC_MODEL',

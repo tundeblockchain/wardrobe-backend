@@ -9,6 +9,10 @@ export type ErrorCode =
   | 'AI_PROFILE_NOT_FOUND'
   | 'UPLOAD_INVALID'
   | 'PROCESSING_FAILED'
+  | 'ENTITLEMENT_WARDROBE_LIMIT'
+  | 'ENTITLEMENT_ITEM_LIMIT'
+  | 'ENTITLEMENT_OUTFIT_LIMIT'
+  | 'ENTITLEMENT_AI_REQUIRED'
   | 'NOT_IMPLEMENTED'
   | 'INTERNAL_ERROR';
 
@@ -51,6 +55,24 @@ export const Errors = {
 
   uploadInvalid: (message: string) =>
     new AppError('UPLOAD_INVALID', message, 400),
+
+  /** Free catalog cap — Flutter WARDROBE-90 maps to Superwall Basic. */
+  wardrobeLimit: (
+    message = 'Free plan allows 1 wardrobe. Upgrade to Basic or Premium.',
+  ) => new AppError('ENTITLEMENT_WARDROBE_LIMIT', message, 403),
+
+  itemLimit: (
+    message = 'Free plan allows 5 items. Upgrade to Basic or Premium.',
+  ) => new AppError('ENTITLEMENT_ITEM_LIMIT', message, 403),
+
+  outfitLimit: (
+    message = 'Free plan allows 5 outfits. Upgrade to Basic or Premium.',
+  ) => new AppError('ENTITLEMENT_OUTFIT_LIMIT', message, 403),
+
+  /** Try-on and other AI — Flutter WARDROBE-90 maps to Superwall Premium. */
+  aiRequired: (
+    message = 'AI Try On and other AI features require Premium.',
+  ) => new AppError('ENTITLEMENT_AI_REQUIRED', message, 403),
 
   notImplemented: (message = 'This endpoint is not implemented yet.') =>
     new AppError('NOT_IMPLEMENTED', message, 501),

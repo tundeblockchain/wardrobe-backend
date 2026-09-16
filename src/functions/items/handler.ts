@@ -9,6 +9,7 @@ import {
   queryByPk,
   updateAttributes,
 } from '../../shared/dynamodb';
+import { assertCanCreateCatalog, isPremium } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import {
   created,
@@ -141,6 +142,8 @@ async function createItem(
   body: CreateItemBody,
 ): Promise<ClothingItem> {
   await getOwnedWardrobe(userId, wardrobeId);
+  const entitlement = await assertCanCreateCatalog(userId, 'item');
+  const enqueueAi = isPremium(entitlement);
 
   const name = requireNonEmptyString(body.name, 'name');
   const category = requireCategory(body.category);
@@ -165,36 +168,39 @@ async function createItem(
     colours,
     brand,
     originalKey: imageKey,
-    processingStatus: CREATE_PROCESSING_STATUS,
+    processingStatus: enqueueAi ? CREATE_PROCESSING_STATUS : 'READY',
     createdAt: timestamp,
     updatedAt: timestamp,
   };
 
   // Write first, then enqueue. If SendMessage fails, roll the item back so
   // the client can retry create without an orphaned PENDING record.
+  // Free / Basic skip the AI pipeline (classify / colour / bg-removal).
   await putItem(item);
 
-  try {
-    await enqueueProcessWardrobeItem({
-      userId,
-      wardrobeId,
-      itemId,
-      originalImageKey: imageKey,
-    });
-  } catch (error) {
+  if (enqueueAi) {
     try {
-      await deleteItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
-    } catch (compensateError) {
-      logger.error('Failed to roll back item after enqueue failure', {
-        itemId,
+      await enqueueProcessWardrobeItem({
+        userId,
         wardrobeId,
-        error:
-          compensateError instanceof Error
-            ? compensateError.message
-            : 'unknown',
+        itemId,
+        originalImageKey: imageKey,
       });
+    } catch (error) {
+      try {
+        await deleteItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
+      } catch (compensateError) {
+        logger.error('Failed to roll back item after enqueue failure', {
+          itemId,
+          wardrobeId,
+          error:
+            compensateError instanceof Error
+              ? compensateError.message
+              : 'unknown',
+        });
+      }
+      throw error;
     }
-    throw error;
   }
 
   return toClothingItem(item);
