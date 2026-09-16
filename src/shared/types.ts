@@ -376,7 +376,96 @@ export interface UserWipeResult {
   s3Failures: number;
 }
 
-export type EntityType = 'PROFILE' | 'WARDROBE' | 'ITEM' | 'OUTFIT' | 'AIPROFILE';
+/**
+ * Subscription tier (WARDROBE-91). Flutter WARDROBE-90 uses the same enum.
+ * Missing / expired / unknown store rows resolve to FREE.
+ */
+export const SUBSCRIPTION_TIERS = ['FREE', 'BASIC', 'PREMIUM'] as const;
+export type SubscriptionTier = (typeof SUBSCRIPTION_TIERS)[number];
+
+export const ENTITLEMENT_STATUSES = [
+  'NONE',
+  'ACTIVE',
+  'CANCELED',
+  'BILLING_ISSUE',
+  'PAUSED',
+  'EXPIRED',
+] as const;
+export type EntitlementStatus = (typeof ENTITLEMENT_STATUSES)[number];
+
+export const ENTITLEMENT_STORES = [
+  'APP_STORE',
+  'PLAY_STORE',
+  'STRIPE',
+  'UNKNOWN',
+] as const;
+export type EntitlementStore = (typeof ENTITLEMENT_STORES)[number];
+
+export const ENTITLEMENT_PERIODS = ['MONTHLY', 'YEARLY', 'UNKNOWN'] as const;
+export type EntitlementPeriod = (typeof ENTITLEMENT_PERIODS)[number];
+
+/** Free catalog caps. Basic and Premium are unlimited (`limits: null`). */
+export const FREE_CATALOG_LIMITS = {
+  wardrobes: 1,
+  items: 5,
+  outfits: 5,
+} as const;
+
+export interface EntitlementLimits {
+  wardrobes: number;
+  items: number;
+  outfits: number;
+}
+
+export interface EntitlementUsage {
+  wardrobes: number;
+  items: number;
+  outfits: number;
+}
+
+export interface EntitlementFeatures {
+  /** True on Basic and Premium (unlimited wardrobes / items / outfits). */
+  unlimitedCatalog: boolean;
+  /** Virtual try-on / outfit render. Premium only. */
+  aiTryOn: boolean;
+  /** Classify, colour, bg-removal enqueue, recommendations. Premium only. */
+  otherAi: boolean;
+}
+
+/**
+ * Flutter `Entitlement` DTO for `GET /me` (WARDROBE-91 / WARDROBE-90).
+ * Never includes Dynamo `PK` / `SK` / internal event ids.
+ */
+export interface Entitlement {
+  userId: string;
+  tier: SubscriptionTier;
+  status: EntitlementStatus;
+  features: EntitlementFeatures;
+  /**
+   * Catalog caps. `null` means unlimited (Basic / Premium).
+   * Free: 1 wardrobe, 5 items, 5 outfits.
+   */
+  limits: EntitlementLimits | null;
+  usage: EntitlementUsage;
+  /**
+   * Store product identifier when known. Hooks only — App Store / Play
+   * IDs are operator-configured in Secrets Manager, never hardcoded.
+   */
+  productId?: string;
+  store?: EntitlementStore;
+  period?: EntitlementPeriod;
+  /** ISO 8601. Present when Superwall sent `expirationAt`. */
+  expiresAt?: string;
+  updatedAt: string;
+}
+
+export type EntityType =
+  | 'PROFILE'
+  | 'WARDROBE'
+  | 'ITEM'
+  | 'OUTFIT'
+  | 'AIPROFILE'
+  | 'ENTITLEMENT';
 
 export interface DynamoItem {
   PK: string;

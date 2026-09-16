@@ -10,6 +10,7 @@ import {
   queryByPk,
   updateAttributes,
 } from '../../shared/dynamodb';
+import { assertCanCreateCatalog, assertPremiumAi } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import {
   accepted,
@@ -160,6 +161,7 @@ async function createOutfit(
   body: CreateOutfitBody,
 ): Promise<Outfit> {
   await getOwnedWardrobe(userId, wardrobeId);
+  await assertCanCreateCatalog(userId, 'outfit');
 
   const name = requireNonEmptyString(body.name, 'name');
   const items = requireOutfitItems(body.items);
@@ -246,6 +248,7 @@ async function requestOutfitRender(
   body: RequestRenderBody,
 ): Promise<Outfit> {
   const existing = await getOwnedOutfit(userId, wardrobeId, outfitId);
+  await assertPremiumAi(userId);
   const previousRender = existing.render;
   const aiProfileId = requireNonEmptyString(body.aiProfileId, 'aiProfileId');
   await requireReadyRenderableProfile(userId, aiProfileId);

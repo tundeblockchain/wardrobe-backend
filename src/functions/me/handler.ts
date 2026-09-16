@@ -1,6 +1,11 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
 import { deleteMany, getItem, keys, queryByPk } from '../../shared/dynamodb';
+import {
+  countUsage,
+  resolveEntitlement,
+  toEntitlementDto,
+} from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import { errorResponse, ok, routeKey } from '../../shared/http';
 import { deleteObjectsUnderUserPrefix } from '../../shared/s3';
@@ -9,12 +14,15 @@ import { DynamoItem, EntityType, UserWipeResult } from '../../shared/types';
 /**
  * Owner-only account APIs.
  *
+ * GET    /me         — current entitlement (WARDROBE-91). Flutter WARDROBE-90
+ *                      reads this to soft-gate Superwall UX.
  * DELETE /me/content — wipe wardrobes, items, outfits, personal AI profiles,
- *                      and S3 under users/{uid}/. Firebase Auth user stays.
- * DELETE /me         — same Dynamo + S3 wipe (plus PROFILE if present), then
- *                      return OK so Flutter can delete the Firebase Auth user
- *                      client-side. This backend does not call Firebase Admin.
- *                      Seeded GENERIC_MODEL catalog rows are never deleted.
+ *                      and S3 under users/{uid}/. Entitlement + Firebase Auth stay.
+ * DELETE /me         — same Dynamo + S3 wipe (plus PROFILE and ENTITLEMENT if
+ *                      present), then return OK so Flutter can delete the
+ *                      Firebase Auth user client-side. This backend does not
+ *                      call Firebase Admin. Seeded GENERIC_MODEL catalog rows
+ *                      are never deleted.
  *
  * Identity always comes from the Firebase authorizer (`getUserId`).
  */
@@ -24,11 +32,19 @@ export async function handler(
   try {
     const userId = getUserId(event);
     const method = event.requestContext.http.method;
+    const key = routeKey(event);
+
+    if (method === 'GET') {
+      if (isAccountRoute(key, event.rawPath) && !isContentRoute(key, event.rawPath)) {
+        return ok(await getEntitlement(userId));
+      }
+      throw Errors.validation(`Unsupported route: ${key}`);
+    }
+
     if (method !== 'DELETE') {
       throw Errors.validation(`Unsupported method: ${method}`);
     }
 
-    const key = routeKey(event);
     if (isContentRoute(key, event.rawPath)) {
       return ok(await wipeUser(userId, { keepAccount: true }));
     }
@@ -42,19 +58,33 @@ export async function handler(
   }
 }
 
+async function getEntitlement(userId: string) {
+  const stored = await resolveEntitlement(userId);
+  const usage = await countUsage(userId);
+  return toEntitlementDto(stored, usage);
+}
+
 function isContentRoute(key: string, rawPath: string): boolean {
   return key.includes('/me/content') || rawPath.endsWith('/me/content');
 }
 
 function isAccountRoute(key: string, rawPath: string): boolean {
-  return key === 'DELETE /me' || rawPath === '/me' || rawPath.endsWith('/me');
+  return (
+    key === 'GET /me' ||
+    key === 'DELETE /me' ||
+    rawPath === '/me' ||
+    rawPath.endsWith('/me')
+  );
 }
 
 async function wipeUser(
   userId: string,
   options: { keepAccount: boolean },
 ): Promise<UserWipeResult> {
-  const rows = await collectOwnedRows(userId, { includeProfile: !options.keepAccount });
+  const rows = await collectOwnedRows(userId, {
+    includeProfile: !options.keepAccount,
+    includeEntitlement: !options.keepAccount,
+  });
 
   await deleteMany(rows.map(({ pk, sk }) => ({ pk, sk })));
 
@@ -79,7 +109,7 @@ interface RowKey {
 
 async function collectOwnedRows(
   userId: string,
-  options: { includeProfile: boolean },
+  options: { includeProfile: boolean; includeEntitlement: boolean },
 ): Promise<RowKey[]> {
   const rows: RowKey[] = [];
   const seen = new Set<string>();
@@ -127,7 +157,30 @@ async function collectOwnedRows(
     }
   }
 
+  if (options.includeEntitlement) {
+    const entitlement = await getItem(keys.userPk(userId), keys.entitlementSk);
+    if (ownedEntitlement(entitlement, userId)) {
+      add(keys.userPk(userId), keys.entitlementSk, 'ENTITLEMENT');
+    }
+  }
+
   return rows;
+}
+
+function ownedEntitlement(
+  item: DynamoItem | undefined,
+  userId: string,
+): item is DynamoItem {
+  if (!item) {
+    return false;
+  }
+  if (item.entityType && item.entityType !== 'ENTITLEMENT') {
+    return false;
+  }
+  if (typeof item.userId === 'string' && item.userId !== userId) {
+    return false;
+  }
+  return true;
 }
 
 function ownedProfile(

@@ -231,7 +231,9 @@ function mockEmptyWipe() {
   });
 }
 
-function mockPopulatedWipe(options: { includeProfile?: boolean } = {}) {
+function mockPopulatedWipe(
+  options: { includeProfile?: boolean; includeEntitlement?: boolean } = {},
+) {
   mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
     if (command._op === 'Query') {
       const pk = command.input.ExpressionAttributeValues?.[':pk'];
@@ -251,6 +253,24 @@ function mockPopulatedWipe(options: { includeProfile?: boolean } = {}) {
         command.input.Key?.SK === 'PROFILE'
       ) {
         return { Item: dynamoProfile() };
+      }
+      if (
+        options.includeEntitlement &&
+        command.input.Key?.PK === `USER#${OWNER_ID}` &&
+        command.input.Key?.SK === 'ENTITLEMENT'
+      ) {
+        return {
+          Item: {
+            PK: `USER#${OWNER_ID}`,
+            SK: 'ENTITLEMENT',
+            entityType: 'ENTITLEMENT',
+            userId: OWNER_ID,
+            tier: 'PREMIUM',
+            status: 'ACTIVE',
+            createdAt: '2026-09-16T00:00:00.000Z',
+            updatedAt: '2026-09-16T00:00:00.000Z',
+          },
+        };
       }
       return {};
     }
@@ -326,6 +346,10 @@ describe('me handler (WARDROBE-36)', () => {
       expect(deletedKeys()).not.toContainEqual({
         PK: `USER#${OWNER_ID}`,
         SK: 'PROFILE',
+      });
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: 'ENTITLEMENT',
       });
       expect(deletedKeys().some((key) => key.PK.includes(OTHER_ID))).toBe(false);
     });
@@ -462,8 +486,8 @@ describe('me handler (WARDROBE-36)', () => {
   });
 
   describe('DELETE /me', () => {
-    it('wipes Dynamo + S3 including PROFILE and tells Flutter Auth remains', async () => {
-      mockPopulatedWipe({ includeProfile: true });
+    it('wipes Dynamo + S3 including PROFILE and ENTITLEMENT and tells Flutter Auth remains', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
 
       const result = asResult(await handler(event({ path: '/me' })));
 
@@ -484,6 +508,7 @@ describe('me handler (WARDROBE-36)', () => {
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `OUTFIT#${OUTFIT_ID}` },
           { PK: `USER#${OWNER_ID}`, SK: 'PROFILE' },
+          { PK: `USER#${OWNER_ID}`, SK: 'ENTITLEMENT' },
         ]),
       );
     });
@@ -585,6 +610,138 @@ describe('me handler (WARDROBE-36)', () => {
     });
   });
 
+  describe('GET /me (WARDROBE-91)', () => {
+    it('returns Free defaults when no entitlement row exists', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Get') {
+          return {};
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        userId: OWNER_ID,
+        tier: 'FREE',
+        status: 'NONE',
+        features: {
+          unlimitedCatalog: false,
+          aiTryOn: false,
+          otherAi: false,
+        },
+        limits: { wardrobes: 1, items: 5, outfits: 5 },
+        usage: { wardrobes: 0, items: 0, outfits: 0 },
+        updatedAt: expect.any(String),
+      });
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+
+    it('returns Premium with usage and omits Dynamo keys', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (
+          command._op === 'Get' &&
+          command.input.Key?.SK === 'ENTITLEMENT'
+        ) {
+          return {
+            Item: {
+              PK: `USER#${OWNER_ID}`,
+              SK: 'ENTITLEMENT',
+              entityType: 'ENTITLEMENT',
+              userId: OWNER_ID,
+              tier: 'PREMIUM',
+              status: 'ACTIVE',
+              productId: 'premium_monthly',
+              store: 'APP_STORE',
+              period: 'MONTHLY',
+              createdAt: '2026-09-16T00:00:00.000Z',
+              updatedAt: '2026-09-16T12:00:00.000Z',
+            },
+          };
+        }
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OWNER_ID}`) {
+            return { Items: [dynamoWardrobe()] };
+          }
+          if (pk === `WARDROBE#${WARDROBE_ID}`) {
+            return { Items: [dynamoItem(), dynamoOutfit()] };
+          }
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        userId: OWNER_ID,
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        features: {
+          unlimitedCatalog: true,
+          aiTryOn: true,
+          otherAi: true,
+        },
+        limits: null,
+        usage: { wardrobes: 1, items: 1, outfits: 1 },
+        productId: 'premium_monthly',
+        store: 'APP_STORE',
+        period: 'MONTHLY',
+        updatedAt: '2026-09-16T12:00:00.000Z',
+      });
+      expect(bodyOf(result)).not.toHaveProperty('PK');
+      expect(bodyOf(result)).not.toHaveProperty('lastEventId');
+    });
+
+    it('treats an expired Premium row as Free', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Get') {
+          return {
+            Item: {
+              PK: `USER#${OWNER_ID}`,
+              SK: 'ENTITLEMENT',
+              entityType: 'ENTITLEMENT',
+              userId: OWNER_ID,
+              tier: 'PREMIUM',
+              status: 'ACTIVE',
+              expiresAt: '2020-01-01T00:00:00.000Z',
+              createdAt: '2019-01-01T00:00:00.000Z',
+              updatedAt: '2019-01-01T00:00:00.000Z',
+            },
+          };
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          tier: 'FREE',
+          status: 'EXPIRED',
+          features: { unlimitedCatalog: false, aiTryOn: false, otherAi: false },
+          limits: { wardrobes: 1, items: 5, outfits: 5 },
+        }),
+      );
+    });
+  });
+
   describe('auth and errors', () => {
     it('returns 401 when the authorizer context is missing', async () => {
       const result = asResult(
@@ -597,7 +754,7 @@ describe('me handler (WARDROBE-36)', () => {
 
     it('returns 400 for unsupported methods', async () => {
       const result = asResult(
-        await handler(event({ path: '/me', method: 'GET' })),
+        await handler(event({ path: '/me', method: 'PATCH' })),
       );
       expectEnvelope(result, 400, 'VALIDATION_ERROR');
     });

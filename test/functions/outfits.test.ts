@@ -60,6 +60,7 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { handler } from '../../src/functions/outfits/handler';
+import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -275,6 +276,9 @@ const ownedItemIds = new Set([
 
 function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   mockSend.mockImplementation(async (command: Command) => {
+    if (isEntitlementGet(command)) {
+      return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+    }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
     }
@@ -509,6 +513,47 @@ describe('outfits handler (WARDROBE-7)', () => {
       );
 
       expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
+      ).toBe(false);
+    });
+
+    it('rejects a sixth outfit on Free with ENTITLEMENT_OUTFIT_LIMIT', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return {};
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OWNER_ID}`) {
+            return { Items: [dynamoWardrobe()] };
+          }
+          return {
+            Items: Array.from({ length: 5 }, (_, index) => ({
+              PK: `WARDROBE#${WARDROBE_ID}`,
+              SK: `OUTFIT#outfit_lim${index}`,
+              entityType: 'OUTFIT',
+              userId: OWNER_ID,
+              wardrobeId: WARDROBE_ID,
+              outfitId: `outfit_lim${index}`,
+              name: 'Look',
+              items: [{ itemId: TOP_ITEM_ID, slot: 'TOP' }],
+              createdAt: '2026-09-03T19:10:00.000Z',
+              updatedAt: '2026-09-03T19:10:00.000Z',
+            })),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'POST', body: createBody() })),
+      );
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_OUTFIT_LIMIT');
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
       ).toBe(false);
@@ -1092,6 +1137,64 @@ describe('outfits handler (WARDROBE-7)', () => {
         return {};
       });
     }
+
+    it('rejects try-on on Basic with ENTITLEMENT_AI_REQUIRED', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return { Item: dynamoEntitlement(OWNER_ID, 'BASIC') };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects try-on on Free with ENTITLEMENT_AI_REQUIRED', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return {};
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
 
     it('sets PENDING, enqueues RENDER_OUTFIT, and returns 202 with the outfit', async () => {
       mockRenderLookups();

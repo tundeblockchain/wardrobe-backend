@@ -8,6 +8,7 @@ import {
   queryByPk,
   updateAttributes,
 } from '../../shared/dynamodb';
+import { assertCanCreateCatalog } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import {
   created,
@@ -77,6 +78,7 @@ async function createWardrobe(
   body: CreateWardrobeBody,
 ): Promise<Wardrobe> {
   const name = requireNonEmptyString(body.name, 'name');
+  await assertCanCreateCatalog(userId, 'wardrobe');
   const wardrobeId = newWardrobeId();
   const timestamp = nowIso();
 

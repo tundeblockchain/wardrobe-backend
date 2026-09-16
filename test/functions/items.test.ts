@@ -60,6 +60,7 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { handler } from '../../src/functions/items/handler';
+import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -278,6 +279,9 @@ function createBody(overrides: Record<string, unknown> = {}) {
 
 function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   mockSend.mockImplementation(async (command: Command) => {
+    if (isEntitlementGet(command)) {
+      return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+    }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
     }
@@ -632,6 +636,91 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
       ).toBe(false);
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects a sixth item on Free with ENTITLEMENT_ITEM_LIMIT', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return {};
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OWNER_ID}`) {
+            return { Items: [dynamoWardrobe()] };
+          }
+          return {
+            Items: Array.from({ length: 5 }, (_, index) =>
+              dynamoItem(OWNER_ID, {
+                itemId: `item_lim${index}abcd`,
+                SK: `ITEM#item_lim${index}abcd`,
+              }),
+            ),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'POST', body: createBody() })),
+      );
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_ITEM_LIMIT');
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
+      ).toBe(false);
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('creates Free items as READY without enqueueing AI processing', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return {};
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        if (command._op === 'Put') {
+          return {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'POST', body: createBody() })),
+      );
+
+      expect(result.statusCode).toBe(201);
+      expect((bodyOf(result) as ClothingItem).processingStatus).toBe('READY');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('creates Basic items as READY without enqueueing AI processing', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return { Item: dynamoEntitlement(OWNER_ID, 'BASIC') };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Put') {
+          return {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'POST', body: createBody() })),
+      );
+
+      expect(result.statusCode).toBe(201);
+      expect((bodyOf(result) as ClothingItem).processingStatus).toBe('READY');
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
   });

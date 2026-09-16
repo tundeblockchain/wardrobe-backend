@@ -125,4 +125,52 @@ describe('shared error envelope', () => {
       },
     });
   });
+
+  it('maps ENTITLEMENT_WARDROBE_LIMIT to a 403 envelope', () => {
+    const result = asResult(errorResponse(Errors.wardrobeLimit()));
+
+    expect(result.statusCode).toBe(403);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ENTITLEMENT_WARDROBE_LIMIT',
+        message: 'Free plan allows 1 wardrobe. Upgrade to Basic or Premium.',
+      },
+    });
+  });
+
+  it('maps ENTITLEMENT_ITEM_LIMIT to a 403 envelope', () => {
+    const result = asResult(errorResponse(Errors.itemLimit()));
+
+    expect(result.statusCode).toBe(403);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ENTITLEMENT_ITEM_LIMIT',
+        message: 'Free plan allows 5 items. Upgrade to Basic or Premium.',
+      },
+    });
+  });
+
+  it('maps ENTITLEMENT_OUTFIT_LIMIT to a 403 envelope', () => {
+    const result = asResult(errorResponse(Errors.outfitLimit()));
+
+    expect(result.statusCode).toBe(403);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ENTITLEMENT_OUTFIT_LIMIT',
+        message: 'Free plan allows 5 outfits. Upgrade to Basic or Premium.',
+      },
+    });
+  });
+
+  it('maps ENTITLEMENT_AI_REQUIRED to a 403 envelope', () => {
+    const result = asResult(errorResponse(Errors.aiRequired()));
+
+    expect(result.statusCode).toBe(403);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ENTITLEMENT_AI_REQUIRED',
+        message: 'AI Try On and other AI features require Premium.',
+      },
+    });
+  });
 });

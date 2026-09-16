@@ -958,7 +958,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     ) as Array<{
       Properties: { RouteKey: string; AuthorizationType?: string };
     }>;
-    for (const routeKey of ['DELETE /me', 'DELETE /me/content']) {
+    for (const routeKey of ['GET /me', 'DELETE /me', 'DELETE /me/content']) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
     }
@@ -1104,6 +1104,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
       'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
       'GET /wardrobes/{wardrobeId}/recommendations',
+      'GET /me',
       'DELETE /me',
       'DELETE /me/content',
       'GET /ai-profiles',

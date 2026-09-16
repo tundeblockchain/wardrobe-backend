@@ -21,6 +21,7 @@ import {
 } from '../src/functions/ai-profiles/catalog';
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
+import { addEntitlements } from './entitlements';
 import { addSupportMail } from './support-mail';
 
 export interface WardrobeStackProps extends cdk.StackProps {
@@ -611,7 +612,7 @@ export class WardrobeStack extends cdk.Stack {
 
     httpApi.addRoutes({
       path: '/me',
-      methods: [apigwv2.HttpMethod.DELETE],
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.DELETE],
       integration: meIntegration,
       authorizer: firebaseAuthorizer,
     });
@@ -735,6 +736,15 @@ export class WardrobeStack extends cdk.Stack {
       stage,
       httpApi,
       authorizer: firebaseAuthorizer,
+      commonLambdaProps,
+      removalPolicy,
+    });
+
+    // Isolated WARDROBE-91 module — Superwall webhook → Dynamo entitlements.
+    addEntitlements(this, {
+      stage,
+      httpApi,
+      table,
       commonLambdaProps,
       removalPolicy,
     });

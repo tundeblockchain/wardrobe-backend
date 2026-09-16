@@ -1,6 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
 import { getOwnedWardrobe, keys, queryByPk } from '../../shared/dynamodb';
+import { assertPremiumAi } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import { errorResponse, ok } from '../../shared/http';
 import { OutfitRecommendationsResponse } from '../../shared/types';
@@ -46,6 +47,9 @@ export async function handleRecommendations(
     if (method !== 'GET') {
       throw Errors.validation(`Unsupported method: ${method}`);
     }
+
+    await getOwnedWardrobe(userId, wardrobeId);
+    await assertPremiumAi(userId);
 
     const recommendations = await listRecommendations(userId, wardrobeId, deps);
     const body: OutfitRecommendationsResponse = { recommendations };

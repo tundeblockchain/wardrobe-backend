@@ -204,9 +204,10 @@ describe('wardrobes handler (WARDROBE-5)', () => {
       expect(body).not.toHaveProperty('SK');
       expect(body.createdAt).toBe(body.updatedAt);
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      const command = mockSend.mock.calls[0][0] as Command;
-      expect(command._op).toBe('Put');
+      const command = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Put',
+      )?.[0] as Command;
+      expect(command).toBeDefined();
       expect(command.input.TableName).toBe('wardrobe-app-test');
       expect(command.input.Item).toEqual(
         expect.objectContaining({
@@ -233,10 +234,62 @@ describe('wardrobes handler (WARDROBE-5)', () => {
       );
 
       expect(result.statusCode).toBe(201);
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Put',
+      )?.[0] as Command;
       expect(command.input.Item?.userId).toBe(OWNER_ID);
       expect(command.input.Item?.PK).toBe(`USER#${OWNER_ID}`);
       expect(command.input.Item?.userId).not.toBe(OTHER_ID);
+    });
+
+    it('rejects a second wardrobe on Free with ENTITLEMENT_WARDROBE_LIMIT', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get') {
+          return {};
+        }
+        if (command._op === 'Query') {
+          return { Items: [dynamoWardrobe(OWNER_ID)] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'POST', body: { name: 'Second' } })),
+      );
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_WARDROBE_LIMIT');
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
+      ).toBe(false);
+    });
+
+    it('allows a second wardrobe on Basic', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK === 'ENTITLEMENT') {
+          return {
+            Item: {
+              PK: `USER#${OWNER_ID}`,
+              SK: 'ENTITLEMENT',
+              entityType: 'ENTITLEMENT',
+              userId: OWNER_ID,
+              tier: 'BASIC',
+              status: 'ACTIVE',
+              createdAt: '2026-09-16T00:00:00.000Z',
+              updatedAt: '2026-09-16T00:00:00.000Z',
+            },
+          };
+        }
+        if (command._op === 'Put') {
+          return {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'POST', body: { name: 'Second' } })),
+      );
+
+      expect(result.statusCode).toBe(201);
     });
   });
 

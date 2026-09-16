@@ -9,17 +9,19 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (clear content / delete account), wardrobes, items, outfits, recommendations, uploads, AI profiles, processing, outfit-render |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), wardrobes, items, outfits, recommendations, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, and OpenAI recommender credentials (placeholders) |
+| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, Resend support mail, and Superwall webhook credentials (placeholders) |
 
 Working in this first cut:
 
 - `GET /health` (no auth)
+- `GET /me` (entitlement for Flutter WARDROBE-90)
 - `DELETE /me/content` and `DELETE /me` (clear content / delete account data)
+- `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
@@ -181,23 +183,26 @@ curl -H "Authorization: Bearer $TOKEN" \
 GET /health
 ```
 
-### Account (clear content / delete)
+### Account (entitlement / clear content / delete)
 
 Identity comes from the Firebase authorizer (`getUserId`). Body or query `userId` is ignored.
 
 ```http
+GET    /me
 DELETE /me/content
 DELETE /me
 ```
 
-Both wipe the caller's wardrobes, items, outfits, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`.
+`GET /me` returns the Flutter entitlement DTO (WARDROBE-91). See **Entitlements** below.
 
-| Endpoint | Keeps Firebase Auth user | Flutter next step |
-| --- | --- | --- |
-| `DELETE /me/content` | Yes (`keepAccount: true`) | Session may stay; user starts with empty wardrobes |
-| `DELETE /me` | Yes — this backend does **not** call Firebase Admin | Client deletes the Firebase Auth user after `200` |
+`DELETE` wipes the caller's wardrobes, items, outfits, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`.
 
-Success body (`200`):
+| Endpoint | Keeps Firebase Auth user | Keeps entitlement | Flutter next step |
+| --- | --- | --- | --- |
+| `DELETE /me/content` | Yes (`keepAccount: true`) | Yes | Session may stay; user starts with empty wardrobes |
+| `DELETE /me` | Yes — this backend does **not** call Firebase Admin | No | Client deletes the Firebase Auth user after `200` |
+
+Success body (`200`) for DELETE:
 
 ```json
 {
@@ -212,6 +217,135 @@ Success body (`200`):
 ```
 
 `keepAccount` is `false` on `DELETE /me` (AWS data is gone; Firebase Auth remains until the client deletes it). Missing or invalid tokens return `401` `UNAUTHENTICATED`.
+
+### Entitlements (WARDROBE-91) — Flutter WARDROBE-90 contract
+
+Client Superwall gates are not enough. This API is the source of truth for Free / Basic / Premium.
+
+**Chosen path:** Superwall Svix webhook → verified Dynamo row `USER#{firebaseUid} / ENTITLEMENT`. Firebase custom claims are **not** written or read in this MVP (this stack does not use Firebase Admin). A later ticket may copy `tier` onto claims; do not treat ID-token claims as access.
+
+Flutter must call Superwall `identify` with the **Firebase UID** so webhook `originalAppUserId` (or `userAttributes.firebaseUid`) maps to `USER#{uid}`.
+
+#### Product matrix
+
+| `tier` | Price (store) | Catalog | `features.aiTryOn` | `features.otherAi` |
+| --- | --- | --- | --- | --- |
+| `FREE` | £0 | max 1 wardrobe, 5 items, 5 outfits | false | false |
+| `BASIC` | £5/mo or £50/yr | unlimited (`limits: null`) | false | false |
+| `PREMIUM` | £15/mo or £150/yr | unlimited (`limits: null`) | true | true |
+
+App Store / Play product IDs are **TBD**. Do not hardcode them in the app or this repo. Operators fill `productTiers` in Secrets Manager after the IDs exist.
+
+#### `GET /me`
+
+Call on launch and after Superwall restore / purchase. Identity from the Firebase authorizer.
+
+```http
+GET /me
+Authorization: Bearer <firebase-id-token>
+```
+
+```json
+{
+  "userId": "firebase-uid",
+  "tier": "FREE",
+  "status": "NONE",
+  "features": {
+    "unlimitedCatalog": false,
+    "aiTryOn": false,
+    "otherAi": false
+  },
+  "limits": {
+    "wardrobes": 1,
+    "items": 5,
+    "outfits": 5
+  },
+  "usage": {
+    "wardrobes": 0,
+    "items": 0,
+    "outfits": 0
+  },
+  "updatedAt": "2026-09-16T12:00:00.000Z"
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `tier` | `FREE` \| `BASIC` \| `PREMIUM` | Missing row, unknown product, or past `expiresAt` → `FREE` |
+| `status` | `NONE` \| `ACTIVE` \| `CANCELED` \| `BILLING_ISSUE` \| `PAUSED` \| `EXPIRED` | `CANCELED` still has access until `expiresAt` |
+| `features.unlimitedCatalog` | boolean | `true` on Basic and Premium |
+| `features.aiTryOn` | boolean | Premium only — POST outfit `/render` |
+| `features.otherAi` | boolean | Premium only — recommendations + item-processing enqueue (classify / colour / bg-removal) |
+| `limits` | object or `null` | Free caps. `null` = unlimited |
+| `usage` | object | Current owned counts (all wardrobes) |
+| `productId` / `store` / `period` / `expiresAt` | optional | Soft-omitted when unknown. `store` is `APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`. `period` is `MONTHLY` \| `YEARLY` \| `UNKNOWN` |
+
+Never includes Dynamo `PK` / `SK` / `lastEventId`. Soft-gate UX from this DTO; still handle the error codes below because the server enforces.
+
+Premium item create still enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`. Free / Basic item create skips the AI pipeline, writes `processingStatus: READY`, and does not enqueue.
+
+#### Error codes (map to Superwall)
+
+Same `{ "error": { "code", "message" } }` envelope as the rest of the API. No internal leaks.
+
+| HTTP | `code` | When | Flutter paywall |
+| --- | --- | --- | --- |
+| 403 | `ENTITLEMENT_WARDROBE_LIMIT` | Free already has 1 wardrobe | Basic (or Premium) |
+| 403 | `ENTITLEMENT_ITEM_LIMIT` | Free already has 5 items | Basic (or Premium) |
+| 403 | `ENTITLEMENT_OUTFIT_LIMIT` | Free already has 5 outfits | Basic (or Premium) |
+| 403 | `ENTITLEMENT_AI_REQUIRED` | Free or Basic hit Try On, recommendations, or other AI | Premium |
+
+Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. PATCH / DELETE are not gated. Creating a PERSONAL AI profile is not gated; **using** it for try-on is.
+
+#### Webhook / restore path
+
+```text
+Flutter Superwall purchase or restore
+        │  identify(firebaseUid)
+        v
+Superwall  →  POST /webhooks/superwall  (Svix-signed, no Firebase auth)
+        │  verify svix-id / svix-timestamp / svix-signature
+        │  map productId → BASIC | PREMIUM
+        v
+DynamoDB USER#{uid} / ENTITLEMENT
+        │
+        v
+Flutter GET /me   ← refresh after restore / launch
+```
+
+Public webhook (configure this URL in the Superwall dashboard → Integrations → Webhooks):
+
+```http
+POST /webhooks/superwall
+```
+
+Same Svix scheme as Resend. Invalid signatures return `403 UNAUTHORIZED`. Unknown users return `200 { "status": "ignored", "reason": "unknown_user" }` so Superwall does not retry forever. Duplicate `data.id` returns `200 { "status": "duplicate" }`.
+
+Granting events (`initial_purchase`, `renewal`, `uncancellation`, `product_change`, `non_renewing_purchase`) set `ACTIVE` and map the product. `expiration` sets `FREE`. `cancellation` / `billing_issue` / `subscription_paused` keep the current tier until `expiresAt`. `GET /me` re-evaluates expiry.
+
+After deploy, replace the placeholder (never commit the signing secret or live product IDs):
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/superwall \
+  --secret-string '{"webhookSecret":"whsec_your_signing_secret","productTiers":{}}'
+```
+
+When App Store / Play product IDs exist, add them to `productTiers`:
+
+```json
+{
+  "webhookSecret": "whsec_your_signing_secret",
+  "productTiers": {
+    "<ios-or-android-basic-monthly-id>": "BASIC",
+    "<ios-or-android-basic-yearly-id>": "BASIC",
+    "<ios-or-android-premium-monthly-id>": "PREMIUM",
+    "<ios-or-android-premium-yearly-id>": "PREMIUM"
+  }
+}
+```
+
+Until that map is filled, a product ID containing `premium` / `basic` (case-insensitive) is mapped that way; any other paid grant defaults to **BASIC** (unlimited catalog, no AI). Stack output: `SuperwallWebhookUrl`, `SuperwallSecretName`.
 
 ### Wardrobes
 
@@ -1134,6 +1268,7 @@ Repeat for `02`–`04`. `referenceImages` is a Dynamo string set or list of stri
 ```text
 PK                         SK                         GSI1PK                GSI1SK
 USER#{uid}                 PROFILE
+USER#{uid}                 ENTITLEMENT
 USER#{uid}                 WARDROBE#{wardrobeId}
 USER#{uid}                 AIPROFILE#{aiProfileId}    (omitted — sparse)
 WARDROBE#{wardrobeId}      ITEM#{itemId}
@@ -1146,6 +1281,7 @@ Access patterns:
 ```text
 List caller's PERSONAL profiles     Query PK=USER#{uid} begins_with SK=AIPROFILE#
 Get caller's PERSONAL profile       Get USER#{uid} / AIPROFILE#{id}
+Get caller's entitlement            Get USER#{uid} / ENTITLEMENT
 List GENERIC_MODEL (picker)         Query GSI1 PK=TYPE#GENERIC_MODEL
                                     (fallback: Query PK=AIPROFILE#GENERIC_MODEL)
 Get GENERIC_MODEL                   Get AIPROFILE#GENERIC_MODEL / AIPROFILE#{id}
@@ -1158,6 +1294,7 @@ API responses never expose `PK` / `SK` / `GSI1PK` / `GSI1SK`.
 ```text
 bin/app.ts
 lib/wardrobe-stack.ts
+lib/entitlements.ts    isolated WARDROBE-91 Superwall webhook wiring
 lib/support-mail.ts    isolated WARDROBE-38 Resend wiring (rebase-friendly)
 lib/wardrobe-pipeline-stack.ts
 lib/wardrobe-stage.ts
@@ -1166,7 +1303,8 @@ scripts/ensure-cdk-json.js
 scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDROBE-45)
 src/functions/
   health/
-  me/                  owner-only clear-content + delete-account (WARDROBE-36)
+  me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91)
+  entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
   items/
   outfits/             CRUD + POST/GET render (WARDROBE-47) + append-only history (WARDROBE-85)
@@ -1180,6 +1318,7 @@ src/functions/
 src/shared/
   auth.ts
   dynamodb.ts
+  entitlements.ts
   errors.ts
   http.ts
   ids.ts
@@ -1187,6 +1326,7 @@ src/shared/
   s3.ts
   secrets.ts
   sqs.ts
+  svix.ts
   types.ts
   validation.ts
 ```
