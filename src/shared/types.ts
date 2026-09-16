@@ -243,6 +243,9 @@ export interface Wardrobe {
  * Flutter `ClothingItem`. S3 keys stay on `image.*`.
  * `originalImageUrl` / `processedImageUrl` are short-lived presigned GETs
  * (WARDROBE-54) — never persisted in Dynamo.
+ *
+ * `acquiredAt` is an optional calendar date `YYYY-MM-DD` (WARDROBE-92).
+ * Soft-omitted when unset. Flutter WARDROBE-93 should use this name.
  */
 export interface ClothingItem {
   itemId: string;
@@ -252,6 +255,11 @@ export interface ClothingItem {
   subcategory?: string;
   colours?: string[];
   brand?: string;
+  /**
+   * Optional purchased / acquired calendar date (`YYYY-MM-DD`).
+   * Present only when stored. Never `null`.
+   */
+  acquiredAt?: string;
   image?: {
     originalKey: string;
     processedKey?: string;

@@ -275,19 +275,24 @@ PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 ```
 
-List supports optional smart filters (WARDROBE-21):
+List supports optional smart filters (WARDROBE-21 / WARDROBE-92):
 
 ```http
 GET /wardrobes/{wardrobeId}/items?category=TOP
 GET /wardrobes/{wardrobeId}/items?category=TOP&colour=BLACK
 GET /wardrobes/{wardrobeId}/items?category=TOP&colour=BLACK&subcategory=TSHIRT
+GET /wardrobes/{wardrobeId}/items?acquiredAfter=2024-01-01
+GET /wardrobes/{wardrobeId}/items?acquiredAfter=2024-01-01&acquiredBefore=2025-12-31
+GET /wardrobes/{wardrobeId}/items?category=TOP&acquiredAfter=2024-01-01
 ```
 
 - `category` — controlled `TOP | BOTTOM | DRESS | OUTERWEAR | SHOES | ACCESSORY | BAG`
 - `colour` — controlled WARDROBE-20 tokens (`BLACK`, `WHITE`, `GREY`, `RED`, `BLUE`, `GREEN`, `YELLOW`, `ORANGE`, `PINK`, `PURPLE`, `BROWN`, `BEIGE`, `NAVY`, `CREAM`, `GOLD`, `SILVER`, `BURGUNDY`, `KHAKI`, `TEAL`, `OLIVE`, `MULTICOLOUR`)
 - `subcategory` — optional controlled WARDROBE-19 token (`TSHIRT`, `JEANS`, …)
+- `acquiredAfter` — optional inclusive lower bound on `acquiredAt` (`YYYY-MM-DD`)
+- `acquiredBefore` — optional inclusive upper bound on `acquiredAt` (`YYYY-MM-DD`)
 
-Filters are AND across query params. Within each param, matching is inclusive OR against the user field and AI metadata: `category` matches user `category` or `ai.detectedCategory`; `colour` matches user `colours` or `ai.detectedColours`; `subcategory` matches user `subcategory` or `ai.detectedSubcategory`. Unknown tokens return `400` `VALIDATION_ERROR`. List still returns Flutter `{ "items": [...] }` (no DynamoDB `LastEvaluatedKey`; an opaque `nextCursor` can be added later).
+Filters are AND across query params. Within each param, matching is inclusive OR against the user field and AI metadata: `category` matches user `category` or `ai.detectedCategory`; `colour` matches user `colours` or `ai.detectedColours`; `subcategory` matches user `subcategory` or `ai.detectedSubcategory`. Date bounds compare the stored `acquiredAt` calendar date only (not `createdAt`). Items with no `acquiredAt` are **excluded** when `acquiredAfter` and/or `acquiredBefore` is present. Unknown tokens or invalid dates return `400` `VALIDATION_ERROR`. List still returns Flutter `{ "items": [...] }` (no DynamoDB `LastEvaluatedKey`; an opaque `nextCursor` can be added later).
 
 Create body (`name`, `category`, and `imageKey` required):
 
@@ -298,15 +303,16 @@ Create body (`name`, `category`, and `imageKey` required):
   "subcategory": "TSHIRT",
   "colours": ["BLACK"],
   "brand": "Nike",
+  "acquiredAt": "2024-06-15",
   "imageKey": "users/{uid}/uploads/....jpg"
 }
 ```
 
-`category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user.
+`category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user. `acquiredAt` is optional — see **Acquired date** below.
 
-Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). Empty `subcategory` is soft-omitted on create (`null` / `""` are not stored). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand` / `acquiredAt`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). Empty `subcategory` is soft-omitted on create (`null` / `""` are not stored). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
 
-PATCH may include `name`, `category`, `subcategory`, `colours`, `brand`, and `imageKey`. Omitted fields are left unchanged. For `subcategory` (WARDROBE-87): `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `subcategory`). A non-empty string sets it (trimmed; not restricted to the list-filter enum). Clearing `subcategory` alone is a soft success.
+PATCH may include `name`, `category`, `subcategory`, `colours`, `brand`, `acquiredAt`, and `imageKey`. Omitted fields are left unchanged. For `subcategory` (WARDROBE-87): `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `subcategory`). A non-empty string sets it (trimmed; not restricted to the list-filter enum). Clearing `subcategory` alone is a soft success. `acquiredAt` uses the same omit / clear pattern (WARDROBE-92).
 
 #### Clothing-item image URLs (WARDROBE-54)
 
@@ -321,6 +327,7 @@ The media bucket stays private. Create / list / get / PATCH return short-lived *
   "subcategory": "TSHIRT",
   "colours": ["BLACK"],
   "brand": "Nike",
+  "acquiredAt": "2024-06-15",
   "image": {
     "originalKey": "users/{uid}/uploads/....jpg",
     "processedKey": "users/{uid}/items/{itemId}/processed.png"
@@ -342,6 +349,47 @@ The media bucket stays private. Create / list / get / PATCH return short-lived *
 | `processingError` | `FAILED` only — short worker reason (`originalImageKey` mismatch, permanent Gemini / image error, or exhausted retries). Omitted on PENDING / PROCESSING / READY |
 
 URLs are never written to Dynamo. A presign failure is logged and the URL is omitted; the rest of the item still returns `200` / `201`. Same TTL as `POST /uploads` (`expiresIn: 900`) and outfit `render.imageUrl`.
+
+#### Acquired date (WARDROBE-92) — Flutter WARDROBE-93 contract
+
+**Field name:** `acquiredAt` (string). Same camelCase in the JSON DTO and Dynamo. This is a **calendar date**, not a datetime — `createdAt` / `updatedAt` stay ISO 8601 timestamps.
+
+Flutter WARDROBE-93 should send and read `acquiredAt`. Do not use `purchasedAt`, `acquiredDate`, or `createdAt` for the purchase date.
+
+| JSON / Dynamo field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `acquiredAt` | string | no | ISO date `YYYY-MM-DD` only. Example: `2024-06-15`. Datetimes such as `2024-06-15T12:00:00.000Z` are `400 VALIDATION_ERROR`. |
+| `acquiredAfter` | query string | no | Inclusive lower bound on stored `acquiredAt`. Same `YYYY-MM-DD` format. |
+| `acquiredBefore` | query string | no | Inclusive upper bound on stored `acquiredAt`. Same `YYYY-MM-DD` format. |
+
+Soft-omit / clear (must not break existing create / list / get):
+
+- **Create (`POST /wardrobes/{wardrobeId}/items`)** — omit `acquiredAt`, or send `null` / `""` / whitespace, to skip it. The attribute is not stored. Invalid format or impossible calendar dates (`2024-02-31`) are `400 VALIDATION_ERROR`.
+- **Update (`PATCH /wardrobes/{wardrobeId}/items/{itemId}`)** — omitted → no change. `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `acquiredAt`). A valid date sets it (trimmed). Clearing `acquiredAt` alone is a soft success.
+- **Responses** — present only when a value is stored. Never `null`. Create, list, get, and PATCH all use this DTO.
+- **List filters** — `acquiredAfter` and `acquiredBefore` AND with `category` / `colour` / `subcategory`. Both bounds are inclusive. Items with no `acquiredAt` are excluded when either bound is present (they cannot be proven to fall in range). Blank query values are omitted. Invalid dates are `400 VALIDATION_ERROR` before Dynamo is queried.
+
+PATCH example:
+
+```http
+PATCH /wardrobes/{wardrobeId}/items/{itemId}
+```
+
+```json
+{ "acquiredAt": "2023-11-01" }
+```
+
+Clear:
+
+```json
+{ "acquiredAt": null }
+```
+
+Hide items acquired before 2024:
+
+```http
+GET /wardrobes/{wardrobeId}/items?acquiredAfter=2024-01-01
+```
 
 ### Processing worker
 

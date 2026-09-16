@@ -57,6 +57,33 @@ describe('item list filters (WARDROBE-21)', () => {
         AppError,
       );
     });
+
+    it('parses inclusive acquiredAfter and acquiredBefore dates (WARDROBE-92)', () => {
+      expect(
+        parseItemListFilters({
+          acquiredAfter: '2024-01-01',
+          acquiredBefore: '  2025-12-31  ',
+        }),
+      ).toEqual({
+        acquiredAfter: '2024-01-01',
+        acquiredBefore: '2025-12-31',
+      });
+    });
+
+    it('treats blank acquired date query values as omitted', () => {
+      expect(
+        parseItemListFilters({ acquiredAfter: '', acquiredBefore: undefined }),
+      ).toEqual({});
+    });
+
+    it('throws VALIDATION_ERROR for invalid acquired date filters', () => {
+      expect(() =>
+        parseItemListFilters({ acquiredAfter: '2024-06-15T00:00:00.000Z' }),
+      ).toThrow(AppError);
+      expect(() => parseItemListFilters({ acquiredBefore: '2024-02-31' })).toThrow(
+        AppError,
+      );
+    });
   });
 
   describe('itemMatchesFilters', () => {
@@ -111,6 +138,51 @@ describe('item list filters (WARDROBE-21)', () => {
         itemMatchesFilters(item(), {
           category: 'TOP',
           colour: 'RED',
+        }),
+      ).toBe(false);
+    });
+
+    it('matches inclusive acquiredAt bounds and ANDs with other filters (WARDROBE-92)', () => {
+      const dated = item({ acquiredAt: '2024-06-15' });
+      expect(itemMatchesFilters(dated, { acquiredAfter: '2024-06-15' })).toBe(
+        true,
+      );
+      expect(itemMatchesFilters(dated, { acquiredAfter: '2024-06-16' })).toBe(
+        false,
+      );
+      expect(itemMatchesFilters(dated, { acquiredBefore: '2024-06-15' })).toBe(
+        true,
+      );
+      expect(itemMatchesFilters(dated, { acquiredBefore: '2024-06-14' })).toBe(
+        false,
+      );
+      expect(
+        itemMatchesFilters(dated, {
+          acquiredAfter: '2024-01-01',
+          acquiredBefore: '2024-12-31',
+        }),
+      ).toBe(true);
+      expect(
+        itemMatchesFilters(dated, {
+          category: 'TOP',
+          acquiredAfter: '2024-01-01',
+        }),
+      ).toBe(true);
+      expect(
+        itemMatchesFilters(dated, {
+          category: 'BOTTOM',
+          acquiredAfter: '2024-01-01',
+        }),
+      ).toBe(false);
+    });
+
+    it('excludes items with no acquiredAt when a date bound is present', () => {
+      expect(
+        itemMatchesFilters(item(), { acquiredAfter: '2020-01-01' }),
+      ).toBe(false);
+      expect(
+        itemMatchesFilters(item({ acquiredAt: 'not-a-date' }), {
+          acquiredBefore: '2025-01-01',
         }),
       ).toBe(false);
     });

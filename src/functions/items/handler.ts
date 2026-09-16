@@ -29,6 +29,7 @@ import {
   ProcessingStatus,
 } from '../../shared/types';
 import {
+  optionalIsoDate,
   optionalNonEmptyString,
   optionalStringArray,
   requireCategory,
@@ -47,6 +48,7 @@ interface CreateItemBody {
   subcategory?: unknown;
   colours?: unknown;
   brand?: unknown;
+  acquiredAt?: unknown;
   imageKey?: unknown;
   userId?: unknown;
   processingStatus?: unknown;
@@ -58,6 +60,7 @@ interface UpdateItemBody {
   subcategory?: unknown;
   colours?: unknown;
   brand?: unknown;
+  acquiredAt?: unknown;
   imageKey?: unknown;
   userId?: unknown;
   processingStatus?: unknown;
@@ -148,6 +151,7 @@ async function createItem(
   const subcategory = optionalNonEmptyString(body.subcategory, 'subcategory');
   const colours = optionalStringArray(body.colours, 'colours');
   const brand = optionalNonEmptyString(body.brand, 'brand');
+  const acquiredAt = optionalIsoDate(body.acquiredAt, 'acquiredAt');
 
   const itemId = newItemId();
   const timestamp = nowIso();
@@ -164,6 +168,7 @@ async function createItem(
     subcategory,
     colours,
     brand,
+    acquiredAt,
     originalKey: imageKey,
     processingStatus: CREATE_PROCESSING_STATUS,
     createdAt: timestamp,
@@ -240,6 +245,19 @@ async function updateItem(
   if (body.brand !== undefined) {
     updates.brand = requireNonEmptyString(body.brand, 'brand');
   }
+  // WARDROBE-92: omitted → no change; null / blank / whitespace → REMOVE.
+  if (body.acquiredAt !== undefined) {
+    const raw =
+      typeof body.acquiredAt === 'string'
+        ? body.acquiredAt.trim()
+        : body.acquiredAt;
+    const acquiredAt = optionalIsoDate(raw, 'acquiredAt');
+    if (acquiredAt === undefined) {
+      remove.push('acquiredAt');
+    } else {
+      updates.acquiredAt = acquiredAt;
+    }
+  }
   if (body.imageKey !== undefined) {
     updates.originalKey = requireOwnedImageKey(body.imageKey, userId);
   }
@@ -286,6 +304,9 @@ async function toClothingItem(item: DynamoItem): Promise<ClothingItem> {
   }
   if (typeof item.brand === 'string') {
     dto.brand = item.brand;
+  }
+  if (typeof item.acquiredAt === 'string' && item.acquiredAt.trim()) {
+    dto.acquiredAt = item.acquiredAt;
   }
   if (
     dto.processingStatus === 'FAILED' &&

@@ -499,6 +499,87 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       expect(put.input.Item?.subcategory).toBeUndefined();
     });
 
+    it('stores acquiredAt on create and returns it on the DTO (WARDROBE-92)', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Put') {
+          return {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            body: createBody({ acquiredAt: '  2024-06-15  ' }),
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(201);
+      expect((bodyOf(result) as ClothingItem).acquiredAt).toBe('2024-06-15');
+
+      const put = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Put',
+      )?.[0] as Command;
+      expect(put.input.Item?.acquiredAt).toBe('2024-06-15');
+    });
+
+    it.each([
+      ['omitted', undefined],
+      ['null', null],
+      ['blank', ''],
+      ['whitespace-only', '   '],
+    ])(
+      'soft-omits %s acquiredAt on create (WARDROBE-92)',
+      async (_label, acquiredAt) => {
+        mockOwnedWardrobeThen(async (command) => {
+          if (command._op === 'Put') {
+            return {};
+          }
+          throw new Error(`unexpected op ${command._op}`);
+        });
+
+        const body =
+          acquiredAt === undefined
+            ? createBody()
+            : createBody({ acquiredAt });
+        const result = asResult(
+          await handler(event({ method: 'POST', body })),
+        );
+
+        expect(result.statusCode).toBe(201);
+        expect(bodyOf(result) as ClothingItem).not.toHaveProperty('acquiredAt');
+
+        const put = mockSend.mock.calls.find(
+          (call) => (call[0] as Command)._op === 'Put',
+        )?.[0] as Command;
+        expect(put.input.Item?.acquiredAt).toBeUndefined();
+      },
+    );
+
+    it.each([
+      ['datetime', '2024-06-15T12:00:00.000Z', 'acquiredAt must be an ISO date (YYYY-MM-DD).'],
+      ['invalid calendar', '2024-02-31', 'acquiredAt must be a valid calendar date (YYYY-MM-DD).'],
+    ])(
+      'returns 400 VALIDATION_ERROR for %s acquiredAt on create',
+      async (_label, acquiredAt, message) => {
+        const result = asResult(
+          await handler(
+            event({ method: 'POST', body: createBody({ acquiredAt }) }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(400);
+        expect(bodyOf(result)).toEqual({
+          error: { code: 'VALIDATION_ERROR', message },
+        });
+        expect(
+          mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
+        ).toBe(false);
+      },
+    );
+
     it('accepts an owned non-uploads path as imageKey', async () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Put') {
@@ -902,6 +983,98 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
         expect(mockSend).not.toHaveBeenCalled();
       },
     );
+
+    it('returns acquiredAt on listed items when stored (WARDROBE-92)', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoItem(OWNER_ID, { acquiredAt: '2024-06-15' })],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        items: [itemDto({ acquiredAt: '2024-06-15' })],
+      });
+    });
+
+    it('filters by acquiredAfter / acquiredBefore and ANDs with category (WARDROBE-92)', async () => {
+      const inRange = dynamoItem(OWNER_ID, { acquiredAt: '2024-06-15' });
+      const tooOld = dynamoItem(OWNER_ID, {
+        itemId: 'item_old000001',
+        SK: 'ITEM#item_old000001',
+        acquiredAt: '2020-01-01',
+      });
+      const undated = dynamoItem(OWNER_ID, {
+        itemId: 'item_nodate001',
+        SK: 'ITEM#item_nodate001',
+      });
+      const wrongCategory = dynamoItem(OWNER_ID, {
+        itemId: 'item_shoesdate',
+        SK: 'ITEM#item_shoesdate',
+        category: 'SHOES',
+        subcategory: 'SNEAKERS',
+        acquiredAt: '2024-06-15',
+      });
+
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [inRange, tooOld, undated, wrongCategory] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const after = asResult(
+        await handler(
+          event({ method: 'GET', query: { acquiredAfter: '2024-01-01' } }),
+        ),
+      );
+      expect(after.statusCode).toBe(200);
+      expect(
+        (bodyOf(after) as { items: ClothingItem[] }).items.map((item) => item.itemId),
+      ).toEqual([ITEM_ID, 'item_shoesdate']);
+
+      const ranged = asResult(
+        await handler(
+          event({
+            method: 'GET',
+            query: {
+              category: 'TOP',
+              acquiredAfter: '2024-01-01',
+              acquiredBefore: '2024-12-31',
+            },
+          }),
+        ),
+      );
+      expect(ranged.statusCode).toBe(200);
+      expect(
+        (bodyOf(ranged) as { items: ClothingItem[] }).items.map((item) => item.itemId),
+      ).toEqual([ITEM_ID]);
+    });
+
+    it('returns 400 VALIDATION_ERROR for an invalid acquiredAfter before querying items', async () => {
+      const result = asResult(
+        await handler(
+          event({
+            method: 'GET',
+            query: { acquiredAfter: '2024-06-15T00:00:00.000Z' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(400);
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'acquiredAfter must be an ISO date (YYYY-MM-DD).',
+        },
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /wardrobes/{wardrobeId}/items/{itemId}', () => {
@@ -932,6 +1105,25 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
         PK: `WARDROBE#${WARDROBE_ID}`,
         SK: `ITEM#${ITEM_ID}`,
       });
+    });
+
+    it('returns acquiredAt on get when stored (WARDROBE-92)', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: dynamoItem(OWNER_ID, { acquiredAt: '2023-11-01' }) };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(itemDto({ acquiredAt: '2023-11-01' }));
     });
 
     it('includes processedKey on the Flutter image object when stored', async () => {
@@ -1331,6 +1523,146 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
           ':updatedAt': expect.stringMatching(ISO8601),
         }),
       );
+    });
+
+    it('leaves acquiredAt unchanged when the field is omitted (WARDROBE-92)', async () => {
+      mockOwnedItemThenUpdate((command) => ({
+        ...dynamoItem(OWNER_ID, { acquiredAt: '2024-06-15' }),
+        name: String(command.input.ExpressionAttributeValues?.[':name'] ?? ''),
+        updatedAt: String(
+          command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+        ),
+      }));
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            itemId: ITEM_ID,
+            body: { name: 'White Shirt' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect((bodyOf(result) as ClothingItem).acquiredAt).toBe('2024-06-15');
+
+      const update = patchUpdateCommand();
+      expect(update.input.UpdateExpression).not.toMatch(/acquiredAt/i);
+      expect(update.input.ExpressionAttributeValues).not.toHaveProperty(
+        ':acquiredAt',
+      );
+      expect(update.input.ExpressionAttributeNames ?? {}).not.toHaveProperty(
+        '#acquiredAt',
+      );
+    });
+
+    it.each([
+      ['null', null],
+      ['blank', ''],
+      ['whitespace-only', '   '],
+    ])(
+      'clears acquiredAt when PATCH sends %s (WARDROBE-92)',
+      async (_label, acquiredAt) => {
+        mockOwnedItemThenUpdate((command) => {
+          const { acquiredAt: _cleared, ...rest } = dynamoItem(OWNER_ID, {
+            acquiredAt: '2024-06-15',
+          });
+          return {
+            ...rest,
+            updatedAt: String(
+              command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+            ),
+          };
+        });
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { acquiredAt },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        expect(bodyOf(result) as ClothingItem).not.toHaveProperty('acquiredAt');
+
+        const update = patchUpdateCommand();
+        expect(update.input.UpdateExpression).toContain('REMOVE #acquiredAt');
+        expect(update.input.ExpressionAttributeNames).toEqual(
+          expect.objectContaining({ '#acquiredAt': 'acquiredAt' }),
+        );
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(
+          ':acquiredAt',
+        );
+        expect(update.input.ExpressionAttributeValues).toEqual(
+          expect.objectContaining({
+            ':updatedAt': expect.stringMatching(ISO8601),
+          }),
+        );
+      },
+    );
+
+    it('sets acquiredAt to a trimmed ISO date (WARDROBE-92)', async () => {
+      mockOwnedItemThenUpdate((command) => ({
+        ...dynamoItem(),
+        acquiredAt: String(
+          command.input.ExpressionAttributeValues?.[':acquiredAt'] ?? '',
+        ),
+        updatedAt: String(
+          command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+        ),
+      }));
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            itemId: ITEM_ID,
+            body: { acquiredAt: '  2023-11-01  ' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect((bodyOf(result) as ClothingItem).acquiredAt).toBe('2023-11-01');
+
+      const update = patchUpdateCommand();
+      expect(update.input.UpdateExpression).toContain('#acquiredAt = :acquiredAt');
+      expect(update.input.UpdateExpression).not.toContain('REMOVE');
+      expect(update.input.ExpressionAttributeValues).toEqual(
+        expect.objectContaining({
+          ':acquiredAt': '2023-11-01',
+          ':updatedAt': expect.stringMatching(ISO8601),
+        }),
+      );
+    });
+
+    it('returns 400 VALIDATION_ERROR when PATCH acquiredAt is invalid', async () => {
+      mockOwnedItemThenUpdate(dynamoItem());
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            itemId: ITEM_ID,
+            body: { acquiredAt: '2024-06-15T12:00:00.000Z' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(400);
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'acquiredAt must be an ISO date (YYYY-MM-DD).',
+        },
+      });
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
+      ).toBe(false);
     });
   });
 
