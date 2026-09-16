@@ -1100,6 +1100,15 @@ GET /wardrobes/{wardrobeId}/recommendations
 
 Owner-only. Returns suggested outfits as `{ recommendations: [ { name?, items: [{ itemId, slot }] } ] }`. Does not persist outfits.
 
+### Related shopping links (WARDROBE-96)
+
+```http
+GET /wardrobes/{wardrobeId}/items/{itemId}/shopping-links
+GET /shopping-links?limit=5&linksPerItem=8
+```
+
+Owner-only. Not entitlement-gated. See README “Related shopping links (WARDROBE-96)” for the Flutter WARDROBE-95 contract.
+
 ### Uploads
 
 ```http

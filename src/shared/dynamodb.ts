@@ -34,6 +34,12 @@ export const keys = {
   profileSk: 'PROFILE',
   /** WARDROBE-91 Superwall-verified subscription row. */
   entitlementSk: 'ENTITLEMENT',
+  /**
+   * WARDROBE-96 related-shopping cache (24h Dynamo TTL on `ttl`).
+   * One row per owned item; fingerprint mismatch or expiry is a miss.
+   */
+  shoppingCacheSk: (itemId: string) => `SHOPPING#${itemId}`,
+  shoppingCacheSkPrefix: 'SHOPPING#',
   aiProfileSk: (aiProfileId: string) => `AIPROFILE#${aiProfileId}`,
   /** Catalog partition for seeded GENERIC_MODEL rows (WARDROBE-45). */
   genericModelPk: () => 'AIPROFILE#GENERIC_MODEL',

@@ -575,6 +575,47 @@ describe('me handler (WARDROBE-36)', () => {
       );
     });
 
+    it('wipes shopping-link cache rows under USER# / SHOPPING#', async () => {
+      const cache: DynamoItem = {
+        PK: `USER#${OWNER_ID}`,
+        SK: `SHOPPING#${ITEM_ID}`,
+        entityType: 'SHOPPING_CACHE',
+        userId: OWNER_ID,
+        itemId: ITEM_ID,
+        wardrobeId: WARDROBE_ID,
+        cacheKey: 'abc',
+        keywords: ['black tee'],
+        links: [{ title: 'Tee', url: 'https://example.com' }],
+        ttl: 1_800_000_000,
+        createdAt: '2026-09-16T00:00:00.000Z',
+        updatedAt: '2026-09-16T00:00:00.000Z',
+      };
+
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          const sk = command.input.ExpressionAttributeValues?.[':sk'];
+          if (pk === `USER#${OWNER_ID}` && sk === 'SHOPPING#') {
+            return { Items: [cache] };
+          }
+          return { Items: [] };
+        }
+        if (command._op === 'Get' || command._op === 'Delete') {
+          return {};
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+      mockS3Send.mockResolvedValue({ Contents: [], IsTruncated: false });
+
+      const result = asResult(await handler(event({ path: '/me/content' })));
+
+      expect(result.statusCode).toBe(200);
+      expect(deletedKeys()).toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: `SHOPPING#${ITEM_ID}`,
+      });
+    });
+
     it('does not delete another user wardrobe children even if they share a PK', async () => {
       mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
         if (command._op === 'Query') {
