@@ -3,6 +3,7 @@ import {
   optionalFiniteNumber,
   optionalInteger,
   optionalIntegerInRange,
+  optionalIsoDate,
   optionalNonEmptyString,
   optionalQueryString,
   optionalReferenceImages,
@@ -13,6 +14,7 @@ import {
   requireCategory,
   requireColour,
   requireCreatePersonalType,
+  requireIsoDate,
   requireNonEmptyString,
   requireOutfitItems,
   requireOwnedAiProfileReferenceKey,
@@ -186,6 +188,47 @@ describe('validation', () => {
 
     it('returns a trimmed string when present', () => {
       expect(optionalQueryString('  BLACK  ', 'colour')).toBe('BLACK');
+    });
+  });
+
+  describe('optionalIsoDate (WARDROBE-92)', () => {
+    it('returns undefined for missing, null, blank, or whitespace', () => {
+      expect(optionalIsoDate(undefined, 'acquiredAt')).toBeUndefined();
+      expect(optionalIsoDate(null, 'acquiredAt')).toBeUndefined();
+      expect(optionalIsoDate('', 'acquiredAt')).toBeUndefined();
+      expect(optionalIsoDate('   ', 'acquiredAt')).toBeUndefined();
+    });
+
+    it('returns a trimmed YYYY-MM-DD calendar date', () => {
+      expect(optionalIsoDate('  2024-06-15  ', 'acquiredAt')).toBe('2024-06-15');
+      expect(requireIsoDate('2024-02-29', 'acquiredAt')).toBe('2024-02-29');
+    });
+
+    it('throws VALIDATION_ERROR for datetimes and invalid calendars', () => {
+      expect(() => optionalIsoDate('2024-06-15T12:00:00.000Z', 'acquiredAt')).toThrow(
+        AppError,
+      );
+      expect(() => optionalIsoDate('15/06/2024', 'acquiredAt')).toThrow(AppError);
+      expect(() => optionalIsoDate('2024-02-31', 'acquiredAt')).toThrow(AppError);
+      expect(() => optionalIsoDate('2025-02-29', 'acquiredAt')).toThrow(AppError);
+      expect(() => optionalIsoDate(20240615, 'acquiredAt')).toThrow(AppError);
+      try {
+        optionalIsoDate('2024-13-01', 'acquiredAt');
+      } catch (err) {
+        const appErr = err as AppError;
+        expect(appErr.code).toBe('VALIDATION_ERROR');
+        expect(appErr.statusCode).toBe(400);
+        expect(appErr.message).toBe(
+          'acquiredAt must be a valid calendar date (YYYY-MM-DD).',
+        );
+      }
+      try {
+        optionalIsoDate('not-a-date', 'acquiredAfter');
+      } catch (err) {
+        const appErr = err as AppError;
+        expect(appErr.code).toBe('VALIDATION_ERROR');
+        expect(appErr.message).toBe('acquiredAfter must be an ISO date (YYYY-MM-DD).');
+      }
     });
   });
 

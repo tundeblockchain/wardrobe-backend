@@ -6,6 +6,8 @@ import {
   GarmentAiMetadata,
 } from '../../shared/types';
 import {
+  isIsoDate,
+  optionalIsoDate,
   optionalQueryString,
   requireCategory,
   requireColour,
@@ -19,6 +21,9 @@ import {
  * - `category` matches user `category` OR `ai.detectedCategory`
  * - `colour` matches user `colours` OR `ai.detectedColours`
  * - `subcategory` matches user `subcategory` OR `ai.detectedSubcategory`
+ * - `acquiredAfter` / `acquiredBefore` match stored `acquiredAt` (inclusive
+ *   `YYYY-MM-DD`). Items with no `acquiredAt` are excluded when either
+ *   bound is present.
  *
  * Query `userId` is ignored. Identity always comes from `getUserId`.
  */
@@ -26,6 +31,8 @@ export interface ItemListFilters {
   category?: ClothingCategory;
   colour?: ClothingColour;
   subcategory?: ClothingSubcategory;
+  acquiredAfter?: string;
+  acquiredBefore?: string;
 }
 
 export function parseItemListFilters(
@@ -48,6 +55,16 @@ export function parseItemListFilters(
     filters.subcategory = requireSubcategory(subcategory);
   }
 
+  const acquiredAfter = optionalIsoDate(query?.acquiredAfter, 'acquiredAfter');
+  if (acquiredAfter !== undefined) {
+    filters.acquiredAfter = acquiredAfter;
+  }
+
+  const acquiredBefore = optionalIsoDate(query?.acquiredBefore, 'acquiredBefore');
+  if (acquiredBefore !== undefined) {
+    filters.acquiredBefore = acquiredBefore;
+  }
+
   return filters;
 }
 
@@ -62,6 +79,9 @@ export function itemMatchesFilters(
     return false;
   }
   if (filters.subcategory && !matchesSubcategory(item, filters.subcategory)) {
+    return false;
+  }
+  if (!matchesAcquiredRange(item, filters)) {
     return false;
   }
   return true;
@@ -94,6 +114,26 @@ function matchesSubcategory(
     return true;
   }
   return normalizeToken(asAi(item.ai)?.detectedSubcategory) === subcategory;
+}
+
+function matchesAcquiredRange(
+  item: DynamoItem,
+  filters: ItemListFilters,
+): boolean {
+  if (!filters.acquiredAfter && !filters.acquiredBefore) {
+    return true;
+  }
+  if (!isIsoDate(item.acquiredAt)) {
+    return false;
+  }
+  const acquiredAt = item.acquiredAt.trim();
+  if (filters.acquiredAfter && acquiredAt < filters.acquiredAfter) {
+    return false;
+  }
+  if (filters.acquiredBefore && acquiredAt > filters.acquiredBefore) {
+    return false;
+  }
+  return true;
 }
 
 function stringList(value: unknown): unknown[] {

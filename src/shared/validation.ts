@@ -81,6 +81,80 @@ export function optionalQueryString(
   return requireNonEmptyString(value, field, 32);
 }
 
+/** Calendar date stored and returned as `YYYY-MM-DD` (WARDROBE-92). */
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2 && isLeapYear(year)) {
+    return 29;
+  }
+  return DAYS_IN_MONTH[month] ?? 0;
+}
+
+/** True when a stored value is a valid `YYYY-MM-DD` calendar date. */
+export function isIsoDate(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const match = ISO_DATE_PATTERN.exec(value.trim());
+  if (!match) {
+    return false;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  return (
+    year >= 1 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month)
+  );
+}
+
+/**
+ * Require a valid Gregorian calendar date as `YYYY-MM-DD`.
+ * Datetimes (`2026-09-16T12:00:00.000Z`) are rejected.
+ */
+export function requireIsoDate(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw Errors.validation(`${field} must be a string.`);
+  }
+
+  const trimmed = value.trim();
+  if (!isIsoDate(trimmed)) {
+    if (!ISO_DATE_PATTERN.test(trimmed)) {
+      throw Errors.validation(`${field} must be an ISO date (YYYY-MM-DD).`);
+    }
+    throw Errors.validation(`${field} must be a valid calendar date (YYYY-MM-DD).`);
+  }
+
+  return trimmed;
+}
+
+/**
+ * Optional calendar date. Missing / null / blank / whitespace are omitted.
+ * Present but invalid values are `400 VALIDATION_ERROR`.
+ */
+export function optionalIsoDate(
+  value: unknown,
+  field: string,
+): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value === 'string' && value.trim() === '') {
+    return undefined;
+  }
+  return requireIsoDate(value, field);
+}
+
 export function requireSlot(value: unknown, field = 'slot'): OutfitSlot {
   return requireControlledSlot(value, field);
 }
