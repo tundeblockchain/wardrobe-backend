@@ -132,6 +132,15 @@ async function collectOwnedRows(
     add(profile.PK, profile.SK, 'AIPROFILE');
   }
 
+  const shoppingCaches = (
+    await queryByPk(keys.userPk(userId), keys.shoppingCacheSkPrefix)
+  ).filter(
+    (item) => item.entityType === 'SHOPPING_CACHE' && item.userId === userId,
+  );
+  for (const cache of shoppingCaches) {
+    add(cache.PK, cache.SK, 'SHOPPING_CACHE');
+  }
+
   const wardrobes = (await queryByPk(keys.userPk(userId), 'WARDROBE#')).filter(
     (item) => item.entityType === 'WARDROBE' && item.userId === userId,
   );

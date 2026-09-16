@@ -9,12 +9,12 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), wardrobes, items, outfits, recommendations, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), wardrobes, items, outfits, recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, Resend support mail, and Superwall webhook credentials (placeholders) |
+| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, OpenAI shopping keywords, Bright Data SERP, Resend support mail, and Superwall webhook credentials (placeholders) |
 
 Working in this first cut:
 
@@ -26,6 +26,7 @@ Working in this first cut:
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
 - Owner-only outfit recommendations (derived, never auto-saved)
+- Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
 - AI Profile CRUD plus PERSONAL reference-image presign/attach, seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73)
 - Outfit try-on worker (Gemini `generateContent` image; writes a unique `users/{uid}/outfits/{outfitId}/renders/{renderId}.png` and appends it to outfit history)
@@ -826,6 +827,185 @@ Defaults when omitted: model `gpt-4o-mini`, endpoint `https://api.openai.com/v1/
 
 Unit tests inject `fetchSecret` / `httpPost` (or the rule-based strategy) — no live OpenAI calls in CI.
 
+### Related shopping links (WARDROBE-96) — Flutter WARDROBE-95 contract
+
+Not entitlement-gated. **Free, Basic, and Premium** may call these routes. The handler does **not** read `USER#{uid}/ENTITLEMENT` and never returns `ENTITLEMENT_*`.
+
+Identity comes from the Firebase authorizer (`getUserId`). Body or query `userId` is ignored.
+
+```http
+GET /wardrobes/{wardrobeId}/items/{itemId}/shopping-links
+GET /shopping-links?limit=5&linksPerItem=8
+```
+
+| Route | Behaviour |
+| --- | --- |
+| Item-scoped | Shopping links for one **owned** item |
+| Home / mixed | Up to `limit` **recent** items across the caller’s wardrobes (newest `updatedAt` first). Each item returns up to `linksPerItem` cards |
+
+Query params (Home). Blank values are omitted. Invalid values are `400 VALIDATION_ERROR` before Dynamo is queried.
+
+| Query | Default | Min | Max |
+| --- | --- | --- | --- |
+| `limit` | 5 | 1 | 10 |
+| `linksPerItem` | 8 | 1 | 12 |
+
+Item-scoped also accepts `linksPerItem` (same bounds). `limit` is ignored there unless present and invalid (`400`).
+
+#### Link object (soft-omit unset; never `null`)
+
+`title` (string, required), `url` (string, required), optional `merchant`, `price` (string), `currency`, `imageUrl`.
+
+`data:` image payloads from SERP are dropped. If Bright Data returns a product title but no product URL, `url` is a Google Shopping search for that title so Flutter always has a tappable link.
+
+#### Item response
+
+```json
+{
+  "itemId": "item_xyz123abcd",
+  "wardrobeId": "wd_abc123xyz0",
+  "keywords": ["black nike t-shirt", "mens black crew neck tee"],
+  "cached": false,
+  "links": [
+    {
+      "title": "Nike Sportswear Club Tee",
+      "url": "https://www.example.com/product",
+      "merchant": "Nike",
+      "price": "£24.99",
+      "currency": "GBP",
+      "imageUrl": "https://..."
+    }
+  ]
+}
+```
+
+Optional `warning` is present only when the response is degraded:
+
+```json
+{
+  "warning": {
+    "code": "SHOPPING_UPSTREAM_UNAVAILABLE",
+    "message": "Shopping links are temporarily unavailable."
+  }
+}
+```
+
+#### Home response
+
+```json
+{
+  "items": [
+    {
+      "itemId": "item_xyz123abcd",
+      "wardrobeId": "wd_abc123xyz0",
+      "keywords": ["black nike t-shirt"],
+      "cached": true,
+      "links": []
+    }
+  ]
+}
+```
+
+Home returns a section only for items that were considered. If every considered item fails upstream with no cache, `items` is `[]`.
+
+#### Errors / soft-fail
+
+| Case | HTTP | `code` |
+| --- | --- | --- |
+| Missing token | 401 | `UNAUTHENTICATED` |
+| Missing / other-user wardrobe | 404 | `WARDROBE_NOT_FOUND` |
+| Missing / other-user item | 404 | `ITEM_NOT_FOUND` |
+| Invalid `limit` / `linksPerItem` | 400 | `VALIDATION_ERROR` |
+| OpenAI / Bright Data errors, timeouts, missing or placeholder secrets, parse failures | **200** | empty `links` (item-scoped) or omitted Home rows / `items: []`. Optional per-item `warning.code = SHOPPING_UPSTREAM_UNAVAILABLE` |
+
+Never 5xx for upstream blips. Missing wardrobe/item stays 404 (not a soft-fail).
+
+#### Pipeline (server-side only)
+
+1. Load item metadata (name, category, subcategory, colours, brand, AI detections when present) and the item image from S3 (**processed key preferred**, else original).
+2. Call **OpenAI** vision/chat (`gpt-4o-mini` default) on the image + metadata → search keywords.
+3. Call **Bright Data SERP API** (`POST https://api.brightdata.com/request`) with Google Shopping (`tbm=shop`, `udm=28`, `brd_json=1`).
+4. Map SERP products onto the Link DTO.
+
+Flutter never talks to OpenAI or Bright Data.
+
+#### Secrets (NEW paths)
+
+Never commit keys. CDK creates placeholders; replace them after deploy. Stack outputs: `OpenAiShoppingSecretName`, `BrightDataSecretName`.
+
+**OpenAI shopping keywords** — `wardrobe/{stage}/openai-shopping`
+
+Raw API key, or JSON `{ "apiKey", "model?", "endpoint?" }` (`api_key` / `key` / `openaiApiKey` also accepted). Defaults: model `gpt-4o-mini`, endpoint `https://api.openai.com/v1/chat/completions`.
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/openai-shopping \
+  --secret-string '{"apiKey":"sk-your-openai-key","model":"gpt-4o-mini"}'
+```
+
+```bash
+# raw key also works
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/openai-shopping \
+  --secret-string "sk-your-openai-key"
+```
+
+The shopping-links Lambda reads `OPENAI_SHOPPING_SECRET_ARN` at runtime. Optional env / secret overrides: `OPENAI_SHOPPING_MODEL`, `OPENAI_SHOPPING_ENDPOINT`.
+
+**Bright Data SERP** — `wardrobe/{stage}/bright-data`
+
+JSON only (a raw string is rejected):
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `apiToken` | yes | Bearer token. Aliases: `api_token`, `token`, `apiKey`, `api_key`, `key` |
+| `zone` | yes | SERP zone name (e.g. `serp_api1`). Alias: `zoneName` |
+| `endpoint` | no | Default `https://api.brightdata.com/request` |
+| `customer` | no | Bright Data customer id (documented for operators; REST `/request` uses `apiToken` + `zone`) |
+| `country` | no | ISO country for SERP targeting. Default `gb`. Aliases: `gl`, `geo` |
+| `language` | no | Default `en`. Aliases: `hl`, `lang` |
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/bright-data \
+  --secret-string '{"apiToken":"your-bright-data-api-token","zone":"serp_api1","country":"gb","language":"en"}'
+```
+
+Request body sent to Bright Data:
+
+```json
+{
+  "zone": "serp_api1",
+  "url": "https://www.google.com/search?q=...&tbm=shop&udm=28&hl=en&gl=gb&brd_json=1",
+  "format": "raw",
+  "method": "GET",
+  "country": "gb"
+}
+```
+
+Do **not** put these keys in the Flutter app.
+
+#### Cache (MVP)
+
+DynamoDB single-table row, **TTL 24h**:
+
+```text
+PK  USER#{uid}
+SK  SHOPPING#{itemId}
+entityType  SHOPPING_CACHE
+ttl         unix seconds (Dynamo TTL attribute)
+```
+
+**Cache key** = SHA-256 of `userId` + `itemId` + preferred image object key + a stable metadata fingerprint (name / category / subcategory / colours / brand). Keywords and the SERP query are stored on the row (so a cache hit skips OpenAI and Bright Data). Changing the image key or those metadata fields is a miss.
+
+- Fresh match → `cached: true`, no vendor calls.
+- **Stale-while-error:** if OpenAI or Bright Data fails and a prior cache row exists for that item — even if **expired** or the fingerprint no longer matches — that row is returned (`cached: true`) plus `warning: SHOPPING_UPSTREAM_UNAVAILABLE` instead of empty links.
+- Cache write failures are logged and do not fail the request.
+
+Account wipe (`DELETE /me` / `DELETE /me/content`) also deletes these `SHOPPING#` rows.
+
+Unit tests inject `fetchSecret` / HTTP clients / cache / S3 image loader — no live OpenAI or Bright Data in CI.
+
 ## Auth
 
 Identity always comes from the validated Firebase token (`sub` = Firebase UID). Clients must not send `userId` as proof of ownership.
@@ -1271,6 +1451,7 @@ USER#{uid}                 PROFILE
 USER#{uid}                 ENTITLEMENT
 USER#{uid}                 WARDROBE#{wardrobeId}
 USER#{uid}                 AIPROFILE#{aiProfileId}    (omitted — sparse)
+USER#{uid}                 SHOPPING#{itemId}          (24h TTL cache)
 WARDROBE#{wardrobeId}      ITEM#{itemId}
 WARDROBE#{wardrobeId}      OUTFIT#{outfitId}
 AIPROFILE#GENERIC_MODEL    AIPROFILE#{aiProfileId}    TYPE#GENERIC_MODEL    AIPROFILE#{aiProfileId}
@@ -1309,6 +1490,7 @@ src/functions/
   items/
   outfits/             CRUD + POST/GET render (WARDROBE-47) + append-only history (WARDROBE-85)
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
+  shopping-links/      owner-only related shopping (WARDROBE-96); OpenAI keywords + Bright Data SERP
   uploads/
   ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45); body context (80)
   processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline

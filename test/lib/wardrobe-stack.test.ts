@@ -49,6 +49,10 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
         { AttributeName: 'SK', KeyType: 'RANGE' },
       ],
       SSESpecification: { SSEEnabled: true },
+      TimeToLiveSpecification: {
+        AttributeName: 'ttl',
+        Enabled: true,
+      },
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({
           IndexName: 'GSI1',
@@ -314,6 +318,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'MeFn',
       'WardrobesFn',
       'RecommendationsFn',
+      'ShoppingLinksFn',
       'UploadsFn',
       'AuthorizerFn',
       'AiProfilesFn',
@@ -903,6 +908,118 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     const synthesized = JSON.stringify(template.toJSON());
     expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
     expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
+  });
+
+  test('shopping-links routes are owner-auth and use dedicated secrets (WARDROBE-96)', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+    const itemRoute = routes.find(
+      (route) =>
+        route.Properties.RouteKey ===
+        'GET /wardrobes/{wardrobeId}/items/{itemId}/shopping-links',
+    );
+    const homeRoute = routes.find(
+      (route) => route.Properties.RouteKey === 'GET /shopping-links',
+    );
+    expect(itemRoute?.Properties.AuthorizationType).toBe('CUSTOM');
+    expect(homeRoute?.Properties.AuthorizationType).toBe('CUSTOM');
+
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/openai-shopping',
+      Description: Match.stringLikeRegexp('OpenAI shopping'),
+    });
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/bright-data',
+      Description: Match.stringLikeRegexp('Bright Data'),
+    });
+    template.hasOutput('OpenAiShoppingSecretName', {
+      Description: Match.stringLikeRegexp('OpenAI shopping-keyword'),
+    });
+    template.hasOutput('BrightDataSecretName', {
+      Description: Match.stringLikeRegexp('Bright Data SERP'),
+    });
+
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+            Effect?: string;
+          }>;
+        };
+      };
+    };
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    const actionsFor = (prefix: string): string[] =>
+      policies
+        .filter((policy) => JSON.stringify(policy).includes('ShoppingLinksFn'))
+        .flatMap((policy) =>
+          policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+            const actions = statement.Action;
+            const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+            return list.filter((action) => action.startsWith(prefix));
+          }),
+        );
+
+    const dynamo = actionsFor('dynamodb:');
+    expect(dynamo).toEqual(
+      expect.arrayContaining([
+        'dynamodb:GetItem',
+        'dynamodb:Query',
+        'dynamodb:PutItem',
+      ]),
+    );
+    expect(dynamo).not.toContain('dynamodb:DeleteItem');
+    expect(dynamo).not.toContain('dynamodb:*');
+
+    const secrets = actionsFor('secretsmanager:');
+    expect(secrets).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
+    expect(secrets).not.toContain('secretsmanager:*');
+
+    const s3 = actionsFor('s3:');
+    expect(s3).toEqual(expect.arrayContaining(['s3:GetObject*']));
+    expect(s3).not.toContain('s3:PutObject');
+    expect(s3).not.toContain('s3:DeleteObject');
+
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: {
+        Timeout?: number;
+        MemorySize?: number;
+        Environment?: { Variables?: Record<string, unknown> };
+      };
+    }>;
+    const shoppingFn = functions.find(
+      (fn) => fn.Properties.Environment?.Variables?.OPENAI_SHOPPING_SECRET_ARN,
+    );
+    expect(shoppingFn).toBeDefined();
+    expect(shoppingFn?.Properties.Timeout).toBe(29);
+    expect(shoppingFn?.Properties.MemorySize).toBe(512);
+    expect(shoppingFn?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        OPENAI_SHOPPING_SECRET_ARN: expect.anything(),
+        BRIGHT_DATA_SECRET_ARN: expect.anything(),
+        SHOPPING_LINKS_CACHE_TTL_SECONDS: '86400',
+      }),
+    );
+    expect(shoppingFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'OPENAI_API_KEY',
+    );
+    expect(shoppingFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'BRIGHT_DATA_API_TOKEN',
+    );
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).not.toMatch(/sk-[A-Za-z0-9]{20,}/);
+    expect(synthesized).not.toContain('your-bright-data-api-token');
   });
 
   test('recommender strategy can be overridden to rules via CDK context', () => {

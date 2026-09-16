@@ -361,6 +361,52 @@ export interface OutfitRecommendationsResponse {
 }
 
 /**
+ * Flutter shopping-link card (WARDROBE-96 / WARDROBE-95).
+ * Soft-omit unset optional fields — never send `null`.
+ */
+export interface ShoppingLink {
+  title: string;
+  url: string;
+  merchant?: string;
+  price?: string;
+  currency?: string;
+  imageUrl?: string;
+}
+
+export interface ShoppingLinksWarning {
+  code: 'SHOPPING_UPSTREAM_UNAVAILABLE';
+  message: string;
+}
+
+/** One clothing item’s related shopping section (item detail or Home row). */
+export interface ShoppingLinksItemResult {
+  itemId: string;
+  wardrobeId: string;
+  keywords: string[];
+  cached: boolean;
+  links: ShoppingLink[];
+  warning?: ShoppingLinksWarning;
+}
+
+/** `GET /wardrobes/{wardrobeId}/items/{itemId}/shopping-links` */
+export type ItemShoppingLinksResponse = ShoppingLinksItemResult;
+
+/** `GET /shopping-links` — mixed recent items across the caller’s wardrobes. */
+export interface HomeShoppingLinksResponse {
+  items: ShoppingLinksItemResult[];
+}
+
+export const SHOPPING_UPSTREAM_WARNING_CODE =
+  'SHOPPING_UPSTREAM_UNAVAILABLE' as const;
+
+export const SHOPPING_LINKS_CACHE_TTL_SECONDS = 24 * 60 * 60;
+
+export const DEFAULT_SHOPPING_HOME_LIMIT = 5;
+export const MAX_SHOPPING_HOME_LIMIT = 10;
+export const DEFAULT_SHOPPING_LINKS_PER_ITEM = 8;
+export const MAX_SHOPPING_LINKS_PER_ITEM = 12;
+
+/**
  * Result of DELETE /me/content or DELETE /me.
  *
  * Firebase Auth is never deleted here. Flutter may keep the session after a
@@ -465,7 +511,8 @@ export type EntityType =
   | 'ITEM'
   | 'OUTFIT'
   | 'AIPROFILE'
-  | 'ENTITLEMENT';
+  | 'ENTITLEMENT'
+  | 'SHOPPING_CACHE';
 
 export interface DynamoItem {
   PK: string;

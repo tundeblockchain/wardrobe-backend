@@ -58,6 +58,9 @@ export class WardrobeStack extends cdk.Stack {
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: !isDev,
       },
+      // WARDROBE-96 shopping-link cache rows set `ttl` (unix seconds).
+      // Other entities omit the attribute and are never expired by Dynamo.
+      timeToLiveAttribute: 'ttl',
       removalPolicy,
     });
 
@@ -241,6 +244,24 @@ export class WardrobeStack extends cdk.Stack {
         'OpenAI outfit-recommender credentials. Store a raw API key, or JSON { "apiKey", "model?", "endpoint?" }. Used when RECOMMENDER_STRATEGY=openai. Never commit AI keys.',
       removalPolicy,
     });
+    // WARDROBE-96 shopping-link keywords (OpenAI vision). Placeholder only.
+    const openaiShoppingSecret = new secretsmanager.Secret(
+      this,
+      'OpenAiShoppingSecret',
+      {
+        secretName: `wardrobe/${stage}/openai-shopping`,
+        description:
+          'OpenAI shopping-keyword credentials. Store a raw API key, or JSON { "apiKey", "model?", "endpoint?" }. Never commit AI keys.',
+        removalPolicy,
+      },
+    );
+    // WARDROBE-96 Bright Data SERP. Placeholder only — JSON after deploy.
+    const brightDataSecret = new secretsmanager.Secret(this, 'BrightDataSecret', {
+      secretName: `wardrobe/${stage}/bright-data`,
+      description:
+        'Bright Data SERP credentials. Store JSON { "apiToken", "zone", "endpoint?", "customer?", "country?", "language?" }. Never commit the real token.',
+      removalPolicy,
+    });
     // Placeholder only — replace after deploy. Never commit the Gemini key.
     const tryOnSecret = new secretsmanager.Secret(this, 'GeminiTryOnSecret', {
       secretName: tryOnSecretName(stage),
@@ -312,6 +333,19 @@ export class WardrobeStack extends cdk.Stack {
         ...commonLambdaProps.environment,
         RECOMMENDER_STRATEGY: recommenderStrategy,
         AI_RECOMMENDER_SECRET_ARN: aiRecommenderSecret.secretArn,
+      },
+    });
+    // WARDROBE-96 related shopping links. OpenAI vision + Bright Data SERP
+    // per item; API Gateway max is 30s so stay just under that.
+    const shoppingLinksFn = this.lambda('ShoppingLinksFn', 'shopping-links', {
+      ...commonLambdaProps,
+      timeout: cdk.Duration.seconds(29),
+      memorySize: 512,
+      environment: {
+        ...commonLambdaProps.environment,
+        OPENAI_SHOPPING_SECRET_ARN: openaiShoppingSecret.secretArn,
+        BRIGHT_DATA_SECRET_ARN: brightDataSecret.secretArn,
+        SHOPPING_LINKS_CACHE_TTL_SECONDS: '86400',
       },
     });
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
@@ -404,6 +438,11 @@ export class WardrobeStack extends cdk.Stack {
     // Recommendations are derived and never persisted — read wardrobe + items only.
     table.grantReadData(recommendationsFn);
     aiRecommenderSecret.grantRead(recommendationsFn);
+    // Shopping links read wardrobe/items and write a 24h cache row.
+    table.grant(shoppingLinksFn, 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:PutItem');
+    openaiShoppingSecret.grantRead(shoppingLinksFn);
+    brightDataSecret.grantRead(shoppingLinksFn);
+    mediaBucket.grantRead(shoppingLinksFn);
     // Worker reads the item then updates processingStatus / AI metadata.
     table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
     mediaBucket.grantPut(uploadsFn);
@@ -591,6 +630,10 @@ export class WardrobeStack extends cdk.Stack {
       'RecommendationsIntegration',
       recommendationsFn,
     );
+    const shoppingLinksIntegration = new HttpLambdaIntegration(
+      'ShoppingLinksIntegration',
+      shoppingLinksFn,
+    );
     const uploadsIntegration = new HttpLambdaIntegration('UploadsIntegration', uploadsFn);
     const aiProfilesIntegration = new HttpLambdaIntegration(
       'AiProfilesIntegration',
@@ -682,6 +725,20 @@ export class WardrobeStack extends cdk.Stack {
       path: '/wardrobes/{wardrobeId}/recommendations',
       methods: [apigwv2.HttpMethod.GET],
       integration: recommendationsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/items/{itemId}/shopping-links',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: shoppingLinksIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/shopping-links',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: shoppingLinksIntegration,
       authorizer: firebaseAuthorizer,
     });
 
@@ -807,6 +864,18 @@ export class WardrobeStack extends cdk.Stack {
       value: aiRecommenderSecret.secretName,
       description:
         'Secrets Manager secret for OpenAI outfit-recommender credentials (placeholder until replaced)',
+    });
+
+    new cdk.CfnOutput(this, 'OpenAiShoppingSecretName', {
+      value: openaiShoppingSecret.secretName,
+      description:
+        'Secrets Manager secret for OpenAI shopping-keyword credentials (placeholder until replaced)',
+    });
+
+    new cdk.CfnOutput(this, 'BrightDataSecretName', {
+      value: brightDataSecret.secretName,
+      description:
+        'Secrets Manager secret for Bright Data SERP credentials (placeholder until replaced)',
     });
 
     new cdk.CfnOutput(this, 'GenericModelCatalogIds', {
