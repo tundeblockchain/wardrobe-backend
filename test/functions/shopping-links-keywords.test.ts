@@ -194,4 +194,27 @@ describe('createOpenAiKeywordExtractor', () => {
     };
     expect(typeof body.messages[1].content).toBe('string');
   });
+
+  it('includes model and OpenAI body on HTTP errors', async () => {
+    const httpPost = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () =>
+        JSON.stringify({
+          error: { message: 'The model `gpt-4o-mini` does not exist', code: 'model_not_found' },
+        }),
+    });
+    const extractor = createOpenAiKeywordExtractor({
+      fetchSecret: async () => ({
+        apiKey: 'sk-test',
+        model: DEFAULT_OPENAI_SHOPPING_MODEL,
+        endpoint: DEFAULT_OPENAI_SHOPPING_ENDPOINT,
+      }),
+      httpPost,
+    });
+
+    await expect(extractor.extract({ item: clothingItem() })).rejects.toThrow(
+      /OpenAI shopping keywords HTTP 404 \(model=gpt-4\.1-mini\).*model_not_found/,
+    );
+  });
 });

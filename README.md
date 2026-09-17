@@ -118,11 +118,11 @@ Outfit recommendations (WARDROBE-28) default to OpenAI chat (`RECOMMENDER_STRATE
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/ai-recommender \
-  --secret-string '{"apiKey":"sk-your-openai-key","model":"gpt-4o-mini"}'
+  --secret-string '{"apiKey":"sk-your-openai-key","model":"gpt-4.1-mini"}'
 ```
 
 ```bash
-# raw key also works — model defaults to gpt-4o-mini, endpoint to OpenAI chat completions
+# raw key also works — model defaults to gpt-4.1-mini, endpoint to OpenAI chat completions
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/ai-recommender \
   --secret-string "sk-your-openai-key"
@@ -821,7 +821,7 @@ The recommendations Lambda sets `RECOMMENDER_STRATEGY=openai`. Override at synth
 - raw API key, or
 - JSON `{ "apiKey", "model?", "endpoint?" }` (`api_key` / `key` / `openaiApiKey` also accepted)
 
-Defaults when omitted: model `gpt-4o-mini`, endpoint `https://api.openai.com/v1/chat/completions`. Never commit AI keys.
+Defaults when omitted: model `gpt-4.1-mini`, endpoint `https://api.openai.com/v1/chat/completions`. Never commit AI keys.
 
 **Soft-failure policy:** OpenAI HTTP errors, timeouts, parse failures, missing/placeholder credentials, or an unusable response do **not** 500 the app. The handler falls back to the rule-based recommender and still returns `200`. Empty / insufficient READY items skip the vendor and return `{ "recommendations": [] }`.
 
@@ -923,7 +923,7 @@ Never 5xx for upstream blips. Missing wardrobe/item stays 404 (not a soft-fail).
 #### Pipeline (server-side only)
 
 1. Load item metadata (name, category, subcategory, colours, brand, AI detections when present) and the item image from S3 (**processed key preferred**, else original).
-2. Call **OpenAI** vision/chat (`gpt-4o-mini` default) on the image + metadata → search keywords.
+2. Call **OpenAI** vision/chat (`gpt-4.1-mini` default) on the image + metadata → search keywords.
 3. Call **Bright Data SERP API** (`POST https://api.brightdata.com/request`) with Google Shopping (`tbm=shop`, `udm=28`, `brd_json=1`).
 4. Map SERP products onto the Link DTO.
 
@@ -935,12 +935,12 @@ Never commit keys. CDK creates placeholders; replace them after deploy. Stack ou
 
 **OpenAI shopping keywords** — `wardrobe/{stage}/openai-shopping`
 
-Raw API key, or JSON `{ "apiKey", "model?", "endpoint?" }` (`api_key` / `key` / `openaiApiKey` also accepted). Defaults: model `gpt-4o-mini`, endpoint `https://api.openai.com/v1/chat/completions`.
+Raw API key, or JSON `{ "apiKey", "model?", "endpoint?" }` (`api_key` / `key` / `openaiApiKey` also accepted). Defaults: model `gpt-4.1-mini`, endpoint `https://api.openai.com/v1/chat/completions`.
 
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/openai-shopping \
-  --secret-string '{"apiKey":"sk-your-openai-key","model":"gpt-4o-mini"}'
+  --secret-string '{"apiKey":"sk-your-openai-key","model":"gpt-4.1-mini"}'
 ```
 
 ```bash

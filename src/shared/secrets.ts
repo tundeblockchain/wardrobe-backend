@@ -22,7 +22,13 @@ export function parseJsonObjectOrString(
 ): Record<string, unknown> | string {
   const trimmed = secretString.trim();
   if (trimmed.startsWith('{')) {
-    const parsed: unknown = JSON.parse(trimmed);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'parse error';
+      throw new Error(`Secret looks like JSON but is invalid: ${detail}`);
+    }
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }

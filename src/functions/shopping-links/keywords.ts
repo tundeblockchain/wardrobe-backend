@@ -11,7 +11,7 @@ import {
 
 export const DEFAULT_OPENAI_SHOPPING_ENDPOINT =
   'https://api.openai.com/v1/chat/completions';
-export const DEFAULT_OPENAI_SHOPPING_MODEL = 'gpt-4o-mini';
+export const DEFAULT_OPENAI_SHOPPING_MODEL = 'gpt-4.1-mini';
 export const DEFAULT_OPENAI_SHOPPING_TIMEOUT_MS = 8_000;
 export const MAX_SHOPPING_KEYWORDS = 8;
 export const MAX_SHOPPING_IMAGE_BYTES = 4 * 1024 * 1024;
@@ -80,7 +80,7 @@ export function createOpenAiKeywordExtractor(
       });
 
       if (!response.ok) {
-        throw new Error(`OpenAI shopping keywords HTTP ${response.status}`);
+        throw new Error(await openAiHttpError(response, secret.model));
       }
 
       let parsed: unknown;
@@ -357,6 +357,20 @@ function resolveShoppingImageMimeType(
     return 'image/webp';
   }
   return 'image/jpeg';
+}
+
+async function openAiHttpError(
+  response: { status: number; text(): Promise<string> },
+  model: string,
+): Promise<string> {
+  let detail = '';
+  try {
+    detail = (await response.text()).trim().slice(0, 300);
+  } catch {
+    detail = '';
+  }
+  const suffix = detail ? `: ${detail}` : '';
+  return `OpenAI shopping keywords HTTP ${response.status} (model=${model})${suffix}`;
 }
 
 function readOpenAiTimeoutMs(): number {

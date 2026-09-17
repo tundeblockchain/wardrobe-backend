@@ -12,7 +12,7 @@ import {
 
 export const DEFAULT_OPENAI_CHAT_ENDPOINT =
   'https://api.openai.com/v1/chat/completions';
-export const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
+export const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
 export const DEFAULT_OPENAI_TIMEOUT_MS = 8_000;
 
 export interface OpenAiRecommenderSecret {
