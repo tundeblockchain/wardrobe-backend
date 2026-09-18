@@ -407,7 +407,8 @@ export const DEFAULT_SHOPPING_LINKS_PER_ITEM = 8;
 export const MAX_SHOPPING_LINKS_PER_ITEM = 12;
 
 /**
- * Result of DELETE /me/content or DELETE /me.
+ * Result of DELETE /me/content (WARDROBE-36). DELETE /me (WARDROBE-103)
+ * returns {@link AccountDeleteResult} instead.
  *
  * Firebase Auth is never deleted here. Flutter may keep the session after a
  * content wipe, or delete the Auth user client-side after DELETE /me.
@@ -420,6 +421,42 @@ export interface UserWipeResult {
   deletedAiProfiles: number;
   deletedS3Objects: number;
   s3Failures: number;
+}
+
+/**
+ * Store-cancel outcome on DELETE /me (WARDROBE-103 / Flutter WARDROBE-102).
+ * Soft-omit unset optional fields; never send JSON `null`.
+ */
+export const SUBSCRIPTION_CANCEL_STATUSES = [
+  'NONE',
+  'CANCELED',
+  'CANCEL_AT_PERIOD_END',
+  'CANCEL_FAILED',
+] as const;
+export type SubscriptionCancelStatus =
+  (typeof SUBSCRIPTION_CANCEL_STATUSES)[number];
+
+export const SUBSCRIPTION_CANCEL_MODES = ['IMMEDIATE', 'PERIOD_END'] as const;
+export type SubscriptionCancelMode = (typeof SUBSCRIPTION_CANCEL_MODES)[number];
+
+export interface SubscriptionCancelResult {
+  status: SubscriptionCancelStatus;
+  cancelMode?: SubscriptionCancelMode;
+  store?: EntitlementStore;
+  expiresAt?: string;
+  /** Present when Flutter should open App Store / Play subscription settings. */
+  retryInStore?: boolean;
+}
+
+/**
+ * Result of DELETE /me (WARDROBE-103). Wipe counts stay for WARDROBE-36
+ * clients; Flutter WARDROBE-102 may ignore them.
+ */
+export interface AccountDeleteResult extends UserWipeResult {
+  deleted: true;
+  keepAccount: false;
+  entitlementRevoked: true;
+  subscription: SubscriptionCancelResult;
 }
 
 /**

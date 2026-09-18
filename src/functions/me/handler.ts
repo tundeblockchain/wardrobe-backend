@@ -1,15 +1,37 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
-import { deleteMany, getItem, keys, queryByPk } from '../../shared/dynamodb';
+import { deleteItem, deleteMany, getItem, keys, queryByPk } from '../../shared/dynamodb';
 import {
   countUsage,
+  loadStoredEntitlement,
   resolveEntitlement,
+  StoredEntitlement,
   toEntitlementDto,
 } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import { errorResponse, ok, routeKey } from '../../shared/http';
+import { logger } from '../../shared/logger';
 import { deleteObjectsUnderUserPrefix } from '../../shared/s3';
-import { DynamoItem, EntityType, UserWipeResult } from '../../shared/types';
+import {
+  AccountDeleteResult,
+  DynamoItem,
+  EntityType,
+  SubscriptionCancelResult,
+  UserWipeResult,
+} from '../../shared/types';
+import {
+  CancelSubscriptionInput,
+  cancelUserSubscription,
+  SubscriptionCancelDeps,
+} from './cancel';
+
+export interface MeHandlerDeps {
+  loadStoredEntitlement?: (userId: string) => Promise<StoredEntitlement | undefined>;
+  cancelSubscription?: (
+    input: CancelSubscriptionInput,
+  ) => Promise<SubscriptionCancelResult>;
+  cancelDeps?: SubscriptionCancelDeps;
+}
 
 /**
  * Owner-only account APIs.
@@ -18,16 +40,19 @@ import { DynamoItem, EntityType, UserWipeResult } from '../../shared/types';
  *                      reads this to soft-gate Superwall UX.
  * DELETE /me/content — wipe wardrobes, items, outfits, personal AI profiles,
  *                      and S3 under users/{uid}/. Entitlement + Firebase Auth stay.
- * DELETE /me         — same Dynamo + S3 wipe (plus PROFILE and ENTITLEMENT if
- *                      present), then return OK so Flutter can delete the
- *                      Firebase Auth user client-side. This backend does not
- *                      call Firebase Admin. Seeded GENERIC_MODEL catalog rows
- *                      are never deleted.
+ *                      No subscription cancel (WARDROBE-103).
+ * DELETE /me         — cancel store subscription when possible, revoke
+ *                      ENTITLEMENT, then the same Dynamo + S3 wipe (plus
+ *                      PROFILE). Returns WARDROBE-102 outcome so Flutter can
+ *                      delete the Firebase Auth user client-side. This backend
+ *                      does not call Firebase Admin. Seeded GENERIC_MODEL
+ *                      catalog rows are never deleted.
  *
  * Identity always comes from the Firebase authorizer (`getUserId`).
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
+  deps: MeHandlerDeps = {},
 ): Promise<APIGatewayProxyResultV2> {
   try {
     const userId = getUserId(event);
@@ -49,7 +74,7 @@ export async function handler(
       return ok(await wipeUser(userId, { keepAccount: true }));
     }
     if (isAccountRoute(key, event.rawPath)) {
-      return ok(await wipeUser(userId, { keepAccount: false }));
+      return ok(await deleteAccount(userId, deps));
     }
 
     throw Errors.validation(`Unsupported route: ${key}`);
@@ -62,6 +87,85 @@ async function getEntitlement(userId: string) {
   const stored = await resolveEntitlement(userId);
   const usage = await countUsage(userId);
   return toEntitlementDto(stored, usage);
+}
+
+async function deleteAccount(
+  userId: string,
+  deps: MeHandlerDeps,
+): Promise<AccountDeleteResult> {
+  const loadStored = deps.loadStoredEntitlement ?? loadStoredEntitlement;
+  const entitlement = await loadStored(userId);
+  const subscription = await attemptCancel(userId, entitlement, deps);
+
+  await deleteItem(keys.userPk(userId), keys.entitlementSk);
+
+  const wipe = await wipeUser(userId, {
+    keepAccount: false,
+    includeEntitlement: false,
+  });
+
+  return {
+    deleted: true,
+    keepAccount: false,
+    entitlementRevoked: true,
+    subscription: subscriptionDto(subscription),
+    deletedWardrobes: wipe.deletedWardrobes,
+    deletedItems: wipe.deletedItems,
+    deletedOutfits: wipe.deletedOutfits,
+    deletedAiProfiles: wipe.deletedAiProfiles,
+    deletedS3Objects: wipe.deletedS3Objects,
+    s3Failures: wipe.s3Failures,
+  };
+}
+
+async function attemptCancel(
+  userId: string,
+  entitlement: StoredEntitlement | undefined,
+  deps: MeHandlerDeps,
+): Promise<SubscriptionCancelResult> {
+  const cancel =
+    deps.cancelSubscription ??
+    ((input: CancelSubscriptionInput) =>
+      cancelUserSubscription(input, deps.cancelDeps));
+  try {
+    return await cancel({ userId, entitlement });
+  } catch (error) {
+    logger.warn('Subscription cancel failed', {
+      store: entitlement?.store ?? 'UNKNOWN',
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+      reason: error instanceof Error ? error.message : 'unknown',
+    });
+    const failed: SubscriptionCancelResult = {
+      status: 'CANCEL_FAILED',
+      retryInStore: true,
+    };
+    if (entitlement?.store) {
+      failed.store = entitlement.store;
+    }
+    if (entitlement?.expiresAt) {
+      failed.expiresAt = entitlement.expiresAt;
+    }
+    return failed;
+  }
+}
+
+function subscriptionDto(
+  outcome: SubscriptionCancelResult,
+): SubscriptionCancelResult {
+  const dto: SubscriptionCancelResult = { status: outcome.status };
+  if (outcome.cancelMode) {
+    dto.cancelMode = outcome.cancelMode;
+  }
+  if (outcome.store) {
+    dto.store = outcome.store;
+  }
+  if (outcome.expiresAt) {
+    dto.expiresAt = outcome.expiresAt;
+  }
+  if (outcome.retryInStore === true) {
+    dto.retryInStore = true;
+  }
+  return dto;
 }
 
 function isContentRoute(key: string, rawPath: string): boolean {
@@ -79,11 +183,14 @@ function isAccountRoute(key: string, rawPath: string): boolean {
 
 async function wipeUser(
   userId: string,
-  options: { keepAccount: boolean },
+  options: { keepAccount: boolean; includeEntitlement?: boolean },
 ): Promise<UserWipeResult> {
+  const includeEntitlement =
+    options.includeEntitlement ?? !options.keepAccount;
+
   const rows = await collectOwnedRows(userId, {
     includeProfile: !options.keepAccount,
-    includeEntitlement: !options.keepAccount,
+    includeEntitlement,
   });
 
   await deleteMany(rows.map(({ pk, sk }) => ({ pk, sk })));

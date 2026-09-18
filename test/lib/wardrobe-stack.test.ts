@@ -1131,13 +1131,25 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
         Environment?: { Variables?: Record<string, unknown> };
       };
     }>;
-    const meFn = functions.find((fn) => fn.Properties.Timeout === 29);
+    const meFn = functions.find(
+      (fn) =>
+        fn.Properties.Timeout === 29 &&
+        fn.Properties.Environment?.Variables?.SUPERWALL_SECRET_ARN,
+    );
     expect(meFn).toBeDefined();
     expect(meFn?.Properties.Environment?.Variables).toEqual(
       expect.objectContaining({
         TABLE_NAME: expect.anything(),
         MEDIA_BUCKET_NAME: expect.anything(),
+        SUPERWALL_SECRET_ARN: expect.anything(),
       }),
+    );
+    expect(meFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'SUPERWALL_WEBHOOK_SECRET',
+    );
+
+    expect(actionsFor('secretsmanager:')).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
     );
   });
 

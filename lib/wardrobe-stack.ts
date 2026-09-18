@@ -798,13 +798,19 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // Isolated WARDROBE-91 module — Superwall webhook → Dynamo entitlements.
-    addEntitlements(this, {
+    // MeFn also reads this secret on DELETE /me (WARDROBE-103 cancel).
+    const entitlements = addEntitlements(this, {
       stage,
       httpApi,
       table,
       commonLambdaProps,
       removalPolicy,
     });
+    entitlements.superwallSecret.grantRead(meFn);
+    meFn.addEnvironment(
+      'SUPERWALL_SECRET_ARN',
+      entitlements.superwallSecret.secretArn,
+    );
 
     new cdk.CfnOutput(this, 'ApiUrl', {
       value: httpApi.apiEndpoint,

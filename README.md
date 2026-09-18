@@ -20,7 +20,8 @@ Working in this first cut:
 
 - `GET /health` (no auth)
 - `GET /me` (entitlement for Flutter WARDROBE-90)
-- `DELETE /me/content` and `DELETE /me` (clear content / delete account data)
+- `DELETE /me/content` (clear content; keeps account + entitlement)
+- `DELETE /me` (cancel subscription when possible, revoke entitlement, delete account data; Flutter WARDROBE-102)
 - `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
@@ -196,14 +197,14 @@ DELETE /me
 
 `GET /me` returns the Flutter entitlement DTO (WARDROBE-91). See **Entitlements** below.
 
-`DELETE` wipes the caller's wardrobes, items, outfits, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`.
+`DELETE` wipes the caller's wardrobes, items, outfits, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
 
-| Endpoint | Keeps Firebase Auth user | Keeps entitlement | Flutter next step |
-| --- | --- | --- | --- |
-| `DELETE /me/content` | Yes (`keepAccount: true`) | Yes | Session may stay; user starts with empty wardrobes |
-| `DELETE /me` | Yes — this backend does **not** call Firebase Admin | No | Client deletes the Firebase Auth user after `200` |
+| Endpoint | Keeps Firebase Auth user | Keeps entitlement | Cancels store subscription | Flutter next step |
+| --- | --- | --- | --- | --- |
+| `DELETE /me/content` | Yes (`keepAccount: true`) | Yes | No | Session may stay; user starts with empty wardrobes |
+| `DELETE /me` | Yes — this backend does **not** call Firebase Admin | No (revoked before wipe) | Yes, best-effort | Handle `subscription.status`, then delete Firebase Auth when `deleted: true` |
 
-Success body (`200`) for DELETE:
+Success body (`200`) for **`DELETE /me/content`** is unchanged (WARDROBE-36):
 
 ```json
 {
@@ -217,7 +218,87 @@ Success body (`200`) for DELETE:
 }
 ```
 
-`keepAccount` is `false` on `DELETE /me` (AWS data is gone; Firebase Auth remains until the client deletes it). Missing or invalid tokens return `401` `UNAUTHENTICATED`.
+#### Account delete + subscription cancel (WARDROBE-103) — Flutter WARDROBE-102 contract
+
+```http
+DELETE /me
+Authorization: Bearer <firebase-id-token>
+```
+
+No body. Always attempt subscription cancel + entitlement revoke **before** wiping AWS user data.
+
+Server order:
+
+1. Load `USER#{uid}/ENTITLEMENT` if present.
+2. Attempt cancel via store APIs for that user (**prefer immediate cancel**). Superwall has no cancel API (its V2 API is project/paywall management; the existing webhook only *writes* `ENTITLEMENT`). If only cancel-at-period-end is available, do that — still revoke Premium server-side immediately.
+3. Revoke server entitlement (delete the `ENTITLEMENT` row) so `GET /me` and `ENTITLEMENT_*` cannot grant paid features after delete.
+4. Delete AWS account data (existing `DELETE /me` wipe: Dynamo + S3; not Firebase Auth).
+5. Return `200` with the outcome. Client deletes Firebase Auth (this backend still has no Admin SDK).
+
+`200` body (soft-omit unset optional fields; never send JSON `null`):
+
+```json
+{
+  "deleted": true,
+  "keepAccount": false,
+  "entitlementRevoked": true,
+  "subscription": {
+    "status": "NONE",
+    "cancelMode": "IMMEDIATE",
+    "store": "APP_STORE",
+    "expiresAt": "2026-10-01T00:00:00.000Z",
+    "retryInStore": false
+  }
+}
+```
+
+`subscription.status`: `NONE` | `CANCELED` | `CANCEL_AT_PERIOD_END` | `CANCEL_FAILED`
+
+| `status` | Meaning | `retryInStore` |
+| --- | --- | --- |
+| `NONE` | No billing row (or already expired). Nothing to cancel. | omitted |
+| `CANCELED` | Store cancel succeeded immediately, or Superwall already marked `CANCELED`. | omitted |
+| `CANCEL_AT_PERIOD_END` | Store only supports stop-renewal (Play cancel fallback). Server entitlement is still revoked now. | omitted |
+| `CANCEL_FAILED` | Store cancel did not succeed. Account data is still deleted and entitlement revoked. | `true` |
+
+Optional `cancelMode` (`IMMEDIATE` \| `PERIOD_END`), `store`, and `expiresAt` are omitted when unknown. `retryInStore` is sent only when `true`. Wipe counts from WARDROBE-36 (`deletedWardrobes`, …) are still included; Flutter WARDROBE-102 may ignore them.
+
+Flutter WARDROBE-102:
+
+1. Call `DELETE /me`.
+2. On `subscription.status` `CANCEL_FAILED` or `CANCEL_AT_PERIOD_END`, show App Store / Play manage-subscription copy (`retryInStore: true` on failure).
+3. When `deleted: true`, delete the Firebase Auth user. Server revoke is the source of truth for API gates — a deleted account cannot use Premium even if the store keeps billing until the user cancels in Settings.
+
+`DELETE /me/content` is **unchanged** (keeps account + entitlement; no cancel).
+
+Store cancel capabilities (do not invent product IDs):
+
+| Store | Server cancel? | What this stack does |
+| --- | --- | --- |
+| Superwall | No cancel API | Webhook already writes `ENTITLEMENT`. Not used to cancel. |
+| App Store | No developer-initiated cancel (user must use Settings → Subscriptions) | Skip HTTP. `CANCEL_FAILED` + `retryInStore: true`. Entitlement still revoked. |
+| Play Store | Immediate revoke (`subscriptionsv2.revoke`) or period-end cancel | Attempted when optional Play credentials are present. Token is Superwall's `originalTransactionId`, which is an Apple-style subscription id analog — **not** reliably a Play purchase token. Google 4xx → `CANCEL_FAILED` + `retryInStore`. |
+| Stripe | Immediate `DELETE /v1/subscriptions/{id}` | Attempted when optional `stripeSecretKey` is present and `originalTransactionId` is the Stripe subscription id. |
+
+If cancel credentials are missing, or Play/Stripe HTTP fails, the handler still deletes AWS data + entitlement and returns `CANCEL_FAILED` with a CloudWatch **WARN** (`status`, `content-type`, truncated `bodySnippet` — no secrets / tokens / private keys).
+
+Optional cancel fields live on the **existing** Superwall secret `wardrobe/{stage}/superwall` (no dedicated cancel secret):
+
+```json
+{
+  "webhookSecret": "whsec_your_signing_secret",
+  "productTiers": {},
+  "stripeSecretKey": "sk_your_stripe_secret",
+  "playPackageName": "your.android.package",
+  "playServiceAccount": {
+    "client_email": "play-developer@your-project.iam.gserviceaccount.com",
+    "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",
+    "private_key_id": "optional-key-id"
+  }
+}
+```
+
+`stripeSecretKey`, `playPackageName`, and `playServiceAccount` are optional. Omit them until operators have real Stripe / Play Developer credentials. CDK still creates only a placeholder secret — never commit live keys or product IDs. `MeFn` reads `SUPERWALL_SECRET_ARN` at runtime on `DELETE /me`.
 
 ### Entitlements (WARDROBE-91) — Flutter WARDROBE-90 contract
 
@@ -347,6 +428,8 @@ When App Store / Play product IDs exist, add them to `productTiers`:
 ```
 
 Until that map is filled, a product ID containing `premium` / `basic` (case-insensitive) is mapped that way; any other paid grant defaults to **BASIC** (unlimited catalog, no AI). Stack output: `SuperwallWebhookUrl`, `SuperwallSecretName`.
+
+The same secret may also hold optional WARDROBE-103 cancel fields (`stripeSecretKey`, `playPackageName`, `playServiceAccount`) — see **Account delete + subscription cancel** above. The webhook Lambda ignores those fields.
 
 ### Wardrobes
 
@@ -1492,7 +1575,7 @@ scripts/ensure-cdk-json.js
 scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDROBE-45)
 src/functions/
   health/
-  me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91)
+  me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
   items/
@@ -1509,6 +1592,7 @@ src/shared/
   auth.ts
   dynamodb.ts
   entitlements.ts
+  superwall-config.ts  wardrobe/{stage}/superwall JSON (WARDROBE-91 webhook + WARDROBE-103 optional cancel)
   errors.ts
   http.ts
   ids.ts

@@ -1,5 +1,9 @@
-import { getSecretString, parseJsonObjectOrString } from '../../shared/secrets';
-import { parseProductTiers, ProductTierMap } from '../../shared/entitlements';
+import { getSecretString } from '../../shared/secrets';
+import {
+  parseSuperwallSecret,
+  SuperwallSecretConfig,
+} from '../../shared/superwall-config';
+import { ProductTierMap } from '../../shared/entitlements';
 
 /**
  * Superwall webhook config (WARDROBE-91).
@@ -13,8 +17,13 @@ import { parseProductTiers, ProductTierMap } from '../../shared/entitlements';
  *     "webhookSecret": "whsec_…",
  *     "productTiers": {
  *       "<app-store-or-play-product-id>": "BASIC" | "PREMIUM"
- *     }
+ *     },
+ *     "stripeSecretKey"?: "sk_…",
+ *     "playPackageName"?: "your.android.package",
+ *     "playServiceAccount"?: { "client_email", "private_key", "private_key_id"? }
  *   }
+ *
+ * Cancel fields are optional (WARDROBE-103) and ignored by this webhook.
  */
 export interface SuperwallConfig {
   webhookSecret: string;
@@ -35,56 +44,22 @@ export async function loadSuperwallConfig(): Promise<SuperwallConfig> {
   };
 }
 
-export function parseSuperwallSecret(
-  secretString: string,
-): Partial<SuperwallConfig> {
-  const parsed = parseJsonObjectOrString(secretString);
-  if (typeof parsed === 'string') {
-    return { webhookSecret: parsed, productTiers: {} };
-  }
-
-  const webhookSecret = firstString(parsed, [
-    'webhookSecret',
-    'webhook_secret',
-    'signingSecret',
-    'SUPERWALL_WEBHOOK_SECRET',
-  ]);
-
-  return {
-    webhookSecret,
-    productTiers: parseProductTiers(
-      parsed.productTiers ?? parsed.product_tiers ?? parsed.products,
-    ),
-  };
-}
+export { parseSuperwallSecret };
 
 async function readOptionalSecret(
   secretId: string | undefined,
-): Promise<{ webhookSecret?: string; productTiers: ProductTierMap }> {
+): Promise<Pick<SuperwallSecretConfig, 'webhookSecret' | 'productTiers'>> {
   if (!secretId?.trim()) {
     return { productTiers: {} };
   }
   const parsed = parseSuperwallSecret(await getSecretString(secretId));
   return {
     webhookSecret: parsed.webhookSecret,
-    productTiers: parsed.productTiers ?? {},
+    productTiers: parsed.productTiers,
   };
 }
 
 function envString(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
-}
-
-function firstString(
-  record: Record<string, unknown>,
-  keysToTry: string[],
-): string | undefined {
-  for (const key of keysToTry) {
-    const value = record[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
 }
