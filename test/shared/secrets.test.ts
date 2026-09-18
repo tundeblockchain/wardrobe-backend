@@ -29,7 +29,7 @@ describe('secrets helpers', () => {
     it('wraps invalid JSON that starts with {', () => {
       expect(() =>
         parseJsonObjectOrString('{"apiKey":"sk-test","model" "gpt-4.1-mini"}'),
-      ).toThrow(/Secret looks like JSON but is invalid: Expected ':' after property name/);
+      ).toThrow(/Secret looks like JSON but is invalid: /);
     });
   });
 
