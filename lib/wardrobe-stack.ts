@@ -259,7 +259,7 @@ export class WardrobeStack extends cdk.Stack {
     const brightDataSecret = new secretsmanager.Secret(this, 'BrightDataSecret', {
       secretName: `wardrobe/${stage}/bright-data`,
       description:
-        'Bright Data SERP credentials. Store JSON { "apiToken", "zone", "endpoint?", "customer?", "country?", "language?" }. Never commit the real token.',
+        'Bright Data SERP credentials. Store JSON { "apiToken", "zone", "endpoint?", "customer?", "country?", "language?" }. zone must be a SERP API zone (e.g. serp_api1), not Web Unlocker. Never commit the real token.',
       removalPolicy,
     });
     // Placeholder only — replace after deploy. Never commit the Gemini key.

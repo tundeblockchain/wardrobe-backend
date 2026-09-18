@@ -19,7 +19,12 @@ import {
   createOpenAiKeywordExtractor,
   preferredItemImageKey,
 } from './keywords';
-import { ShoppingSerpClient, buildShoppingQuery, createBrightDataSerpClient } from './serp';
+import {
+  ShoppingSerpClient,
+  brightDataFailureLogFields,
+  buildShoppingQuery,
+  createBrightDataSerpClient,
+} from './serp';
 
 const UPSTREAM_WARNING: ShoppingLinksWarning = {
   code: SHOPPING_UPSTREAM_WARNING_CODE,
@@ -124,6 +129,7 @@ export async function resolveItemShoppingLinks(
     logger.warn('Shopping-links upstream unavailable', {
       itemId: item.itemId,
       error: error instanceof Error ? error.message : 'unknown',
+      ...brightDataFailureLogFields(error),
     });
     if (stored) {
       return resultFromCache(stored, { warning: UPSTREAM_WARNING });
