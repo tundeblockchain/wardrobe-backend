@@ -64,11 +64,94 @@ export function looksLikeHtml(text: string): boolean {
   return /^(<!doctype\s+html\b|<html\b)/i.test(text.trim());
 }
 
+export class UpstreamTimeoutError extends Error {
+  readonly timeoutMs: number;
+  readonly label: string;
+  readonly model?: string;
+
+  constructor(
+    timeoutMs: number,
+    label: string,
+    options: { model?: string; cause?: unknown } = {},
+  ) {
+    const modelPart = options.model ? ` (model=${options.model})` : '';
+    super(`${label} timed out after ${timeoutMs}ms${modelPart}`, {
+      cause: options.cause,
+    });
+    this.name = 'UpstreamTimeoutError';
+    this.timeoutMs = timeoutMs;
+    this.label = label;
+    if (options.model) {
+      this.model = options.model;
+    }
+  }
+}
+
+export function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const name = (error as { name?: string }).name;
+  if (name === 'AbortError' || name === 'TimeoutError') {
+    return true;
+  }
+  return error instanceof Error && /operation was aborted/i.test(error.message);
+}
+
+export function timeoutErrorFromAbort(
+  error: unknown,
+  timeoutMs: number,
+  label: string,
+  extras: { model?: string } = {},
+): unknown {
+  if (error instanceof UpstreamTimeoutError) {
+    if (extras.model && !error.model) {
+      return new UpstreamTimeoutError(error.timeoutMs, error.label, {
+        model: extras.model,
+        cause: error.cause ?? error,
+      });
+    }
+    return error;
+  }
+  if (isAbortError(error)) {
+    return new UpstreamTimeoutError(timeoutMs, label, {
+      ...extras,
+      cause: error,
+    });
+  }
+  return error;
+}
+
+export function upstreamFailureLogFields(
+  error: unknown,
+): Record<string, unknown> {
+  if (!(error instanceof Error)) {
+    return { errorData: error };
+  }
+  const fields: Record<string, unknown> = { errorName: error.name };
+  if (error instanceof UpstreamTimeoutError) {
+    fields.timeoutMs = error.timeoutMs;
+    fields.step = error.label;
+    if (error.model) {
+      fields.model = error.model;
+    }
+  }
+  const cause = error.cause;
+  if (cause instanceof Error) {
+    fields.cause = cause.message;
+    fields.causeName = cause.name;
+  } else if (cause !== undefined) {
+    fields.cause = String(cause);
+  }
+  return fields;
+}
+
 export function timedFetch(
   timeoutMs: number,
   fetchImpl: typeof fetch = fetch,
+  label = 'Upstream request',
 ): FetchLike {
-  return (url, init) => {
+  return async (url, init) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -82,9 +165,13 @@ export function timedFetch(
       }
     }
 
-    return fetchImpl(url, { ...init, signal: controller.signal }).finally(() => {
+    try {
+      return await fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (error) {
+      throw timeoutErrorFromAbort(error, timeoutMs, label);
+    } finally {
       clearTimeout(timer);
-    });
+    }
   };
 }
 

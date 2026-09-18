@@ -9,6 +9,7 @@ import {
   looksLikePlaceholderSecret,
   parseJsonContent,
   timedFetch,
+  timeoutErrorFromAbort,
   truncateUpstreamBody,
 } from './http';
 
@@ -97,7 +98,9 @@ export function createBrightDataSerpClient(
   options: BrightDataSerpOptions = {},
 ): ShoppingSerpClient {
   const fetchSecret = options.fetchSecret ?? loadBrightDataSecret;
-  const httpPost = options.httpPost ?? timedFetch(readBrightDataTimeoutMs());
+  const timeoutMs = readBrightDataTimeoutMs();
+  const httpPost =
+    options.httpPost ?? timedFetch(timeoutMs, fetch, 'Bright Data SERP');
 
   return {
     async search(input): Promise<ShoppingLink[]> {
@@ -110,15 +113,20 @@ export function createBrightDataSerpClient(
       const targetUrl = buildGoogleShoppingUrl(query, secret);
       const body = buildBrightDataRequestBody(secret, targetUrl);
 
-      const response = await httpPost(secret.endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${secret.apiToken}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+      let response: Awaited<ReturnType<FetchLike>>;
+      try {
+        response = await httpPost(secret.endpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${secret.apiToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        throw timeoutErrorFromAbort(error, timeoutMs, 'Bright Data SERP');
+      }
 
       const contentType = headerValue(response.headers, 'content-type');
       const rawBody = await response.text();

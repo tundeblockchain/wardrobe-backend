@@ -7,12 +7,13 @@ import {
   looksLikePlaceholderSecret,
   parseJsonContent,
   timedFetch,
+  timeoutErrorFromAbort,
 } from './http';
 
 export const DEFAULT_OPENAI_SHOPPING_ENDPOINT =
   'https://api.openai.com/v1/chat/completions';
 export const DEFAULT_OPENAI_SHOPPING_MODEL = 'gpt-4.1-mini';
-export const DEFAULT_OPENAI_SHOPPING_TIMEOUT_MS = 8_000;
+export const DEFAULT_OPENAI_SHOPPING_TIMEOUT_MS = 15_000;
 export const MAX_SHOPPING_KEYWORDS = 8;
 export const MAX_SHOPPING_IMAGE_BYTES = 4 * 1024 * 1024;
 
@@ -52,32 +53,40 @@ export function createOpenAiKeywordExtractor(
   options: OpenAiKeywordExtractorOptions = {},
 ): KeywordExtractor {
   const fetchSecret = options.fetchSecret ?? loadOpenAiShoppingSecret;
+  const timeoutMs = readOpenAiTimeoutMs();
   const httpPost =
-    options.httpPost ?? timedFetch(readOpenAiTimeoutMs());
+    options.httpPost ?? timedFetch(timeoutMs, fetch, 'OpenAI shopping keywords');
 
   return {
     async extract(input): Promise<string[]> {
       const secret = await fetchSecret();
-      const response = await httpPost(secret.endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${secret.apiKey}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
+      let response: Awaited<ReturnType<FetchLike>>;
+      try {
+        response = await httpPost(secret.endpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${secret.apiKey}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            model: secret.model,
+            temperature: 0.2,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              {
+                role: 'user',
+                content: buildUserContent(input.item, input.image),
+              },
+            ],
+          }),
+        });
+      } catch (error) {
+        throw timeoutErrorFromAbort(error, timeoutMs, 'OpenAI shopping keywords', {
           model: secret.model,
-          temperature: 0.2,
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            {
-              role: 'user',
-              content: buildUserContent(input.item, input.image),
-            },
-          ],
-        }),
-      });
+        });
+      }
 
       if (!response.ok) {
         throw new Error(await openAiHttpError(response, secret.model));

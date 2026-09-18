@@ -217,4 +217,27 @@ describe('createOpenAiKeywordExtractor', () => {
       /OpenAI shopping keywords HTTP 404 \(model=gpt-4\.1-mini\).*model_not_found/,
     );
   });
+
+  it('maps abort to a timeout error with model', async () => {
+    const abort = new Error('This operation was aborted');
+    abort.name = 'AbortError';
+    const httpPost = jest.fn().mockRejectedValue(abort);
+    const extractor = createOpenAiKeywordExtractor({
+      fetchSecret: async () => ({
+        apiKey: 'sk-test',
+        model: DEFAULT_OPENAI_SHOPPING_MODEL,
+        endpoint: DEFAULT_OPENAI_SHOPPING_ENDPOINT,
+      }),
+      httpPost,
+    });
+
+    await expect(extractor.extract({ item: clothingItem() })).rejects.toMatchObject({
+      name: 'UpstreamTimeoutError',
+      message: expect.stringMatching(
+        /OpenAI shopping keywords timed out after \d+ms \(model=gpt-4\.1-mini\)/,
+      ),
+      timeoutMs: expect.any(Number),
+      model: DEFAULT_OPENAI_SHOPPING_MODEL,
+    });
+  });
 });

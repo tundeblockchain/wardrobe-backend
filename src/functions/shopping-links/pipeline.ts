@@ -19,6 +19,7 @@ import {
   createOpenAiKeywordExtractor,
   preferredItemImageKey,
 } from './keywords';
+import { upstreamFailureLogFields } from './http';
 import {
   ShoppingSerpClient,
   brightDataFailureLogFields,
@@ -129,6 +130,7 @@ export async function resolveItemShoppingLinks(
     logger.warn('Shopping-links upstream unavailable', {
       itemId: item.itemId,
       error: error instanceof Error ? error.message : 'unknown',
+      ...upstreamFailureLogFields(error),
       ...brightDataFailureLogFields(error),
     });
     if (stored) {

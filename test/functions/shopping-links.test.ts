@@ -48,6 +48,11 @@ import { handleShoppingLinks, handler } from '../../src/functions/shopping-links
 import { lookupShoppingCacheKey } from '../../src/functions/shopping-links/cache';
 import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
 import {
+  DEFAULT_OPENAI_SHOPPING_ENDPOINT,
+  DEFAULT_OPENAI_SHOPPING_MODEL,
+  createOpenAiKeywordExtractor,
+} from '../../src/functions/shopping-links/keywords';
+import {
   DEFAULT_BRIGHT_DATA_ENDPOINT,
   createBrightDataSerpClient,
 } from '../../src/functions/shopping-links/serp';
@@ -450,11 +455,64 @@ describe('shopping-links handler (WARDROBE-96)', () => {
           level: 'WARN',
           itemId: ITEM_ID,
           error: 'Bright Data SERP returned a non-JSON body',
+          errorName: 'BrightDataSerpError',
           status: 200,
           contentType: 'text/html; charset=utf-8',
           bodySnippet: expect.stringContaining('<!DOCTYPE html>'),
         });
         expect(JSON.stringify(warn)).not.toContain('brd-token-secret-value');
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it('logs timeout step and model when OpenAI aborts', async () => {
+      mockOwnedItem();
+      const logs: Array<Record<string, unknown>> = [];
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {
+        logs.push(JSON.parse(line) as Record<string, unknown>);
+      });
+      const abort = new Error('This operation was aborted');
+      abort.name = 'AbortError';
+
+      try {
+        const result = asResult(
+          await handleShoppingLinks(event(), {
+            keywords: createOpenAiKeywordExtractor({
+              fetchSecret: async () => ({
+                apiKey: 'sk-test',
+                model: DEFAULT_OPENAI_SHOPPING_MODEL,
+                endpoint: DEFAULT_OPENAI_SHOPPING_ENDPOINT,
+              }),
+              httpPost: async () => {
+                throw abort;
+              },
+            }),
+            cache: memoryCache(),
+            getImage: async () => ({
+              bytes: Buffer.from('jpeg-bytes'),
+              contentType: 'image/jpeg',
+            }),
+          }),
+        );
+
+        expect(result.statusCode).toBe(200);
+        const warn = logs.find(
+          (entry) => entry.message === 'Shopping-links upstream unavailable',
+        );
+        expect(warn).toMatchObject({
+          level: 'WARN',
+          itemId: ITEM_ID,
+          error: expect.stringMatching(
+            /OpenAI shopping keywords timed out after \d+ms \(model=gpt-4\.1-mini\)/,
+          ),
+          errorName: 'UpstreamTimeoutError',
+          step: 'OpenAI shopping keywords',
+          model: DEFAULT_OPENAI_SHOPPING_MODEL,
+          timeoutMs: expect.any(Number),
+          cause: 'This operation was aborted',
+          causeName: 'AbortError',
+        });
       } finally {
         consoleSpy.mockRestore();
       }
