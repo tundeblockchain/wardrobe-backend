@@ -283,6 +283,22 @@ export function applySuperwallEvent(options: {
   return { stored, skipped: false };
 }
 
+export async function loadStoredEntitlement(
+  userId: string,
+): Promise<StoredEntitlement | undefined> {
+  const row = await getItem(keys.userPk(userId), keys.entitlementSk);
+  return storedEntitlementFromRow(row);
+}
+
+export function storedEntitlementFromRow(
+  item: DynamoItem | undefined,
+): StoredEntitlement | undefined {
+  if (!item || item.entityType !== 'ENTITLEMENT') {
+    return undefined;
+  }
+  return fromDynamo(item);
+}
+
 export async function persistEntitlement(
   stored: StoredEntitlement,
 ): Promise<void> {

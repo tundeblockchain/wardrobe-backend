@@ -38,6 +38,8 @@ describe('entitlements stack wiring (WARDROBE-91)', () => {
     expect(synthesized).not.toMatch(/whsec_[A-Za-z0-9+/=]{8,}/);
     expect(synthesized).not.toMatch(/SUPERWALL_WEBHOOK_SECRET\s*[:=]/);
     expect(synthesized).not.toContain('com.example.premium');
+    expect(synthesized).not.toMatch(/sk_live_/);
+    expect(synthesized).not.toContain('BEGIN PRIVATE KEY');
   });
 
   test('GET /me is Firebase-auth; Superwall webhook is public', () => {

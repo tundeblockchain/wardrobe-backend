@@ -10,7 +10,8 @@ import * as path from 'path';
 
 /**
  * Isolated WARDROBE-91 wiring (Superwall webhook → Dynamo entitlements).
- * GET /me stays on MeFn. This module only owns the public webhook + secret.
+ * GET /me stays on MeFn. DELETE /me (WARDROBE-103) also reads this secret
+ * to attempt Stripe / Play cancel. This module owns the public webhook + secret.
  */
 export interface EntitlementsProps {
   stage: string;
@@ -34,7 +35,7 @@ export function addEntitlements(
   const superwallSecret = new secretsmanager.Secret(scope, 'SuperwallSecret', {
     secretName: `wardrobe/${stage}/superwall`,
     description:
-      'Superwall webhook signing secret (WARDROBE-91). Store JSON { "webhookSecret", "productTiers"? }. productTiers maps App Store / Play product IDs (TBD) to BASIC | PREMIUM. Never commit the real secret.',
+      'Superwall webhook + optional cancel credentials (WARDROBE-91 / WARDROBE-103). Store JSON { "webhookSecret", "productTiers"?, "stripeSecretKey"?, "playPackageName"?, "playServiceAccount"? }. productTiers maps App Store / Play product IDs (TBD) to BASIC | PREMIUM. Never commit the real secret.',
     removalPolicy,
   });
 
@@ -75,7 +76,7 @@ export function addEntitlements(
   new cdk.CfnOutput(scope, 'SuperwallSecretName', {
     value: superwallSecret.secretName,
     description:
-      'Secrets Manager secret for Superwall webhook signing secret + optional productTiers map (placeholder until replaced)',
+      'Secrets Manager secret for Superwall webhook signing secret, optional productTiers, and optional Stripe/Play cancel credentials (placeholder until replaced)',
   });
 
   new cdk.CfnOutput(scope, 'SuperwallWebhookUrl', {

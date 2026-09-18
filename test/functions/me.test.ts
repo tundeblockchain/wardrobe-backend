@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
-import { DynamoItem, UserWipeResult } from '../../src/shared/types';
+import { AccountDeleteResult, DynamoItem, UserWipeResult } from '../../src/shared/types';
 
 const mockDynamoSend = jest.fn();
 const mockS3Send = jest.fn();
@@ -320,10 +320,13 @@ describe('me handler (WARDROBE-36)', () => {
   });
 
   describe('DELETE /me/content', () => {
-    it('wipes owned wardrobes, items, outfits, and S3, and keeps the account', async () => {
-      mockPopulatedWipe({ includeProfile: true });
+    it('does not cancel or revoke entitlement (WARDROBE-103 leaves content-delete unchanged)', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const cancelSubscription = jest.fn();
 
-      const result = asResult(await handler(event({ path: '/me/content' })));
+      const result = asResult(
+        await handler(event({ path: '/me/content' }), { cancelSubscription }),
+      );
 
       expect(result.statusCode).toBe(200);
       expect(bodyOf(result)).toEqual<UserWipeResult>({
@@ -335,7 +338,10 @@ describe('me handler (WARDROBE-36)', () => {
         deletedS3Objects: 2,
         s3Failures: 0,
       });
-
+      expect(bodyOf(result)).not.toHaveProperty('deleted');
+      expect(bodyOf(result)).not.toHaveProperty('entitlementRevoked');
+      expect(bodyOf(result)).not.toHaveProperty('subscription');
+      expect(cancelSubscription).not.toHaveBeenCalled();
       expect(deletedKeys()).toEqual(
         expect.arrayContaining([
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
@@ -345,11 +351,11 @@ describe('me handler (WARDROBE-36)', () => {
       );
       expect(deletedKeys()).not.toContainEqual({
         PK: `USER#${OWNER_ID}`,
-        SK: 'PROFILE',
+        SK: 'ENTITLEMENT',
       });
       expect(deletedKeys()).not.toContainEqual({
         PK: `USER#${OWNER_ID}`,
-        SK: 'ENTITLEMENT',
+        SK: 'PROFILE',
       });
       expect(deletedKeys().some((key) => key.PK.includes(OTHER_ID))).toBe(false);
     });
@@ -485,15 +491,59 @@ describe('me handler (WARDROBE-36)', () => {
     });
   });
 
-  describe('DELETE /me', () => {
-    it('wipes Dynamo + S3 including PROFILE and ENTITLEMENT and tells Flutter Auth remains', async () => {
-      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+  describe('DELETE /me (WARDROBE-103)', () => {
+    it('returns NONE, revokes nothing extra, and still wipes when there is no entitlement', async () => {
+      mockEmptyWipe();
+      const cancelSubscription = jest.fn().mockResolvedValue({ status: 'NONE' });
 
-      const result = asResult(await handler(event({ path: '/me' })));
+      const result = asResult(
+        await handler(event({ path: '/me' }), { cancelSubscription }),
+      );
 
       expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual<UserWipeResult>({
+      expect(bodyOf(result)).toEqual({
+        deleted: true,
         keepAccount: false,
+        entitlementRevoked: true,
+        subscription: { status: 'NONE' },
+        deletedWardrobes: 0,
+        deletedItems: 0,
+        deletedOutfits: 0,
+        deletedAiProfiles: 0,
+        deletedS3Objects: 0,
+        s3Failures: 0,
+      });
+      expect(cancelSubscription).toHaveBeenCalledWith({
+        userId: OWNER_ID,
+        entitlement: undefined,
+      });
+      expect(JSON.stringify(bodyOf(result))).not.toContain('null');
+    });
+
+    it('cancels immediately then wipes PROFILE and ENTITLEMENT', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const cancelSubscription = jest.fn().mockResolvedValue({
+        status: 'CANCELED',
+        cancelMode: 'IMMEDIATE',
+        store: 'APP_STORE',
+        expiresAt: '2026-10-01T00:00:00.000Z',
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me' }), { cancelSubscription }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual<AccountDeleteResult>({
+        deleted: true,
+        keepAccount: false,
+        entitlementRevoked: true,
+        subscription: {
+          status: 'CANCELED',
+          cancelMode: 'IMMEDIATE',
+          store: 'APP_STORE',
+          expiresAt: '2026-10-01T00:00:00.000Z',
+        },
         deletedWardrobes: 1,
         deletedItems: 1,
         deletedOutfits: 1,
@@ -501,7 +551,14 @@ describe('me handler (WARDROBE-36)', () => {
         deletedS3Objects: 2,
         s3Failures: 0,
       });
-
+      expect(cancelSubscription).toHaveBeenCalledWith({
+        userId: OWNER_ID,
+        entitlement: expect.objectContaining({
+          userId: OWNER_ID,
+          tier: 'PREMIUM',
+          status: 'ACTIVE',
+        }),
+      });
       expect(deletedKeys()).toEqual(
         expect.arrayContaining([
           { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
@@ -511,16 +568,115 @@ describe('me handler (WARDROBE-36)', () => {
           { PK: `USER#${OWNER_ID}`, SK: 'ENTITLEMENT' },
         ]),
       );
+      expect(JSON.stringify(bodyOf(result))).not.toContain('null');
+    });
+
+    it('returns CANCEL_AT_PERIOD_END, still revokes entitlement, and deletes AWS data', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const cancelSubscription = jest.fn().mockResolvedValue({
+        status: 'CANCEL_AT_PERIOD_END',
+        cancelMode: 'PERIOD_END',
+        store: 'PLAY_STORE',
+        expiresAt: '2026-10-01T00:00:00.000Z',
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me' }), { cancelSubscription }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          deleted: true,
+          keepAccount: false,
+          entitlementRevoked: true,
+          subscription: {
+            status: 'CANCEL_AT_PERIOD_END',
+            cancelMode: 'PERIOD_END',
+            store: 'PLAY_STORE',
+            expiresAt: '2026-10-01T00:00:00.000Z',
+          },
+        }),
+      );
+      expect(deletedKeys()).toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: 'ENTITLEMENT',
+      });
+    });
+
+    it('still deletes account data and revokes entitlement when cancel fails', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const cancelSubscription = jest.fn().mockResolvedValue({
+        status: 'CANCEL_FAILED',
+        store: 'APP_STORE',
+        retryInStore: true,
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me' }), { cancelSubscription }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          deleted: true,
+          keepAccount: false,
+          entitlementRevoked: true,
+          subscription: {
+            status: 'CANCEL_FAILED',
+            store: 'APP_STORE',
+            retryInStore: true,
+          },
+          deletedWardrobes: 1,
+          deletedItems: 1,
+          deletedOutfits: 1,
+        }),
+      );
+      expect(deletedKeys()).toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: 'ENTITLEMENT',
+      });
+    });
+
+    it('still deletes when the cancel client throws', async () => {
+      mockPopulatedWipe({ includeEntitlement: true });
+      const cancelSubscription = jest.fn().mockRejectedValue(new Error('stripe down'));
+
+      const result = asResult(
+        await handler(event({ path: '/me' }), { cancelSubscription }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          deleted: true,
+          entitlementRevoked: true,
+          subscription: {
+            status: 'CANCEL_FAILED',
+            retryInStore: true,
+          },
+        }),
+      );
+      expect(deletedKeys()).toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: 'ENTITLEMENT',
+      });
     });
 
     it('succeeds when already empty so Flutter can still delete Auth', async () => {
       mockEmptyWipe();
+      const cancelSubscription = jest.fn().mockResolvedValue({ status: 'NONE' });
 
-      const result = asResult(await handler(event({ path: '/me' })));
+      const result = asResult(
+        await handler(event({ path: '/me' }), { cancelSubscription }),
+      );
 
       expect(result.statusCode).toBe(200);
       expect(bodyOf(result)).toEqual({
+        deleted: true,
         keepAccount: false,
+        entitlementRevoked: true,
+        subscription: { status: 'NONE' },
         deletedWardrobes: 0,
         deletedItems: 0,
         deletedOutfits: 0,
@@ -528,6 +684,28 @@ describe('me handler (WARDROBE-36)', () => {
         deletedS3Objects: 0,
         s3Failures: 0,
       });
+    });
+
+    it('omits JSON null on optional subscription fields', async () => {
+      mockEmptyWipe();
+      const cancelSubscription = jest.fn().mockResolvedValue({
+        status: 'CANCELED',
+        cancelMode: undefined,
+        store: undefined,
+        expiresAt: undefined,
+        retryInStore: false,
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me' }), { cancelSubscription }),
+      );
+
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          subscription: { status: 'CANCELED' },
+        }),
+      );
+      expect(JSON.stringify(bodyOf(result))).not.toContain('null');
     });
 
     it('wipes owned PERSONAL AI profiles and leaves GENERIC_MODEL catalog rows', async () => {
