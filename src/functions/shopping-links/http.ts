@@ -1,3 +1,7 @@
+export type FetchHeaders =
+  | { get(name: string): string | null }
+  | Record<string, string>;
+
 export type FetchLike = (
   url: string,
   init?: {
@@ -9,8 +13,56 @@ export type FetchLike = (
 ) => Promise<{
   ok: boolean;
   status: number;
+  headers?: FetchHeaders;
   text(): Promise<string>;
 }>;
+
+export const UPSTREAM_BODY_SNIPPET_MAX = 500;
+
+export function headerValue(
+  headers: FetchHeaders | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) {
+    return undefined;
+  }
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    const value = (headers as { get(name: string): string | null }).get(name);
+    return value?.trim() || undefined;
+  }
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers as Record<string, string>)) {
+    if (key.toLowerCase() === target && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+/** Truncated, whitespace-collapsed snippet. Never includes Authorization / apiToken values. */
+export function truncateUpstreamBody(
+  body: string,
+  max = UPSTREAM_BODY_SNIPPET_MAX,
+): string {
+  const redacted = redactSecretMaterial(body).replace(/\s+/g, ' ').trim();
+  if (redacted.length <= max) {
+    return redacted;
+  }
+  return `${redacted.slice(0, max)}…`;
+}
+
+export function redactSecretMaterial(value: string): string {
+  return value
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(
+      /("?(?:apiToken|api_token|token|apiKey|api_key|Authorization)"?\s*[:=]\s*")[^"]*/gi,
+      '$1[redacted]',
+    );
+}
+
+export function looksLikeHtml(text: string): boolean {
+  return /^(<!doctype\s+html\b|<html\b)/i.test(text.trim());
+}
 
 export function timedFetch(
   timeoutMs: number,

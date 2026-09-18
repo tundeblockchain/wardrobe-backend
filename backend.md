@@ -1107,7 +1107,7 @@ GET /wardrobes/{wardrobeId}/items/{itemId}/shopping-links
 GET /shopping-links?limit=5&linksPerItem=8
 ```
 
-Owner-only. Not entitlement-gated. See README “Related shopping links (WARDROBE-96)” for the Flutter WARDROBE-95 contract.
+Owner-only. Not entitlement-gated. See README “Related shopping links (WARDROBE-96)” for the Flutter WARDROBE-95 contract. Bright Data SERP request shape (WARDROBE-98): `POST /request` with `format: "json"` and Google Shopping `tbm=shop` + `brd_json=json`.
 
 ### Uploads
 

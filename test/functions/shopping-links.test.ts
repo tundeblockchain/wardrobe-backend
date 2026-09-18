@@ -47,6 +47,10 @@ jest.mock('@aws-sdk/client-s3', () => ({
 import { handleShoppingLinks, handler } from '../../src/functions/shopping-links/handler';
 import { lookupShoppingCacheKey } from '../../src/functions/shopping-links/cache';
 import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
+import {
+  DEFAULT_BRIGHT_DATA_ENDPOINT,
+  createBrightDataSerpClient,
+} from '../../src/functions/shopping-links/serp';
 
 const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
@@ -387,6 +391,73 @@ describe('shopping-links handler (WARDROBE-96)', () => {
           message: 'Shopping links are temporarily unavailable.',
         },
       });
+    });
+
+    it('soft-fails HTML SERP bodies and logs status, content-type, and a truncated snippet (WARDROBE-98)', async () => {
+      mockOwnedItem();
+      const logs: Array<Record<string, unknown>> = [];
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {
+        logs.push(JSON.parse(line) as Record<string, unknown>);
+      });
+
+      const html = '<!DOCTYPE html><html><body>Google Shopping captcha</body></html>';
+      const serp = createBrightDataSerpClient({
+        fetchSecret: async () => ({
+          apiToken: 'brd-token-secret-value',
+          zone: 'serp_api1',
+          endpoint: DEFAULT_BRIGHT_DATA_ENDPOINT,
+          country: 'gb',
+          language: 'en',
+        }),
+        httpPost: async () => ({
+          ok: true,
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+          text: async () => html,
+        }),
+      });
+
+      try {
+        const result = asResult(
+          await handleShoppingLinks(event(), {
+            keywords: { extract: async () => ['black tee'] },
+            serp,
+            cache: memoryCache(),
+            getImage: async () => ({
+              bytes: Buffer.from('jpeg-bytes'),
+              contentType: 'image/jpeg',
+            }),
+          }),
+        );
+
+        expect(result.statusCode).toBe(200);
+        expect(bodyOf(result)).toEqual({
+          itemId: ITEM_ID,
+          wardrobeId: WARDROBE_ID,
+          keywords: [],
+          cached: false,
+          links: [],
+          warning: {
+            code: 'SHOPPING_UPSTREAM_UNAVAILABLE',
+            message: 'Shopping links are temporarily unavailable.',
+          },
+        });
+
+        const warn = logs.find(
+          (entry) => entry.message === 'Shopping-links upstream unavailable',
+        );
+        expect(warn).toMatchObject({
+          level: 'WARN',
+          itemId: ITEM_ID,
+          error: 'Bright Data SERP returned a non-JSON body',
+          status: 200,
+          contentType: 'text/html; charset=utf-8',
+          bodySnippet: expect.stringContaining('<!DOCTYPE html>'),
+        });
+        expect(JSON.stringify(warn)).not.toContain('brd-token-secret-value');
+      } finally {
+        consoleSpy.mockRestore();
+      }
     });
 
     it('returns stale cache when upstream fails', async () => {

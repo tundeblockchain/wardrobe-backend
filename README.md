@@ -924,7 +924,7 @@ Never 5xx for upstream blips. Missing wardrobe/item stays 404 (not a soft-fail).
 
 1. Load item metadata (name, category, subcategory, colours, brand, AI detections when present) and the item image from S3 (**processed key preferred**, else original).
 2. Call **OpenAI** vision/chat (`gpt-4.1-mini` default) on the image + metadata → search keywords.
-3. Call **Bright Data SERP API** (`POST https://api.brightdata.com/request`) with Google Shopping (`tbm=shop`, `udm=28`, `brd_json=1`).
+3. Call **Bright Data SERP API** (`POST https://api.brightdata.com/request`, `format: "json"`) with Google Shopping (`tbm=shop`, `brd_json=json`). Do not send `udm=28` — Bright Data’s shopping parser keys off `tbm=shop`, and `format: "raw"` returns HTML (WARDROBE-98).
 4. Map SERP products onto the Link DTO.
 
 Flutter never talks to OpenAI or Bright Data.
@@ -954,15 +954,15 @@ The shopping-links Lambda reads `OPENAI_SHOPPING_SECRET_ARN` at runtime. Optiona
 
 **Bright Data SERP** — `wardrobe/{stage}/bright-data`
 
-JSON only (a raw string is rejected):
+JSON only (a raw string is rejected). The token must be a Bright Data **API key** (Bearer), and `zone` must be a **SERP API** zone — not Web Unlocker (`web_unlocker1`) and not a proxy zone. A Web Unlocker zone returns HTML even with a valid token.
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `apiToken` | yes | Bearer token. Aliases: `api_token`, `token`, `apiKey`, `api_key`, `key` |
-| `zone` | yes | SERP zone name (e.g. `serp_api1`). Alias: `zoneName` |
-| `endpoint` | no | Default `https://api.brightdata.com/request` |
+| `apiToken` | yes | Bearer API key from the SERP zone Overview (or Account settings). Aliases: `api_token`, `token`, `apiKey`, `api_key`, `key`, `BRIGHT_DATA_API_TOKEN` |
+| `zone` | yes | SERP zone name (e.g. `serp_api1`). Alias: `zoneName`, `zone_name` |
+| `endpoint` | no | Default `https://api.brightdata.com/request`. Do not point this at a proxy host |
 | `customer` | no | Bright Data customer id (documented for operators; REST `/request` uses `apiToken` + `zone`) |
-| `country` | no | ISO country for SERP targeting. Default `gb`. Aliases: `gl`, `geo` |
+| `country` | no | ISO country for SERP targeting (`gl` on the Google URL and `country` on the POST body). Default `gb`. Aliases: `gl`, `geo` |
 | `language` | no | Default `en`. Aliases: `hl`, `lang` |
 
 ```bash
@@ -971,17 +971,25 @@ aws secretsmanager put-secret-value \
   --secret-string '{"apiToken":"your-bright-data-api-token","zone":"serp_api1","country":"gb","language":"en"}'
 ```
 
-Request body sent to Bright Data:
+Request sent to Bright Data (code, not the secret):
+
+- `POST https://api.brightdata.com/request`
+- `Authorization: Bearer <apiToken>`
+- `Content-Type: application/json`
+- `Accept: application/json`
 
 ```json
 {
   "zone": "serp_api1",
-  "url": "https://www.google.com/search?q=...&tbm=shop&udm=28&hl=en&gl=gb&brd_json=1",
-  "format": "raw",
-  "method": "GET",
+  "url": "https://www.google.com/search?q=...&tbm=shop&hl=en&gl=gb&brd_json=json",
+  "format": "json",
   "country": "gb"
 }
 ```
+
+`format` must be `"json"`. Bright Data’s SERP OpenAPI treats `"raw"` as an HTML string — that was the WARDROBE-98 CloudWatch `non-JSON body` failure. `brd_json=json` is the current parsed-JSON query value (`html` is the default). Do not add `udm=28` alongside `tbm=shop`.
+
+On upstream failure CloudWatch logs `status`, `contentType`, and a truncated `bodySnippet` (secrets / `apiToken` / `Authorization` are never logged). Flutter still receives the WARDROBE-96 Link DTO: `200` with empty `links` (item-scoped) or omitted Home rows, plus optional `warning.code = SHOPPING_UPSTREAM_UNAVAILABLE`.
 
 Do **not** put these keys in the Flutter app.
 

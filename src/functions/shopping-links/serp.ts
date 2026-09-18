@@ -4,15 +4,22 @@ import {
   FetchLike,
   asRecord,
   firstString,
+  headerValue,
+  looksLikeHtml,
   looksLikePlaceholderSecret,
   parseJsonContent,
   timedFetch,
+  truncateUpstreamBody,
 } from './http';
 
 export const DEFAULT_BRIGHT_DATA_ENDPOINT = 'https://api.brightdata.com/request';
 export const DEFAULT_BRIGHT_DATA_TIMEOUT_MS = 8_000;
 export const DEFAULT_BRIGHT_DATA_COUNTRY = 'gb';
 export const DEFAULT_BRIGHT_DATA_LANGUAGE = 'en';
+/** Official SERP `/request` `format`: `json` is parsed SERP; `raw` is HTML. */
+export const BRIGHT_DATA_SERP_FORMAT = 'json';
+/** Bright Data parsed-JSON query value (`html` is the default on `format: raw`). */
+export const BRIGHT_DATA_BRD_JSON = 'json';
 
 export interface BrightDataSecret {
   apiToken: string;
@@ -36,9 +43,55 @@ export interface BrightDataSerpOptions {
   httpPost?: FetchLike;
 }
 
+export class BrightDataSerpError extends Error {
+  readonly status?: number;
+  readonly contentType?: string;
+  readonly bodySnippet?: string;
+
+  constructor(
+    message: string,
+    options: { status?: number; contentType?: string; body?: string } = {},
+  ) {
+    super(message);
+    this.name = 'BrightDataSerpError';
+    if (options.status !== undefined) {
+      this.status = options.status;
+    }
+    if (options.contentType) {
+      this.contentType = options.contentType;
+    }
+    if (options.body !== undefined) {
+      this.bodySnippet = truncateUpstreamBody(options.body);
+    }
+  }
+}
+
+export function brightDataFailureLogFields(
+  error: unknown,
+): Record<string, unknown> {
+  if (!(error instanceof BrightDataSerpError)) {
+    return {};
+  }
+  const fields: Record<string, unknown> = {};
+  if (error.status !== undefined) {
+    fields.status = error.status;
+  }
+  if (error.contentType) {
+    fields.contentType = error.contentType;
+  }
+  if (error.bodySnippet) {
+    fields.bodySnippet = error.bodySnippet;
+  }
+  return fields;
+}
+
 /**
  * Bright Data SERP (Google Shopping) via REST `POST /request`.
  * Tests inject fetchSecret / httpPost — no live Bright Data in CI.
+ *
+ * `format` must be `json` (OpenAPI: `raw` is HTML). Google Shopping uses
+ * `tbm=shop` plus `brd_json=json`. Do not send `udm=28` with `tbm=shop` —
+ * that combination returns HTML that Bright Data does not parse.
  */
 export function createBrightDataSerpClient(
   options: BrightDataSerpOptions = {},
@@ -51,19 +104,11 @@ export function createBrightDataSerpClient(
       const secret = await fetchSecret();
       const query = buildShoppingQuery(input.keywords, input.metadataQuery);
       if (!query) {
-        throw new Error('Bright Data SERP query is empty');
+        throw new BrightDataSerpError('Bright Data SERP query is empty');
       }
 
       const targetUrl = buildGoogleShoppingUrl(query, secret);
-      const body: Record<string, unknown> = {
-        zone: secret.zone,
-        url: targetUrl,
-        format: 'raw',
-        method: 'GET',
-      };
-      if (secret.country) {
-        body.country = secret.country;
-      }
+      const body = buildBrightDataRequestBody(secret, targetUrl);
 
       const response = await httpPost(secret.endpoint, {
         method: 'POST',
@@ -75,20 +120,56 @@ export function createBrightDataSerpClient(
         body: JSON.stringify(body),
       });
 
+      const contentType = headerValue(response.headers, 'content-type');
+      const rawBody = await response.text();
+
       if (!response.ok) {
-        throw new Error(`Bright Data SERP HTTP ${response.status}`);
+        throw new BrightDataSerpError(
+          `Bright Data SERP HTTP ${response.status}`,
+          { status: response.status, contentType, body: rawBody },
+        );
       }
 
       let parsed: unknown;
       try {
-        parsed = parseJsonContent(await response.text());
+        parsed = parseJsonContent(rawBody);
       } catch {
-        throw new Error('Bright Data SERP returned a non-JSON body');
+        throw new BrightDataSerpError(
+          'Bright Data SERP returned a non-JSON body',
+          { status: response.status, contentType, body: rawBody },
+        );
+      }
+
+      const nestedHtml = nestedHtmlWithoutProducts(parsed);
+      if (nestedHtml) {
+        throw new BrightDataSerpError(
+          'Bright Data SERP returned a non-JSON body',
+          {
+            status: response.status,
+            contentType: contentType ?? 'text/html',
+            body: nestedHtml,
+          },
+        );
       }
 
       return mapSerpToLinks(parsed, input.maxLinks, query);
     },
   };
+}
+
+export function buildBrightDataRequestBody(
+  secret: Pick<BrightDataSecret, 'zone' | 'country'>,
+  targetUrl: string,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    zone: secret.zone,
+    url: targetUrl,
+    format: BRIGHT_DATA_SERP_FORMAT,
+  };
+  if (secret.country) {
+    body.country = secret.country;
+  }
+  return body;
 }
 
 export function parseBrightDataSecret(
@@ -169,10 +250,9 @@ export function buildGoogleShoppingUrl(
   const url = new URL('https://www.google.com/search');
   url.searchParams.set('q', query);
   url.searchParams.set('tbm', 'shop');
-  url.searchParams.set('udm', '28');
   url.searchParams.set('hl', secret.language);
   url.searchParams.set('gl', secret.country);
-  url.searchParams.set('brd_json', '1');
+  url.searchParams.set('brd_json', BRIGHT_DATA_BRD_JSON);
   return url.toString();
 }
 
@@ -221,6 +301,18 @@ function unwrapSerpPayload(payload: unknown): unknown {
     return nestedBody;
   }
   return payload;
+}
+
+/** Unlocker-style `{ body: "<html>..." }` with no shopping rows is still a non-JSON SERP. */
+function nestedHtmlWithoutProducts(payload: unknown): string | undefined {
+  const record = asRecord(payload);
+  if (!record || typeof record.body !== 'string' || !looksLikeHtml(record.body)) {
+    return undefined;
+  }
+  if (collectProductRows(unwrapSerpPayload(payload)).length > 0) {
+    return undefined;
+  }
+  return record.body;
 }
 
 function collectProductRows(payload: unknown): Record<string, unknown>[] {
