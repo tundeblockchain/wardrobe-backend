@@ -77,7 +77,7 @@ export async function handler(
     }
 
     if (isWornOnRoute(event)) {
-      return handleWornOn(event, userId, wardrobeId, outfitId);
+      return await handleWornOn(event, userId, wardrobeId, outfitId);
     }
 
     if (isRenderRoute(event)) {
