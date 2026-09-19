@@ -1197,6 +1197,24 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
   });
 
+  test('worn-on routes are owner-auth on OutfitsFn (WARDROBE-120)', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+
+    for (const routeKey of [
+      'GET /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
+      'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
+      'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}',
+      'GET /wardrobes/{wardrobeId}/worn-on',
+    ]) {
+      const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
+      expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+    }
+  });
+
   test('protected routes use the Firebase Lambda authorizer; /health stays public', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
       Name: 'firebase-dev',
@@ -1232,6 +1250,10 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
       'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
+      'GET /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
+      'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
+      'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}',
+      'GET /wardrobes/{wardrobeId}/worn-on',
       'GET /wardrobes/{wardrobeId}/recommendations',
       'GET /me',
       'DELETE /me',

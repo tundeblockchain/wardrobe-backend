@@ -350,6 +350,23 @@ export interface Outfit {
   updatedAt: string;
 }
 
+/**
+ * One date-only “worn on” log entry (WARDROBE-120 / Flutter WARDROBE-121).
+ * `wornOn` is a calendar date `YYYY-MM-DD`, not a datetime.
+ * Soft-omit unused optionals — never send JSON `null`.
+ */
+export interface OutfitWornOn {
+  outfitId: string;
+  wardrobeId: string;
+  wornOn: string;
+  createdAt: string;
+}
+
+/** Flutter list / calendar payload for worn-on dates. */
+export interface OutfitWornOnList {
+  entries: OutfitWornOn[];
+}
+
 /** Suggested outfit. Flutter Outfit item shape (`itemId` + `slot`) without persist. */
 export interface OutfitRecommendation {
   name?: string;
@@ -547,6 +564,7 @@ export type EntityType =
   | 'WARDROBE'
   | 'ITEM'
   | 'OUTFIT'
+  | 'WORN_ON'
   | 'AIPROFILE'
   | 'ENTITLEMENT'
   | 'SHOPPING_CACHE';

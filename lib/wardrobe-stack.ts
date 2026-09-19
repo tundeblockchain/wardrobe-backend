@@ -46,6 +46,7 @@ export class WardrobeStack extends cdk.Stack {
     // Single-table PK/SK matches backend.md §16–17 access patterns:
     // USER#{uid}                 / PROFILE | WARDROBE#{wardrobeId} | AIPROFILE#{id}
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
+    //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
     // AIPROFILE#GENERIC_MODEL    / AIPROFILE#{id}
     // GSI1 (sparse): TYPE#GENERIC_MODEL / AIPROFILE#{id}
     const table = new dynamodb.Table(this, 'WardrobeTable', {
@@ -717,6 +718,27 @@ export class WardrobeStack extends cdk.Stack {
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/outfits/{outfitId}/render',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: outfitsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: outfitsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: outfitsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/worn-on',
+      methods: [apigwv2.HttpMethod.GET],
       integration: outfitsIntegration,
       authorizer: firebaseAuthorizer,
     });

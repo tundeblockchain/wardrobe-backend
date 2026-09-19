@@ -26,6 +26,7 @@ Working in this first cut:
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
+- Outfit worn-on log (date-only entries for calendar / habit; Flutter WARDROBE-121)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
@@ -197,7 +198,7 @@ DELETE /me
 
 `GET /me` returns the Flutter entitlement DTO (WARDROBE-91). See **Entitlements** below.
 
-`DELETE` wipes the caller's wardrobes, items, outfits, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
+`DELETE` wipes the caller's wardrobes, items, outfits, worn-on dates, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
 
 | Endpoint | Keeps Firebase Auth user | Keeps entitlement | Cancels store subscription | Flutter next step |
 | --- | --- | --- | --- | --- |
@@ -676,6 +677,10 @@ PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
 POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/render
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}
+GET    /wardrobes/{wardrobeId}/worn-on
 ```
 
 Create body (`name` and `items` required):
@@ -692,7 +697,78 @@ Create body (`name` and `items` required):
 
 `name` is trimmed, 1–100 characters. `items` must contain at least one entry. `slot` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `ACCESSORY` may appear more than once; other slots may appear only once. Duplicate `itemId` values are rejected.
 
-Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render` / `renderHistory` / `renderImageUrls`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Create / PATCH never accept a client-supplied `render` or `renderHistory` object.
+Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render` / `renderHistory` / `renderImageUrls`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204` and also deletes that outfit’s worn-on dates. Create / PATCH never accept a client-supplied `render` or `renderHistory` object.
+
+### Outfit worn-on log (WARDROBE-120) — Flutter WARDROBE-121 contract
+
+Persist date-only “I wore this outfit on …” entries for a calendar / habit loop. **No AI.** Identity comes from the Firebase authorizer (`getUserId`). Body / query / path `userId` is ignored. The wardrobe and outfit must belong to that user. Not entitlement-gated (Free / Basic / Premium).
+
+```http
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}
+GET    /wardrobes/{wardrobeId}/worn-on?from=YYYY-MM-DD&to=YYYY-MM-DD
+```
+
+**Field name:** `wornOn` (string). Same camelCase in the JSON DTO and Dynamo. This is a **calendar date** `YYYY-MM-DD`, not a datetime — `createdAt` stays an ISO 8601 timestamp (when the date was first logged).
+
+Do not send `wornOnDate`, `wornAt`, or a datetime. Flutter WARDROBE-121 should use `wornOn`.
+
+#### Set (mark worn)
+
+```json
+{ "wornOn": "2026-09-18" }
+```
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `wornOn` | string | yes | ISO date `YYYY-MM-DD` only. Example: `2026-09-18`. Datetimes such as `2026-09-18T12:00:00.000Z` are `400 VALIDATION_ERROR`. Impossible calendars (`2026-02-31`) are `400`. |
+
+- First log of that date → `201` with the `OutfitWornOn` entry.
+- Same date again → `200` with the **existing** entry (`createdAt` unchanged). Idempotent for a calendar tap.
+- Body `userId` is ignored.
+
+```json
+{
+  "outfitId": "outfit_xyz123ab",
+  "wardrobeId": "wd_abc123xyz0",
+  "wornOn": "2026-09-18",
+  "createdAt": "2026-09-18T19:10:00.000Z"
+}
+```
+
+#### List (one outfit)
+
+`GET .../outfits/{outfitId}/worn-on` returns `{ "entries": [...] }` newest date first. Empty log is `200` `{ "entries": [] }`.
+
+#### Remove (optional unmark)
+
+`DELETE .../worn-on/{date}` — `{date}` is `YYYY-MM-DD`. Returns `204`. Missing / already-removed dates are also `204` (idempotent). Invalid path dates are `400 VALIDATION_ERROR`. Outfit / wardrobe ownership failures stay `404` (see errors below).
+
+#### Wardrobe calendar
+
+`GET /wardrobes/{wardrobeId}/worn-on` returns every worn-on entry in that wardrobe (`{ "entries": [...] }`, newest `wornOn` first, then `outfitId`). Optional inclusive bounds:
+
+| Query | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `from` | string | no | Inclusive lower bound on `wornOn` (`YYYY-MM-DD`). |
+| `to` | string | no | Inclusive upper bound on `wornOn` (`YYYY-MM-DD`). |
+
+Blank query values are omitted. Invalid dates / datetimes are `400 VALIDATION_ERROR`. `from` after `to` is `400`. Entries outside the range are excluded. Flutter should join `outfitId` to a cached outfit list for names / thumbnails — this payload stays date-only.
+
+#### Errors
+
+| Case | Response |
+| --- | --- |
+| Missing token | `401 UNAUTHENTICATED` |
+| Other-user / missing wardrobe | `404 WARDROBE_NOT_FOUND` |
+| Other-user / missing outfit | `404 OUTFIT_NOT_FOUND` |
+| Missing / invalid `wornOn` or `{date}` | `400 VALIDATION_ERROR` |
+| `from` after `to` | `400 VALIDATION_ERROR` |
+
+No `WORN_ON_NOT_FOUND`. Soft-omit unused optional fields; never send JSON `null`. Create / PATCH outfit never accept client-supplied worn-on arrays. GET outfit / list outfits are unchanged (no `wornOn` field) — Flutter reads the dedicated routes.
+
+**Dynamo (single-table, same outfit keys):** `PK = WARDROBE#{wardrobeId}`, `SK = OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}`, `entityType = WORN_ON`. One row per outfit+date. Deleting an outfit also deletes its worn-on rows. `DELETE /me` and `DELETE /me/content` wipe them with the wardrobe children. Entitlement outfit caps count `OUTFIT` rows only.
 
 ### Outfit try-on / render (WARDROBE-47)
 
