@@ -151,6 +151,10 @@ export async function deleteMany(
   }
 }
 
+export function isConditionalCheckFailed(error: unknown): boolean {
+  return error instanceof Error && error.name === 'ConditionalCheckFailedException';
+}
+
 export async function updateAttributes(
   pk: string,
   sk: string,

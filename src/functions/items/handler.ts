@@ -4,19 +4,26 @@ import {
   deleteItem,
   getOwnedItem,
   getOwnedWardrobe,
+  isConditionalCheckFailed,
   keys,
   putItem,
   queryByPk,
   updateAttributes,
 } from '../../shared/dynamodb';
-import { assertCanCreateCatalog, isPremium } from '../../shared/entitlements';
+import {
+  assertCanCreateCatalog,
+  assertPremiumAi,
+  isPremium,
+} from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import {
+  accepted,
   created,
   errorResponse,
   noContent,
   ok,
   parseJsonBody,
+  routeKey,
 } from '../../shared/http';
 import { newItemId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
@@ -82,6 +89,16 @@ export async function handler(
       throw Errors.validation('wardrobeId is required.');
     }
 
+    if (isReprocessRoute(event)) {
+      if (!itemId) {
+        throw Errors.validation('itemId is required.');
+      }
+      if (method === 'POST') {
+        return accepted(await reprocessItem(userId, wardrobeId, itemId));
+      }
+      throw Errors.validation(`Unsupported method: ${method}`);
+    }
+
     if (!itemId) {
       if (method === 'GET') {
         return ok(
@@ -115,6 +132,139 @@ export async function handler(
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+function isReprocessRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return (
+    key.includes('/items/{itemId}/reprocess') ||
+    (key.includes('/reprocess') && key.includes('/items/')) ||
+    /\/items\/[^/]+\/reprocess\/?$/.test(path)
+  );
+}
+
+/**
+ * WARDROBE-123 — re-enqueue PROCESS_WARDROBE_ITEM for a FAILED item.
+ *
+ * PENDING / PROCESSING are 409 (already in flight). There is no stuck-PENDING
+ * timeout in the worker; do not invent one. READY is 409 ITEM_NOT_RETRIABLE.
+ * Concurrent FAILED retries are idempotent via a Dynamo condition.
+ */
+async function reprocessItem(
+  userId: string,
+  wardrobeId: string,
+  itemId: string,
+): Promise<ClothingItem> {
+  const item = await getOwnedItem(userId, wardrobeId, itemId);
+  await assertPremiumAi(userId);
+
+  const originalImageKey = itemOriginalKey(item);
+  if (!originalImageKey) {
+    throw Errors.validation('Item has no original image to reprocess.');
+  }
+
+  const status = (item.processingStatus as ProcessingStatus | undefined) ?? 'READY';
+  if (status === 'PROCESSING') {
+    throw Errors.processingInProgress('Item is already processing.');
+  }
+  if (status === 'PENDING') {
+    throw Errors.processingInProgress('Item processing is already queued.');
+  }
+  if (status !== 'FAILED') {
+    throw Errors.itemNotRetriable();
+  }
+
+  const previousError =
+    typeof item.processingError === 'string' && item.processingError.trim()
+      ? item.processingError
+      : undefined;
+
+  let reset: DynamoItem;
+  try {
+    reset = await updateAttributes(
+      keys.wardrobePk(wardrobeId),
+      keys.itemSk(itemId),
+      {
+        processingStatus: 'PENDING',
+        updatedAt: nowIso(),
+      },
+      {
+        remove: ['processingError'],
+        conditionExpression:
+          'attribute_exists(PK) AND #processingStatus = :expectedStatus',
+        extraValues: { ':expectedStatus': 'FAILED' },
+      },
+    );
+  } catch (error) {
+    if (isConditionalCheckFailed(error)) {
+      return toClothingItem(await reprocessAfterLostRace(userId, wardrobeId, itemId));
+    }
+    throw error;
+  }
+
+  try {
+    await enqueueProcessWardrobeItem({
+      userId,
+      wardrobeId,
+      itemId,
+      originalImageKey,
+    });
+  } catch (error) {
+    try {
+      await updateAttributes(
+        keys.wardrobePk(wardrobeId),
+        keys.itemSk(itemId),
+        {
+          processingStatus: 'FAILED',
+          updatedAt: nowIso(),
+          ...(previousError ? { processingError: previousError } : {}),
+        },
+      );
+    } catch (compensateError) {
+      logger.error('Failed to restore FAILED after reprocess enqueue failure', {
+        itemId,
+        wardrobeId,
+        error:
+          compensateError instanceof Error
+            ? compensateError.message
+            : 'unknown',
+      });
+    }
+    throw error;
+  }
+
+  return toClothingItem(reset);
+}
+
+async function reprocessAfterLostRace(
+  userId: string,
+  wardrobeId: string,
+  itemId: string,
+): Promise<DynamoItem> {
+  const current = await getOwnedItem(userId, wardrobeId, itemId);
+  const status =
+    (current.processingStatus as ProcessingStatus | undefined) ?? 'READY';
+  if (status === 'PENDING') {
+    return current;
+  }
+  if (status === 'PROCESSING') {
+    throw Errors.processingInProgress('Item is already processing.');
+  }
+  if (status === 'FAILED') {
+    throw Errors.processingInProgress(
+      'Item processing retry is already in progress.',
+    );
+  }
+  throw Errors.itemNotRetriable();
+}
+
+function itemOriginalKey(item: DynamoItem): string | undefined {
+  if (typeof item.originalKey !== 'string') {
+    return undefined;
+  }
+  const trimmed = item.originalKey.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 async function listItems(

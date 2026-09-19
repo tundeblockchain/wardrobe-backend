@@ -1225,6 +1225,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /wardrobes/{wardrobeId}/items/{itemId}',
       'PATCH /wardrobes/{wardrobeId}/items/{itemId}',
       'DELETE /wardrobes/{wardrobeId}/items/{itemId}',
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess',
       'GET /wardrobes/{wardrobeId}/outfits',
       'POST /wardrobes/{wardrobeId}/outfits',
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}',

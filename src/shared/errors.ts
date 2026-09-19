@@ -9,6 +9,8 @@ export type ErrorCode =
   | 'AI_PROFILE_NOT_FOUND'
   | 'UPLOAD_INVALID'
   | 'PROCESSING_FAILED'
+  | 'PROCESSING_IN_PROGRESS'
+  | 'ITEM_NOT_RETRIABLE'
   | 'ENTITLEMENT_WARDROBE_LIMIT'
   | 'ENTITLEMENT_ITEM_LIMIT'
   | 'ENTITLEMENT_OUTFIT_LIMIT'
@@ -55,6 +57,15 @@ export const Errors = {
 
   uploadInvalid: (message: string) =>
     new AppError('UPLOAD_INVALID', message, 400),
+
+  /** Item already PENDING or PROCESSING — Flutter should keep polling. */
+  processingInProgress: (message = 'Item is already processing.') =>
+    new AppError('PROCESSING_IN_PROGRESS', message, 409),
+
+  /** READY (or any non-FAILED) item cannot be re-enqueued. */
+  itemNotRetriable: (
+    message = 'Only FAILED items can be retried.',
+  ) => new AppError('ITEM_NOT_RETRIABLE', message, 409),
 
   /** Free catalog cap — Flutter WARDROBE-90 maps to Superwall Basic. */
   wardrobeLimit: (

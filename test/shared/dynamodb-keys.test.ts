@@ -1,4 +1,8 @@
-import { GSI1_INDEX_NAME, keys } from '../../src/shared/dynamodb';
+import {
+  GSI1_INDEX_NAME,
+  isConditionalCheckFailed,
+  keys,
+} from '../../src/shared/dynamodb';
 
 describe('DynamoDB key design (backend.md §16–17)', () => {
   it('models user profile and wardrobe access under USER#', () => {
@@ -22,5 +26,15 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.gsi1GenericTypePk()).toBe('TYPE#GENERIC_MODEL');
     expect(keys.gsi1AiProfileSk('profile_123')).toBe('AIPROFILE#profile_123');
     expect(GSI1_INDEX_NAME).toBe('GSI1');
+  });
+});
+
+describe('isConditionalCheckFailed', () => {
+  it('detects DynamoDB conditional check failures', () => {
+    const error = new Error('The conditional request failed');
+    error.name = 'ConditionalCheckFailedException';
+    expect(isConditionalCheckFailed(error)).toBe(true);
+    expect(isConditionalCheckFailed(new Error('boom'))).toBe(false);
+    expect(isConditionalCheckFailed('nope')).toBe(false);
   });
 });
