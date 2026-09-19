@@ -63,6 +63,8 @@ describe('share model (WARDROBE-126)', () => {
     expect(dto).not.toHaveProperty('itemId');
     expect(dto).not.toHaveProperty('userId');
     expect(dto.sharePath).toBe(sharePath(dto.token));
+    expect(dto.sharePath).toMatch(/^\/share\/shr_/);
+    expect(dto.sharePath).not.toMatch(/^https?:\/\//);
     expect(JSON.stringify(dto)).not.toContain('null');
 
     const preview = toSharePreviewDto(item, 'Friday Night');

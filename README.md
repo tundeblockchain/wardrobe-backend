@@ -1052,7 +1052,15 @@ DELETE /shares/{token}
 GET    /public/shares/{token}
 ```
 
-Flutter / Frontend should open `https://{your-app-origin}{sharePath}` (for example `https://app.example/share/shr_…`). This API only returns the path, not an absolute web origin.
+**`sharePath` is a relative path only.** This backend never invents or hardcodes an absolute public URL (no landing-site origin, CDN host, or deep-link scheme).
+
+Flutter WARDROBE-128 and Frontend WARDROBE-127 compose the link the user opens:
+
+```text
+absoluteShareUrl = {landing-site base from client env} + sharePath
+```
+
+Example: landing-site base `https://share.example` + `sharePath` `/share/shr_V1StGXR8_Z5jdHi6B-myT` → `https://share.example/share/shr_V1StGXR8_Z5jdHi6B-myT`. Do not send `https://…` in `sharePath`. Do not ask this API for a public origin.
 
 #### Create (owner only)
 
@@ -1071,6 +1079,8 @@ No request body. Returns `201` `Share`:
 ```
 
 Outfit create is the same shape with `"resourceType": "OUTFIT"` and `outfitId` instead of `itemId`. Soft-omit the unused id — never send JSON `null`.
+
+`sharePath` on this DTO is always `/share/{token}` — relative, no scheme or host. Flutter WARDROBE-128 / Frontend WARDROBE-127 prepend their landing-site base from env.
 
 **Token:** `shr_` + 21 URL-safe `nanoid` characters. Longer than wardrobe / item ids because the token is the only secret on the public GET.
 

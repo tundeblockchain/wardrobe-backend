@@ -9,7 +9,11 @@ import {
   ShareResourceType,
 } from '../../shared/types';
 
-/** Client path Flutter / Frontend append to their origin (WARDROBE-128 / 127). */
+/**
+ * Relative path prefix only (WARDROBE-126).
+ * Flutter WARDROBE-128 / Frontend WARDROBE-127 prepend their landing-site
+ * base from env. This backend never returns an absolute public URL.
+ */
 export const SHARE_PATH_PREFIX = '/share/';
 
 /**

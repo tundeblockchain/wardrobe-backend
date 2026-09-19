@@ -641,6 +641,11 @@ export const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
  * Owner create / revoke DTO (WARDROBE-126 / Flutter WARDROBE-128 /
  * Frontend WARDROBE-127). Never includes `userId` or Dynamo keys.
  * Soft-omit unused `itemId` / `outfitId` — never JSON `null`.
+ *
+ * `sharePath` is a **relative path only** (`/share/{token}`). This backend
+ * never invents or hardcodes an absolute public URL. Flutter WARDROBE-128
+ * and Frontend WARDROBE-127 compose:
+ * `{landing-site base from their env}{sharePath}`.
  */
 export interface Share {
   token: string;
@@ -648,6 +653,10 @@ export interface Share {
   wardrobeId: string;
   itemId?: string;
   outfitId?: string;
+  /**
+   * Relative path only, e.g. `/share/shr_…`.
+   * Never an absolute URL. Clients prepend their landing-site base.
+   */
   sharePath: string;
   expiresAt: string;
   createdAt: string;

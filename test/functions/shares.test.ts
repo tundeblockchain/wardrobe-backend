@@ -328,6 +328,8 @@ describe('shares handler (WARDROBE-126)', () => {
       expect(body).not.toHaveProperty('outfitId');
       expect(body.token).toMatch(SHARE_TOKEN_PATTERN);
       expect(body.sharePath).toBe(`/share/${body.token}`);
+      expect(body.sharePath.startsWith('/share/')).toBe(true);
+      expect(body.sharePath).not.toMatch(/^https?:\/\//);
       expect(body.expiresAt).toMatch(ISO8601);
       expect(body.createdAt).toMatch(ISO8601);
       expect(body).not.toHaveProperty('userId');
