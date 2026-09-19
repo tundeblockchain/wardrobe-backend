@@ -877,7 +877,7 @@ WARDROBE-65: classify and colour are hardcoded to `gemini-3.1-flash-lite` (`/v1b
 
 WARDROBE-66: classify and colour adopt Interior-design-backend's working Gemini request (`v1beta` `:generateContent` + `?key=` query, `content-type` only — no `x-goog-api-key`). Model stays `gemini-3.1-flash-lite` and is not remapped to Gemini 2.5. A remaining non-404 failure is still terminal `FAILED` + `processingError`.
 
-The app can later offer a retry action.
+WARDROBE-123: Flutter can retry a `FAILED` item with `POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess` (Firebase ID token, Premium). The handler resets `FAILED` → `PENDING`, clears `processingError`, and reuses `enqueueProcessWardrobeItem`. `PENDING` / `PROCESSING` return `409 PROCESSING_IN_PROGRESS`. `READY` returns `409 ITEM_NOT_RETRIABLE`. There is no stuck-PENDING timeout — do not invent one. See README **Item processing retry**.
 
 ---
 
@@ -1170,6 +1170,8 @@ OUTFIT_NOT_FOUND
 AI_PROFILE_NOT_FOUND
 UPLOAD_INVALID
 PROCESSING_FAILED
+PROCESSING_IN_PROGRESS
+ITEM_NOT_RETRIABLE
 INTERNAL_ERROR
 ```
 

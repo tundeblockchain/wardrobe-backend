@@ -112,6 +112,30 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps PROCESSING_IN_PROGRESS to a 409 envelope', () => {
+    const result = asResult(errorResponse(Errors.processingInProgress()));
+
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'PROCESSING_IN_PROGRESS',
+        message: 'Item is already processing.',
+      },
+    });
+  });
+
+  it('maps ITEM_NOT_RETRIABLE to a 409 envelope', () => {
+    const result = asResult(errorResponse(Errors.itemNotRetriable()));
+
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ITEM_NOT_RETRIABLE',
+        message: 'Only FAILED items can be retried.',
+      },
+    });
+  });
+
   it('maps UPLOAD_INVALID to a 400 envelope', () => {
     const result = asResult(
       errorResponse(Errors.uploadInvalid('purpose must be WARDROBE_ITEM.')),

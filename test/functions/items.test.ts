@@ -158,6 +158,7 @@ function event(options: {
   method: string;
   wardrobeId?: string;
   itemId?: string;
+  suffix?: string;
   query?: Record<string, string | undefined>;
   body?: unknown;
   rawBody?: string;
@@ -171,11 +172,14 @@ function event(options: {
           lambda: { sub: options.sub ?? OWNER_ID },
         };
 
+  const suffix = options.suffix ? `/${options.suffix}` : '';
   const rawPath = options.itemId
-    ? `/wardrobes/${wardrobeId}/items/${options.itemId}`
+    ? `/wardrobes/${wardrobeId}/items/${options.itemId}${suffix}`
     : `/wardrobes/${wardrobeId}/items`;
   const routeKey = options.itemId
-    ? `${options.method} /wardrobes/{wardrobeId}/items/{itemId}`
+    ? options.suffix
+      ? `${options.method} /wardrobes/{wardrobeId}/items/{itemId}/${options.suffix}`
+      : `${options.method} /wardrobes/{wardrobeId}/items/{itemId}`
     : `${options.method} /wardrobes/{wardrobeId}/items`;
 
   const queryEntries = Object.entries(options.query ?? {}).filter(
@@ -286,6 +290,49 @@ function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
       return { Item: dynamoWardrobe() };
     }
     return next(command);
+  });
+}
+
+function reprocessEvent(overrides: Partial<Parameters<typeof event>[0]> = {}) {
+  return event({
+    method: 'POST',
+    itemId: ITEM_ID,
+    suffix: 'reprocess',
+    ...overrides,
+  });
+}
+
+function mockReprocessReads(
+  item: DynamoItem,
+  options: {
+    tier?: 'FREE' | 'BASIC' | 'PREMIUM';
+    onUpdate?: (command: Command) => Promise<unknown> | unknown;
+  } = {},
+) {
+  const tier = options.tier ?? 'PREMIUM';
+  mockSend.mockImplementation(async (command: Command) => {
+    if (isEntitlementGet(command)) {
+      return tier === 'FREE' ? {} : { Item: dynamoEntitlement(OWNER_ID, tier) };
+    }
+    if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+      return { Item: dynamoWardrobe() };
+    }
+    if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+      return { Item: item };
+    }
+    if (command._op === 'Update') {
+      if (options.onUpdate) {
+        return options.onUpdate(command);
+      }
+      return {
+        Attributes: {
+          ...item,
+          processingStatus: 'PENDING',
+          updatedAt: '2026-09-19T00:00:00.000Z',
+        },
+      };
+    }
+    throw new Error(`unexpected op ${command._op}`);
   });
 }
 
@@ -1752,6 +1799,278 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
       ).toBe(false);
+    });
+  });
+
+  describe('POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess (WARDROBE-123)', () => {
+    it('resets FAILED to PENDING, enqueues PROCESS_WARDROBE_ITEM, and returns 202', async () => {
+      const failed = dynamoItem(OWNER_ID, {
+        processingStatus: 'FAILED',
+        processingError: 'Processing retries exhausted',
+      });
+      mockReprocessReads(failed);
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expect(result.statusCode).toBe(202);
+      const body = bodyOf(result) as ClothingItem;
+      expect(body.itemId).toBe(ITEM_ID);
+      expect(body.processingStatus).toBe('PENDING');
+      expect(body).not.toHaveProperty('processingError');
+      expect(body).not.toHaveProperty('userId');
+      expect(body.image).toEqual({ originalKey: OWNER_IMAGE_KEY });
+      expect(body.originalImageUrl).toBe(ORIGINAL_IMAGE_URL);
+
+      const update = patchUpdateCommand();
+      expect(update.input.UpdateExpression).toContain('#processingStatus = :processingStatus');
+      expect(update.input.UpdateExpression).toContain('REMOVE #processingError');
+      expect(update.input.ExpressionAttributeValues).toEqual(
+        expect.objectContaining({
+          ':processingStatus': 'PENDING',
+          ':expectedStatus': 'FAILED',
+        }),
+      );
+      expect(update.input.ExpressionAttributeNames).toEqual(
+        expect.objectContaining({
+          '#processingStatus': 'processingStatus',
+          '#processingError': 'processingError',
+        }),
+      );
+
+      const updateOrder = mockSend.mock.invocationCallOrder.find((_, index) => {
+        return (mockSend.mock.calls[index][0] as Command)._op === 'Update';
+      });
+      const sqsOrder = mockSqsSend.mock.invocationCallOrder[0];
+      expect(updateOrder).toBeDefined();
+      expect(sqsOrder).toBeGreaterThan(updateOrder as number);
+
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: PROCESSING_QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: 'PROCESS_WARDROBE_ITEM',
+          userId: OWNER_ID,
+          wardrobeId: WARDROBE_ID,
+          itemId: ITEM_ID,
+          originalImageKey: OWNER_IMAGE_KEY,
+        }),
+      });
+      expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts an empty body and ignores client userId / processingStatus', async () => {
+      mockReprocessReads(
+        dynamoItem(OWNER_ID, {
+          processingStatus: 'FAILED',
+          processingError: 'Gemini 404',
+        }),
+      );
+
+      const result = asResult(
+        await handler(
+          reprocessEvent({
+            body: { userId: OTHER_ID, processingStatus: 'READY' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(202);
+      expect((bodyOf(result) as ClothingItem).processingStatus).toBe('PENDING');
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: PROCESSING_QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: 'PROCESS_WARDROBE_ITEM',
+          userId: OWNER_ID,
+          wardrobeId: WARDROBE_ID,
+          itemId: ITEM_ID,
+          originalImageKey: OWNER_IMAGE_KEY,
+        }),
+      });
+    });
+
+    it('returns 202 without a second enqueue when a concurrent retry already reset FAILED', async () => {
+      const pending = dynamoItem(OWNER_ID, { processingStatus: 'PENDING' });
+      let itemGets = 0;
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          itemGets += 1;
+          return {
+            Item:
+              itemGets === 1
+                ? dynamoItem(OWNER_ID, { processingStatus: 'FAILED' })
+                : pending,
+          };
+        }
+        if (command._op === 'Update') {
+          const error = new Error('The conditional request failed');
+          error.name = 'ConditionalCheckFailedException';
+          throw error;
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expect(result.statusCode).toBe(202);
+      expect((bodyOf(result) as ClothingItem).processingStatus).toBe('PENDING');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 PROCESSING_IN_PROGRESS when the item is already PROCESSING', async () => {
+      mockReprocessReads(dynamoItem(OWNER_ID, { processingStatus: 'PROCESSING' }));
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expectEnvelope(result, 409, 'PROCESSING_IN_PROGRESS');
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'PROCESSING_IN_PROGRESS',
+          message: 'Item is already processing.',
+        },
+      });
+      expect(mockSqsSend).not.toHaveBeenCalled();
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
+      ).toBe(false);
+    });
+
+    it('returns 409 PROCESSING_IN_PROGRESS when the item is already PENDING', async () => {
+      mockReprocessReads(dynamoItem(OWNER_ID, { processingStatus: 'PENDING' }));
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expectEnvelope(result, 409, 'PROCESSING_IN_PROGRESS');
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'PROCESSING_IN_PROGRESS',
+          message: 'Item processing is already queued.',
+        },
+      });
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 ITEM_NOT_RETRIABLE when the item is already READY', async () => {
+      mockReprocessReads(dynamoItem(OWNER_ID, { processingStatus: 'READY' }));
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expectEnvelope(result, 409, 'ITEM_NOT_RETRIABLE');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 VALIDATION_ERROR when the item has no original image', async () => {
+      mockReprocessReads(
+        dynamoItem(OWNER_ID, {
+          processingStatus: 'FAILED',
+          originalKey: '',
+        }),
+      );
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Item has no original image to reprocess.',
+        },
+      });
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 ENTITLEMENT_AI_REQUIRED for Free and Basic', async () => {
+      for (const tier of ['FREE', 'BASIC'] as const) {
+        jest.clearAllMocks();
+        mockSqsSend.mockResolvedValue({ MessageId: 'msg-1' });
+        mockReprocessReads(
+          dynamoItem(OWNER_ID, { processingStatus: 'FAILED' }),
+          { tier },
+        );
+
+        const result = asResult(await handler(reprocessEvent()));
+
+        expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+        expect(mockSqsSend).not.toHaveBeenCalled();
+      }
+    });
+
+    it('returns 404 ITEM_NOT_FOUND for another user\'s item', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: dynamoItem(OTHER_ID, { processingStatus: 'FAILED' }) };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 WARDROBE_NOT_FOUND when the wardrobe is missing', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 401 UNAUTHENTICATED when the authorizer context is missing', async () => {
+      const result = asResult(await handler(reprocessEvent({ sub: null })));
+
+      expectEnvelope(result, 401, 'UNAUTHENTICATED');
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('restores FAILED and returns 500 when enqueue fails', async () => {
+      mockReprocessReads(
+        dynamoItem(OWNER_ID, {
+          processingStatus: 'FAILED',
+          processingError: 'Processing retries exhausted',
+        }),
+      );
+      mockSqsSend.mockRejectedValue(new Error('sqs unavailable'));
+
+      const result = asResult(await handler(reprocessEvent()));
+
+      expectEnvelope(result, 500, 'INTERNAL_ERROR');
+      const updates = mockSend.mock.calls
+        .map((call) => call[0] as Command)
+        .filter((command) => command._op === 'Update');
+      expect(updates).toHaveLength(2);
+      expect(updates[1].input.ExpressionAttributeValues).toEqual(
+        expect.objectContaining({
+          ':processingStatus': 'FAILED',
+          ':processingError': 'Processing retries exhausted',
+        }),
+      );
+    });
+
+    it('returns 400 VALIDATION_ERROR for GET on the reprocess route', async () => {
+      const result = asResult(
+        await handler(
+          event({ method: 'GET', itemId: ITEM_ID, suffix: 'reprocess' }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect(mockSqsSend).not.toHaveBeenCalled();
     });
   });
 

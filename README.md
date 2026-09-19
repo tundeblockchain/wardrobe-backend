@@ -24,7 +24,7 @@ Working in this first cut:
 - `DELETE /me` (cancel subscription when possible, revoke entitlement, delete account data; Flutter WARDROBE-102)
 - `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
 - Wardrobe CRUD
-- Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`
+- Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`; `POST .../items/{itemId}/reprocess` re-enqueues a `FAILED` item (WARDROBE-123)
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
@@ -357,7 +357,7 @@ Authorization: Bearer <firebase-id-token>
 | `status` | `NONE` \| `ACTIVE` \| `CANCELED` \| `BILLING_ISSUE` \| `PAUSED` \| `EXPIRED` | `CANCELED` still has access until `expiresAt` |
 | `features.unlimitedCatalog` | boolean | `true` on Basic and Premium |
 | `features.aiTryOn` | boolean | Premium only — POST outfit `/render` |
-| `features.otherAi` | boolean | Premium only — recommendations + item-processing enqueue (classify / colour / bg-removal) |
+| `features.otherAi` | boolean | Premium only — recommendations + item-processing enqueue / retry (classify / colour / bg-removal) |
 | `limits` | object or `null` | Free caps. `null` = unlimited |
 | `usage` | object | Current owned counts (all wardrobes) |
 | `productId` / `store` / `period` / `expiresAt` | optional | Soft-omitted when unknown. `store` is `APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`. `period` is `MONTHLY` \| `YEARLY` \| `UNKNOWN` |
@@ -491,6 +491,7 @@ GET    /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
+POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
 ```
 
 List supports optional smart filters (WARDROBE-21 / WARDROBE-92):
@@ -663,6 +664,67 @@ Poll create / list / get until a terminal status. Do not treat `PROCESSING` as f
 | `FAILED` | Done; stop polling; show `processingError` when present |
 
 `FAILED` is the only terminal failure value. There is no `ERROR` status.
+
+#### Item processing retry (WARDROBE-123) — Flutter WARDROBE-124
+
+One-tap retry for a **FAILED** clothing-item AI job. Reuses the same `enqueueProcessWardrobeItem` path as create (`PROCESS_WARDROBE_ITEM` `{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity comes from the Firebase authorizer, never from a body `userId`.
+
+```http
+POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess
+Authorization: Bearer <firebase-id-token>
+```
+
+Body is optional. Empty, omitted, or `{}` are all accepted. Client-supplied `userId` / `processingStatus` are ignored.
+
+**Success (`202`)** — Flutter `ClothingItem` DTO (same shape as get / create). `processingStatus` is `PENDING`. `processingError` is omitted.
+
+```json
+{
+  "itemId": "item_xyz123abcd",
+  "wardrobeId": "wd_abc123xyz0",
+  "name": "Black T-Shirt",
+  "category": "TOP",
+  "image": {
+    "originalKey": "users/{uid}/uploads/....jpg"
+  },
+  "originalImageUrl": "https://...presigned GetObject...",
+  "processingStatus": "PENDING",
+  "createdAt": "2026-09-03T18:45:00.000Z",
+  "updatedAt": "2026-09-19T00:00:00.000Z"
+}
+```
+
+Server steps on `FAILED`:
+
+1. Owner check (`getOwnedItem`) — other-user / missing wardrobe is `404 WARDROBE_NOT_FOUND`; missing item is `404 ITEM_NOT_FOUND`
+2. Premium check (`assertPremiumAi` / `features.otherAi`) — Free / Basic is `403 ENTITLEMENT_AI_REQUIRED`
+3. Conditional Dynamo write `FAILED` → `PENDING` and `REMOVE processingError`
+4. Enqueue `PROCESS_WARDROBE_ITEM` (same helper as create). If SendMessage fails, status is restored to `FAILED` (and the previous `processingError` when present) so Flutter can tap retry again (`500 INTERNAL_ERROR`)
+
+The worker already accepts `PENDING` and skips `READY`. No new stuck-PENDING timeout is defined — Dynamo is never left on `PROCESSING` as a terminal state (WARDROBE-59 / DLQ). This endpoint does **not** re-enqueue `PENDING` or `PROCESSING`.
+
+| Current `processingStatus` | Result |
+| --- | --- |
+| `FAILED` | `202` — reset to `PENDING`, enqueue |
+| `FAILED` (concurrent second tap after the winner already reset) | `202` — return current `PENDING` item; **do not** enqueue again |
+| `PENDING` | `409 PROCESSING_IN_PROGRESS` — already queued |
+| `PROCESSING` | `409 PROCESSING_IN_PROGRESS` — already running |
+| `READY` | `409 ITEM_NOT_RETRIABLE` — already succeeded |
+| Missing `originalKey` | `400 VALIDATION_ERROR` |
+
+| HTTP | `error.code` | When |
+| --- | --- | --- |
+| 202 | — | Retry accepted; poll get / list until `READY` / `FAILED` |
+| 400 | `VALIDATION_ERROR` | Missing `wardrobeId` / `itemId`, no original image, or unsupported method |
+| 401 | `UNAUTHENTICATED` | Missing / invalid Firebase ID token |
+| 403 | `ENTITLEMENT_AI_REQUIRED` | Caller is not Premium |
+| 404 | `WARDROBE_NOT_FOUND` | Wardrobe missing or not owned |
+| 404 | `ITEM_NOT_FOUND` | Item missing or not owned |
+| 409 | `PROCESSING_IN_PROGRESS` | Status is `PENDING` or `PROCESSING` |
+| 409 | `ITEM_NOT_RETRIABLE` | Status is `READY` (or any non-FAILED, non-in-flight value) |
+| 500 | `INTERNAL_ERROR` | Enqueue / Dynamo failure after the reset (status restored to `FAILED` when possible) |
+
+Flutter WARDROBE-124 should show the retry CTA on `FAILED` only, call this endpoint, then poll create / list / get until a terminal status. Treat `409 PROCESSING_IN_PROGRESS` as “already running” (keep polling). Do not invent a client-side stuck-PENDING timeout unless a later backend ticket defines one.
 
 ### Outfits
 
