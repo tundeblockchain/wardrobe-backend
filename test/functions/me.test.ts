@@ -61,6 +61,7 @@ const OTHER_ID = 'firebase-uid-other';
 const WARDROBE_ID = 'wd_abc123xyz0';
 const ITEM_ID = 'item_xyz123abcd';
 const OUTFIT_ID = 'outfit_qwerty12';
+const WORN_ON = '2026-09-18';
 
 interface DynamoCommand {
   _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
@@ -154,6 +155,20 @@ function dynamoOutfit(userId = OWNER_ID): DynamoItem {
   };
 }
 
+function dynamoWornOn(userId = OWNER_ID): DynamoItem {
+  return {
+    PK: `WARDROBE#${WARDROBE_ID}`,
+    SK: `OUTFIT#${OUTFIT_ID}#WORN#${WORN_ON}`,
+    entityType: 'WORN_ON',
+    userId,
+    wardrobeId: WARDROBE_ID,
+    outfitId: OUTFIT_ID,
+    wornOn: WORN_ON,
+    createdAt: '2026-09-18T19:10:00.000Z',
+    updatedAt: '2026-09-18T19:10:00.000Z',
+  };
+}
+
 function dynamoProfile(userId = OWNER_ID): DynamoItem {
   return {
     PK: `USER#${userId}`,
@@ -242,7 +257,7 @@ function mockPopulatedWipe(
         return { Items: [dynamoWardrobe()] };
       }
       if (pk === `WARDROBE#${WARDROBE_ID}`) {
-        return { Items: [dynamoItem(), dynamoOutfit()] };
+        return { Items: [dynamoItem(), dynamoOutfit(), dynamoWornOn()] };
       }
       return { Items: [] };
     }
@@ -346,6 +361,10 @@ describe('me handler (WARDROBE-36)', () => {
         expect.arrayContaining([
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `OUTFIT#${OUTFIT_ID}` },
+          {
+            PK: `WARDROBE#${WARDROBE_ID}`,
+            SK: `OUTFIT#${OUTFIT_ID}#WORN#${WORN_ON}`,
+          },
           { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
         ]),
       );
@@ -564,6 +583,10 @@ describe('me handler (WARDROBE-36)', () => {
           { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `OUTFIT#${OUTFIT_ID}` },
+          {
+            PK: `WARDROBE#${WARDROBE_ID}`,
+            SK: `OUTFIT#${OUTFIT_ID}#WORN#${WORN_ON}`,
+          },
           { PK: `USER#${OWNER_ID}`, SK: 'PROFILE' },
           { PK: `USER#${OWNER_ID}`, SK: 'ENTITLEMENT' },
         ]),
@@ -802,7 +825,14 @@ describe('me handler (WARDROBE-36)', () => {
             return { Items: [dynamoWardrobe()] };
           }
           if (pk === `WARDROBE#${WARDROBE_ID}`) {
-            return { Items: [dynamoItem(), dynamoItem(OTHER_ID), dynamoOutfit(OTHER_ID)] };
+            return {
+              Items: [
+                dynamoItem(),
+                dynamoItem(OTHER_ID),
+                dynamoOutfit(OTHER_ID),
+                dynamoWornOn(OTHER_ID),
+              ],
+            };
           }
           return { Items: [] };
         }
@@ -825,6 +855,10 @@ describe('me handler (WARDROBE-36)', () => {
       expect(deletedKeys()).not.toContainEqual({
         PK: `WARDROBE#${WARDROBE_ID}`,
         SK: `OUTFIT#${OUTFIT_ID}`,
+      });
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `WARDROBE#${WARDROBE_ID}`,
+        SK: `OUTFIT#${OUTFIT_ID}#WORN#${WORN_ON}`,
       });
     });
   });

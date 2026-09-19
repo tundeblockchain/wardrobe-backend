@@ -259,7 +259,11 @@ async function collectOwnedRows(
       if (child.userId !== userId) {
         continue;
       }
-      if (child.entityType === 'ITEM' || child.entityType === 'OUTFIT') {
+      if (
+        child.entityType === 'ITEM' ||
+        child.entityType === 'OUTFIT' ||
+        child.entityType === 'WORN_ON'
+      ) {
         add(child.PK, child.SK, child.entityType);
       }
     }

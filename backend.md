@@ -574,6 +574,10 @@ GET    /wardrobes/{wardrobeId}/outfits
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}
 PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}
+GET    /wardrobes/{wardrobeId}/worn-on
 ```
 
 The backend must verify that:
@@ -622,6 +626,7 @@ WARDROBE#wd1               ITEM#item3
 
 WARDROBE#wd1               OUTFIT#outfit1
 WARDROBE#wd1               OUTFIT#outfit2
+WARDROBE#wd1               OUTFIT#outfit1#WORN#2026-09-18
 
 AIPROFILE#GENERIC_MODEL    AIPROFILE#profileG         TYPE#GENERIC_MODEL    AIPROFILE#profileG
 ```
@@ -665,6 +670,20 @@ Example outfit record:
 }
 ```
 
+Example worn-on entry (WARDROBE-120):
+
+```json
+{
+  "PK": "WARDROBE#123",
+  "SK": "OUTFIT#789#WORN#2026-09-18",
+  "entityType": "WORN_ON",
+  "outfitId": "789",
+  "wardrobeId": "123",
+  "userId": "abc",
+  "wornOn": "2026-09-18"
+}
+```
+
 ---
 
 ## 17. Primary DynamoDB Access Patterns
@@ -685,6 +704,10 @@ Get a specific clothing item
 Get all outfits in a wardrobe
 
 Get a specific outfit
+
+Get / set / remove worn-on dates for an outfit (`OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}`)
+
+Get worn-on dates in a wardrobe (calendar)
 
 List PERSONAL AI profiles for a user
 
@@ -1090,6 +1113,10 @@ GET    /wardrobes/{wardrobeId}/outfits
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}
 PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}
+GET    /wardrobes/{wardrobeId}/worn-on
 ```
 
 ### Recommendations

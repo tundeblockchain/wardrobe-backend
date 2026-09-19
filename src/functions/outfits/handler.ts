@@ -42,6 +42,7 @@ import {
   withSignedRenderHistory,
   withSignedRenderUrl,
 } from './render';
+import { deleteWornOnForOutfit, handleWornOn, isWornOnRoute } from './worn-on';
 
 interface CreateOutfitBody {
   name?: unknown;
@@ -73,6 +74,10 @@ export async function handler(
 
     if (!wardrobeId) {
       throw Errors.validation('wardrobeId is required.');
+    }
+
+    if (isWornOnRoute(event)) {
+      return await handleWornOn(event, userId, wardrobeId, outfitId);
     }
 
     if (isRenderRoute(event)) {
@@ -225,6 +230,7 @@ async function removeOutfit(
   outfitId: string,
 ): Promise<void> {
   await getOwnedOutfit(userId, wardrobeId, outfitId);
+  await deleteWornOnForOutfit(userId, wardrobeId, outfitId);
   await deleteItem(keys.wardrobePk(wardrobeId), keys.outfitSk(outfitId));
 }
 

@@ -18,6 +18,12 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.wardrobePk('wd_abc123')).toBe('WARDROBE#wd_abc123');
     expect(keys.itemSk('item_xyz123')).toBe('ITEM#item_xyz123');
     expect(keys.outfitSk('outfit_123')).toBe('OUTFIT#outfit_123');
+    expect(keys.outfitWornOnSk('outfit_123', '2026-09-18')).toBe(
+      'OUTFIT#outfit_123#WORN#2026-09-18',
+    );
+    expect(keys.outfitWornOnSkPrefix('outfit_123')).toBe(
+      'OUTFIT#outfit_123#WORN#',
+    );
   });
 
   it('models PERSONAL AI profiles under USER# and GENERIC_MODEL on GSI1', () => {

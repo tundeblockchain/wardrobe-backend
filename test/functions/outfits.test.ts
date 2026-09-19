@@ -593,6 +593,12 @@ describe('outfits handler (WARDROBE-7)', () => {
                 entityType: 'ITEM',
                 outfitId: undefined,
               },
+              {
+                ...dynamoOutfit(),
+                SK: `OUTFIT#${OUTFIT_ID}#WORN#2026-09-18`,
+                entityType: 'WORN_ON',
+                wornOn: '2026-09-18',
+              },
             ],
           };
         }
@@ -870,6 +876,9 @@ describe('outfits handler (WARDROBE-7)', () => {
         }
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
           return { Item: dynamoOutfit() };
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
         }
         if (command._op === 'Delete') {
           return {};

@@ -31,6 +31,14 @@ export const keys = {
   wardrobePk: (wardrobeId: string) => `WARDROBE#${wardrobeId}`,
   itemSk: (itemId: string) => `ITEM#${itemId}`,
   outfitSk: (outfitId: string) => `OUTFIT#${outfitId}`,
+  /**
+   * Date-only worn-on entry under the same wardrobe PK as the outfit
+   * (WARDROBE-120). SK extends `OUTFIT#{outfitId}` so list-outfits
+   * (`begins_with OUTFIT#`) still works — filter `entityType === 'OUTFIT'`.
+   */
+  outfitWornOnSk: (outfitId: string, wornOn: string) =>
+    `OUTFIT#${outfitId}#WORN#${wornOn}`,
+  outfitWornOnSkPrefix: (outfitId: string) => `OUTFIT#${outfitId}#WORN#`,
   profileSk: 'PROFILE',
   /** WARDROBE-91 Superwall-verified subscription row. */
   entitlementSk: 'ENTITLEMENT',
