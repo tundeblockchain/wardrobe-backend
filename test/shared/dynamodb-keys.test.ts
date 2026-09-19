@@ -2,6 +2,7 @@ import {
   GSI1_INDEX_NAME,
   isConditionalCheckFailed,
   keys,
+  transactWrite,
 } from '../../src/shared/dynamodb';
 
 describe('DynamoDB key design (backend.md §16–17)', () => {
@@ -24,6 +25,12 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.outfitWornOnSkPrefix('outfit_123')).toBe(
       'OUTFIT#outfit_123#WORN#',
     );
+  });
+
+  it('requires at least one transactWrite operation (WARDROBE-118 move)', async () => {
+    await expect(transactWrite([])).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR',
+    });
   });
 
   it('models PERSONAL AI profiles under USER# and GENERIC_MODEL on GSI1', () => {

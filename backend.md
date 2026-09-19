@@ -367,7 +367,12 @@ GET    /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
+POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
+POST   /wardrobes/{wardrobeId}/items/{itemId}/move
+POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 ```
+
+Same-user move / copy (WARDROBE-118). See README “Move / copy across wardrobes (WARDROBE-118)” for the Flutter WARDROBE-119 contract. Move re-keys the Dynamo row from `WARDROBE#{source}` to `WARDROBE#{target}` (same `itemId`; S3 keys are user-scoped and stay attached). Copy writes a new `itemId` and **shares** the source image keys. `POST .../reprocess` retries a `FAILED` item (WARDROBE-123).
 
 Filtering can later be supported through query parameters.
 
@@ -700,6 +705,10 @@ Get a specific wardrobe
 Get all clothing items in a wardrobe
 
 Get a specific clothing item
+
+Move a clothing item to another owned wardrobe (put `WARDROBE#{target}/ITEM#{id}` + delete source)
+
+Copy a clothing item into another owned wardrobe (new `itemId`; shared S3 keys)
 
 Get all outfits in a wardrobe
 
@@ -1103,7 +1112,12 @@ GET    /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
+POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
+POST   /wardrobes/{wardrobeId}/items/{itemId}/move
+POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 ```
+
+Same-user move / copy (WARDROBE-118 / Flutter WARDROBE-119). See README. `POST .../reprocess` is WARDROBE-123.
 
 ### Outfits
 
