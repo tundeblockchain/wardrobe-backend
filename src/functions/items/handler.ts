@@ -49,6 +49,12 @@ import {
   itemMatchesFilters,
   parseItemListFilters,
 } from './filters';
+import {
+  copyItemToWardrobe,
+  moveItemToWardrobe,
+  requireTargetWardrobeId,
+  TransferItemBody,
+} from './transfer';
 
 interface CreateItemBody {
   name?: unknown;
@@ -113,6 +119,28 @@ export async function handler(
         return created(await createItem(userId, wardrobeId, parseJsonBody(event)));
       }
       throw Errors.validation(`Unsupported method: ${method}`);
+    }
+
+    const transfer = itemTransferAction(event);
+    if (transfer) {
+      if (method !== 'POST') {
+        throw Errors.validation(`Unsupported method: ${method}`);
+      }
+      const targetWardrobeId = requireTargetWardrobeId(
+        parseJsonBody<TransferItemBody>(event),
+      );
+      if (transfer === 'move') {
+        return ok(
+          await toClothingItem(
+            await moveItemToWardrobe(userId, wardrobeId, itemId, targetWardrobeId),
+          ),
+        );
+      }
+      return created(
+        await toClothingItem(
+          await copyItemToWardrobe(userId, wardrobeId, itemId, targetWardrobeId),
+        ),
+      );
     }
 
     if (method === 'GET') {
@@ -265,6 +293,26 @@ function itemOriginalKey(item: DynamoItem): string | undefined {
   }
   const trimmed = item.originalKey.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function itemTransferAction(
+  event: APIGatewayProxyEventV2,
+): 'move' | 'copy' | undefined {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  if (
+    key.includes('/items/{itemId}/move') ||
+    /\/items\/[^/]+\/move\/?$/.test(path)
+  ) {
+    return 'move';
+  }
+  if (
+    key.includes('/items/{itemId}/copy') ||
+    /\/items\/[^/]+\/copy\/?$/.test(path)
+  ) {
+    return 'copy';
+  }
+  return undefined;
 }
 
 async function listItems(

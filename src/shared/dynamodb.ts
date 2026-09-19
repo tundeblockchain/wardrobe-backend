@@ -5,6 +5,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { Errors } from './errors';
@@ -161,6 +162,62 @@ export async function deleteMany(
 
 export function isConditionalCheckFailed(error: unknown): boolean {
   return error instanceof Error && error.name === 'ConditionalCheckFailedException';
+}
+
+/**
+ * Atomic put + delete for same-table moves (WARDROBE-118).
+ * Clothing items are keyed by `WARDROBE#{id}` — a wardrobe change is a
+ * new partition, not an in-place attribute update.
+ */
+export type TransactWriteOp =
+  | {
+      put: {
+        item: DynamoItem;
+        conditionExpression?: string;
+      };
+    }
+  | {
+      delete: {
+        pk: string;
+        sk: string;
+        conditionExpression?: string;
+      };
+    };
+
+export async function transactWrite(ops: TransactWriteOp[]): Promise<void> {
+  if (ops.length === 0) {
+    throw Errors.internal('transactWrite requires at least one operation.');
+  }
+  if (ops.length > 100) {
+    throw Errors.internal('transactWrite supports at most 100 operations.');
+  }
+
+  await client.send(
+    new TransactWriteCommand({
+      TransactItems: ops.map((op) => {
+        if ('put' in op) {
+          return {
+            Put: {
+              TableName: tableName(),
+              Item: op.put.item,
+              ...(op.put.conditionExpression
+                ? { ConditionExpression: op.put.conditionExpression }
+                : {}),
+            },
+          };
+        }
+        return {
+          Delete: {
+            TableName: tableName(),
+            Key: { PK: op.delete.pk, SK: op.delete.sk },
+            ...(op.delete.conditionExpression
+              ? { ConditionExpression: op.delete.conditionExpression }
+              : {}),
+          },
+        };
+      }),
+    }),
+  );
 }
 
 export async function updateAttributes(

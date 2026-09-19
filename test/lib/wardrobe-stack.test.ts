@@ -509,6 +509,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(s3.some((action) => action.startsWith('s3:Get'))).toBe(true);
     expect(s3).not.toContain('s3:DeleteObject');
     expect(s3).not.toContain('s3:PutObject');
+    expect(s3).not.toContain('s3:CopyObject');
     expect(s3).not.toContain('s3:*');
   });
 
@@ -910,6 +911,21 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/OPENAI_API_KEY\s*[:=]/);
   });
 
+  test('item move/copy routes are owner-auth on ItemsFn (WARDROBE-118)', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+    for (const routeKey of [
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/move',
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/copy',
+    ]) {
+      const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
+      expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+    }
+  });
+
   test('shopping-links routes are owner-auth and use dedicated secrets (WARDROBE-96)', () => {
     const routes = Object.values(
       template.findResources('AWS::ApiGatewayV2::Route'),
@@ -1244,6 +1260,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'PATCH /wardrobes/{wardrobeId}/items/{itemId}',
       'DELETE /wardrobes/{wardrobeId}/items/{itemId}',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess',
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/move',
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/copy',
       'GET /wardrobes/{wardrobeId}/outfits',
       'POST /wardrobes/{wardrobeId}/outfits',
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}',

@@ -705,6 +705,20 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/items/{itemId}/move',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: itemsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/items/{itemId}/copy',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: itemsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/outfits',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: outfitsIntegration,

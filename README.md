@@ -25,6 +25,7 @@ Working in this first cut:
 - `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
 - Wardrobe CRUD
 - Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`; `POST .../items/{itemId}/reprocess` re-enqueues a `FAILED` item (WARDROBE-123)
+- Move / copy a clothing item to another owned wardrobe (WARDROBE-118; Flutter WARDROBE-119)
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
 - Outfit worn-on log (date-only entries for calendar / habit; Flutter WARDROBE-121)
 - Owner-only outfit recommendations (derived, never auto-saved)
@@ -493,6 +494,8 @@ GET    /wardrobes/{wardrobeId}/items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
+POST   /wardrobes/{wardrobeId}/items/{itemId}/move
+POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 ```
 
 List supports optional smart filters (WARDROBE-21 / WARDROBE-92):
@@ -530,7 +533,7 @@ Create body (`name`, `category`, and `imageKey` required):
 
 `category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user. `acquiredAt` is optional — see **Acquired date** below.
 
-Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand` / `acquiredAt`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). Empty `subcategory` is soft-omitted on create (`null` / `""` are not stored). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`.
+Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand` / `acquiredAt`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). Empty `subcategory` is soft-omitted on create (`null` / `""` are not stored). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Same-user move / copy of a terminal item (`READY` / `FAILED`) is WARDROBE-118 — see **Move / copy across wardrobes** below.
 
 PATCH may include `name`, `category`, `subcategory`, `colours`, `brand`, `acquiredAt`, and `imageKey`. Omitted fields are left unchanged. For `subcategory` (WARDROBE-87): `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `subcategory`). A non-empty string sets it (trimmed; not restricted to the list-filter enum). Clearing `subcategory` alone is a soft success. `acquiredAt` uses the same omit / clear pattern (WARDROBE-92).
 
@@ -610,6 +613,84 @@ Hide items acquired before 2024:
 ```http
 GET /wardrobes/{wardrobeId}/items?acquiredAfter=2024-01-01
 ```
+
+#### Move / copy across wardrobes (WARDROBE-118) — Flutter WARDROBE-119 contract
+
+Same user only. Identity comes from the Firebase authorizer (`getUserId`). Body / query / path `userId` is ignored. Source wardrobe, source item, and target wardrobe must all belong to that UID.
+
+```http
+POST /wardrobes/{wardrobeId}/items/{itemId}/move
+POST /wardrobes/{wardrobeId}/items/{itemId}/copy
+```
+
+```json
+{ "targetWardrobeId": "wd_other12ab" }
+```
+
+`targetWardrobeId` is required, trimmed, 1–100 characters, and must be a **different** owned wardrobe than the path `{wardrobeId}`.
+
+| Action | Dynamo | `itemId` | Images / metadata | Entitlement |
+| --- | --- | --- | --- | --- |
+| **Move** | Transactional put under `WARDROBE#{target}` + delete from `WARDROBE#{source}` (PK is wardrobe-scoped; this is not an in-place `wardrobeId` patch) | **Same** | Same `originalKey` / `processedKey` / `ai` / `processingStatus` / `processingError` / user fields. `createdAt` kept; `updatedAt` refreshed | Not a new item — Free 5-item cap is unchanged |
+| **Copy** | `PutItem` under the target wardrobe | **New** `item_{nanoid}` | Metadata + `ai` copied. S3 objects are **shared** (same keys) — see below. New `createdAt` / `updatedAt` | Counts as a create — Free already at 5 items → `403 ENTITLEMENT_ITEM_LIMIT` |
+
+Neither action enqueues `PROCESS_WARDROBE_ITEM`. The copy is already classified if the source was.
+
+**S3 key layout (why share, not copy):**
+
+```text
+users/{uid}/uploads/{id}.jpg          original (create / PATCH imageKey)
+users/{uid}/items/{itemId}/processed.png   background-removed cutout
+```
+
+Keys are **user-scoped**, not wardrobe-scoped. Item `DELETE` does not remove S3 objects. `ItemsFn` may only `GetObject` (presign `originalImageUrl` / `processedImageUrl`) — it has no `CopyObject` / `PutObject`. Sharing keeps ownership under `users/{uid}/` and avoids a second object. Flutter should treat `image.*` keys as opaque. After a copy, deleting the source item does **not** break the copy's URLs (objects stay until account wipe).
+
+**Status gate:** `PENDING` / `PROCESSING` cannot be moved or copied (`400 VALIDATION_ERROR`). The processing worker reloads by the SQS `wardrobeId` + `itemId`; moving an in-flight item would orphan that job. Poll create / list / get until `READY` or `FAILED`, then transfer.
+
+**Outfits:** Move is rejected if any outfit in the **source** wardrobe still references the item (`400 VALIDATION_ERROR`, message includes that `outfitId`). Flutter should remove the item from those outfits (or delete the outfits) first. Copy does not touch outfits.
+
+Move returns `200` with the existing Flutter `ClothingItem` DTO (`wardrobeId` is the target). Copy returns `201` with a new `itemId` and target `wardrobeId`. Same soft-omit / presigned GET rules as list / get (`originalImageUrl` / `processedImageUrl`, no Dynamo `PK` / `SK` / `userId`).
+
+```json
+{
+  "itemId": "item_xyz123abcd",
+  "wardrobeId": "wd_other12ab",
+  "name": "Black T-Shirt",
+  "category": "TOP",
+  "subcategory": "TSHIRT",
+  "colours": ["BLACK"],
+  "brand": "Nike",
+  "acquiredAt": "2024-06-15",
+  "image": {
+    "originalKey": "users/{uid}/uploads/....jpg",
+    "processedKey": "users/{uid}/items/{itemId}/processed.png"
+  },
+  "originalImageUrl": "https://...presigned GetObject...",
+  "processedImageUrl": "https://...presigned GetObject...",
+  "processingStatus": "READY",
+  "createdAt": "2026-09-03T18:45:00.000Z",
+  "updatedAt": "2026-09-19T00:00:00.000Z"
+}
+```
+
+| Case | HTTP | `code` |
+| --- | --- | --- |
+| Missing token | 401 | `UNAUTHENTICATED` |
+| Missing / blank / same-wardrobe `targetWardrobeId`; in-flight `PENDING` / `PROCESSING`; move while the item is on a source outfit | 400 | `VALIDATION_ERROR` |
+| Missing / other-user **source** wardrobe | 404 | `WARDROBE_NOT_FOUND` |
+| Missing / other-user item in the source wardrobe | 404 | `ITEM_NOT_FOUND` |
+| Missing / other-user **target** wardrobe | 404 | `WARDROBE_NOT_FOUND` |
+| Copy on Free at the 5-item cap | 403 | `ENTITLEMENT_ITEM_LIMIT` |
+| Dynamo transaction / unexpected failure | 500 | `INTERNAL_ERROR` |
+
+Flutter WARDROBE-119 should:
+
+1. List the caller's wardrobes (`GET /wardrobes`) and hide the current one as the destination.
+2. Poll until `processingStatus` is `READY` or `FAILED` before offering move / copy.
+3. On move, if `400` mentions an outfit, prompt to remove the item from that outfit and retry.
+4. After success, drop the item from the source list (move) or keep it and show the new `itemId` in the target (copy). Refresh `GET /me` usage after copy.
+5. Call subsequent get / shopping-links / outfits / reprocess with the **target** `wardrobeId` (and the new `itemId` after copy).
+6. A `FAILED` item can be retried after transfer via `POST .../items/{itemId}/reprocess` (WARDROBE-123) using that current wardrobeId. In-flight `PENDING` / `PROCESSING` items cannot be moved or copied — poll first.
 
 ### Processing worker
 

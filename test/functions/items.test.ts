@@ -33,6 +33,10 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
     _op: 'Delete',
     input,
   })),
+  TransactWriteCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'TransactWrite',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/client-sqs', () => ({
@@ -73,7 +77,7 @@ const ORIGINAL_IMAGE_URL = 'https://signed.example/original.jpg';
 const PROCESSED_IMAGE_URL = 'https://signed.example/processed.png';
 
 interface Command {
-  _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
+  _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete' | 'TransactWrite';
   input: {
     TableName?: string;
     Item?: DynamoItem;
