@@ -48,8 +48,10 @@ export class WardrobeStack extends cdk.Stack {
     //                            / EVENT#{eventId} | DEVICE#{deviceId}
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
     //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
+    // SHARE#{token}              / SHARE
     // AIPROFILE#GENERIC_MODEL    / AIPROFILE#{id}
     // GSI1 (sparse): TYPE#GENERIC_MODEL / AIPROFILE#{id}
+    //                SHARE#USER#{uid}   / SHARE#{token}
     const table = new dynamodb.Table(this, 'WardrobeTable', {
       tableName: `wardrobe-app-${stage}`,
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
@@ -369,6 +371,9 @@ export class WardrobeStack extends cdk.Stack {
     // Try-on secret is granted to OutfitRenderFn only — not this Lambda.
     // PROCESS_AI_PROFILE is not enqueued here.
     const aiProfilesFn = this.lambda('AiProfilesFn', 'ai-profiles', commonLambdaProps);
+    // WARDROBE-126 share tokens + public preview. Create/revoke are owner-auth;
+    // GET /public/shares/{token} is wired without the Firebase authorizer.
+    const sharesFn = this.lambda('SharesFn', 'shares', commonLambdaProps);
 
     // WARDROBE-45: deploy-time seed of READY GENERIC_MODEL catalog rows.
     // Delete is a no-op so retained tables keep the picker IDs. Re-run the
@@ -452,6 +457,7 @@ export class WardrobeStack extends cdk.Stack {
     table.grantReadWriteData(itemsFn);
     table.grantReadWriteData(outfitsFn);
     table.grantReadWriteData(aiProfilesFn);
+    table.grantReadWriteData(sharesFn);
     // Recommendations are derived and never persisted — read wardrobe + items only.
     table.grantReadData(recommendationsFn);
     aiRecommenderSecret.grantRead(recommendationsFn);
@@ -508,6 +514,9 @@ export class WardrobeStack extends cdk.Stack {
     mediaBucket.grantPut(outfitRenderFn);
     // Presigned GET for render.imageUrl on GET outfit / GET render.
     mediaBucket.grantRead(outfitsFn);
+    // Public share preview imageUrl (WARDROBE-126). Same short-lived GetObject
+    // helper as item / render URLs. Bucket stays private — no public ACL.
+    mediaBucket.grantRead(sharesFn);
 
     processingFn.addEventSource(
       new SqsEventSource(processingQueue, {
@@ -676,6 +685,10 @@ export class WardrobeStack extends cdk.Stack {
       'AiProfilesIntegration',
       aiProfilesFn,
     );
+    const sharesIntegration = new HttpLambdaIntegration(
+      'SharesIntegration',
+      sharesFn,
+    );
 
     httpApi.addRoutes({
       path: '/health',
@@ -790,6 +803,13 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/items/{itemId}/share',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: sharesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/outfits',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: outfitsIntegration,
@@ -833,6 +853,28 @@ export class WardrobeStack extends cdk.Stack {
       methods: [apigwv2.HttpMethod.GET],
       integration: outfitsIntegration,
       authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/outfits/{outfitId}/share',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: sharesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/shares/{token}',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: sharesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    // Public preview — no Firebase authorizer (WARDROBE-126). Token is the
+    // capability. Same pattern as GET /health.
+    httpApi.addRoutes({
+      path: '/public/shares/{token}',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: sharesIntegration,
     });
 
     httpApi.addRoutes({

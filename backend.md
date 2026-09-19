@@ -636,6 +636,8 @@ WARDROBE#wd1               OUTFIT#outfit2
 WARDROBE#wd1               OUTFIT#outfit1#WORN#2026-09-18
 
 AIPROFILE#GENERIC_MODEL    AIPROFILE#profileG         TYPE#GENERIC_MODEL    AIPROFILE#profileG
+
+SHARE#shr_token            SHARE                      SHARE#USER#123        SHARE#shr_token
 ```
 
 Example wardrobe record:
@@ -727,6 +729,8 @@ Get a PERSONAL AI profile (owner-only)
 List GENERIC_MODEL AI profiles (try-on picker; GSI1 `TYPE#GENERIC_MODEL`)
 
 Get a GENERIC_MODEL AI profile (any authenticated user)
+
+Get a share token (public preview) / list a user's shares on account wipe (GSI1 `SHARE#USER#{uid}`)
 ```
 
 These should drive the DynamoDB key design.

@@ -112,6 +112,30 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps SHARE_NOT_FOUND to a 404 envelope', () => {
+    const result = asResult(errorResponse(Errors.shareNotFound()));
+
+    expect(result.statusCode).toBe(404);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'SHARE_NOT_FOUND',
+        message: 'Share link not found.',
+      },
+    });
+  });
+
+  it('maps SHARE_GONE to a 410 envelope', () => {
+    const result = asResult(errorResponse(Errors.shareGone()));
+
+    expect(result.statusCode).toBe(410);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'SHARE_GONE',
+        message: 'Share link is no longer available.',
+      },
+    });
+  });
+
   it('maps AI_PROFILE_NOT_FOUND to a 404 envelope', () => {
     const result = asResult(errorResponse(Errors.aiProfileNotFound()));
 

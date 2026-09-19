@@ -25,6 +25,11 @@ export function newUploadId(): string {
   return nanoid(16);
 }
 
+/** Unguessable share-link token (WARDROBE-126). */
+export function newShareToken(): string {
+  return `shr_${nanoid(21)}`;
+}
+
 export function nowIso(): string {
   return new Date().toISOString();
 }

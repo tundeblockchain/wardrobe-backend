@@ -324,6 +324,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'AuthorizerFn',
       'AiProfilesFn',
       'GenericModelSeedFn',
+      'SharesFn',
     ]) {
       expect(sqsActionsFor(fnId)).toEqual([]);
     }
@@ -1251,6 +1252,12 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     const health = routes.find((route) => route.Properties.RouteKey === 'GET /health');
     expect(health?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
 
+    const publicShare = routes.find(
+      (route) => route.Properties.RouteKey === 'GET /public/shares/{token}',
+    );
+    expect(publicShare).toBeDefined();
+    expect(publicShare?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
     for (const routeKey of [
       'GET /wardrobes',
       'POST /wardrobes',
@@ -1266,6 +1273,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/move',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/copy',
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/share',
       'GET /wardrobes/{wardrobeId}/outfits',
       'POST /wardrobes/{wardrobeId}/outfits',
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}',
@@ -1277,6 +1285,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
       'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}',
       'GET /wardrobes/{wardrobeId}/worn-on',
+      'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/share',
+      'DELETE /shares/{token}',
       'GET /wardrobes/{wardrobeId}/recommendations',
       'GET /me',
       'DELETE /me',
@@ -1298,6 +1308,64 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
     }
+  });
+
+  test('WARDROBE-126 share routes: create/revoke owner-auth, preview public', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+
+    for (const routeKey of [
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/share',
+      'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/share',
+      'DELETE /shares/{token}',
+    ]) {
+      const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
+      expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+    }
+
+    const preview = routes.find(
+      (candidate) => candidate.Properties.RouteKey === 'GET /public/shares/{token}',
+    );
+    expect(preview?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+          }>;
+        };
+      };
+    };
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    const actionsFor = (prefix: string): string[] =>
+      policies
+        .filter((policy) => JSON.stringify(policy).includes('SharesFn'))
+        .flatMap((policy) =>
+          policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+            const actions = statement.Action;
+            const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+            return list.filter((action) => action.startsWith(prefix));
+          }),
+        );
+
+    expect(actionsFor('dynamodb:')).toEqual(
+      expect.arrayContaining([
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:Query',
+      ]),
+    );
+    expect(actionsFor('s3:').some((action) => action.startsWith('s3:Get'))).toBe(
+      true,
+    );
+    expect(actionsFor('sqs:')).toEqual([]);
   });
 
   test('WARDROBE-114 job-done inbox routes and optional FCM secret', () => {

@@ -8,6 +8,8 @@ export type ErrorCode =
   | 'RENDER_NOT_FOUND'
   | 'AI_PROFILE_NOT_FOUND'
   | 'EVENT_NOT_FOUND'
+  | 'SHARE_NOT_FOUND'
+  | 'SHARE_GONE'
   | 'UPLOAD_INVALID'
   | 'PROCESSING_FAILED'
   | 'PROCESSING_IN_PROGRESS'
@@ -58,6 +60,13 @@ export const Errors = {
 
   eventNotFound: (message = 'Job event not found.') =>
     new AppError('EVENT_NOT_FOUND', message, 404),
+
+  shareNotFound: (message = 'Share link not found.') =>
+    new AppError('SHARE_NOT_FOUND', message, 404),
+
+  /** Expired, revoked, or the underlying item/outfit is gone. */
+  shareGone: (message = 'Share link is no longer available.') =>
+    new AppError('SHARE_GONE', message, 410),
 
   uploadInvalid: (message: string) =>
     new AppError('UPLOAD_INVALID', message, 400),

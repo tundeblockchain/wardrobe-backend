@@ -1,6 +1,13 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
-import { deleteItem, deleteMany, getItem, keys, queryByPk } from '../../shared/dynamodb';
+import {
+  deleteItem,
+  deleteMany,
+  getItem,
+  keys,
+  queryByGsi1,
+  queryByPk,
+} from '../../shared/dynamodb';
 import {
   countUsage,
   loadStoredEntitlement,
@@ -40,8 +47,8 @@ export interface MeHandlerDeps {
  *                      reads this to soft-gate Superwall UX.
  * DELETE /me/content — wipe wardrobes, items, outfits, worn-on dates,
  *                      personal AI profiles, job-done events, device tokens,
- *                      and S3 under users/{uid}/. Entitlement + Firebase Auth
- *                      stay. No subscription cancel (WARDROBE-103).
+ *                      share tokens, and S3 under users/{uid}/. Entitlement +
+ *                      Firebase Auth stay. No subscription cancel (WARDROBE-103).
  * DELETE /me         — cancel store subscription when possible, revoke
  *                      ENTITLEMENT, then the same Dynamo + S3 wipe (plus
  *                      PROFILE). Returns WARDROBE-102 outcome so Flutter can
@@ -261,6 +268,15 @@ async function collectOwnedRows(
   ).filter((item) => item.entityType === 'DEVICE' && item.userId === userId);
   for (const device of devices) {
     add(device.PK, device.SK, 'DEVICE');
+  }
+
+  const shares = (
+    await queryByGsi1(keys.gsi1ShareUserPk(userId), {
+      skPrefix: keys.gsi1ShareSkPrefix,
+    })
+  ).filter((item) => item.entityType === 'SHARE' && item.userId === userId);
+  for (const share of shares) {
+    add(share.PK, share.SK, 'SHARE');
   }
 
   const wardrobes = (await queryByPk(keys.userPk(userId), 'WARDROBE#')).filter(
