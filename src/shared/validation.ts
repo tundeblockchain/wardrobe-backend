@@ -81,6 +81,27 @@ export function optionalQueryString(
   return requireNonEmptyString(value, field, 32);
 }
 
+/** Missing / blank query values are omitted. `true`/`1` and `false`/`0` only. */
+export function optionalQueryBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw Errors.validation(`${field} must be true or false.`);
+  }
+  const raw = value.trim().toLowerCase();
+  if (raw === 'true' || raw === '1') {
+    return true;
+  }
+  if (raw === 'false' || raw === '0') {
+    return false;
+  }
+  throw Errors.validation(`${field} must be true or false.`);
+}
+
 /** Calendar date stored and returned as `YYYY-MM-DD` (WARDROBE-92). */
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 

@@ -9,12 +9,12 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), wardrobes, items, outfits, recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), events (job-done inbox + FCM devices), wardrobes, items, outfits, recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, OpenAI shopping keywords, Bright Data SERP, Resend support mail, and Superwall webhook credentials (placeholders) |
+| Secrets Manager | Firebase project ID, optional Firebase FCM service account, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, OpenAI shopping keywords, Bright Data SERP, Resend support mail, and Superwall webhook credentials (placeholders) |
 
 Working in this first cut:
 
@@ -34,6 +34,7 @@ Working in this first cut:
 - AI Profile CRUD plus PERSONAL reference-image presign/attach, seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73)
 - Outfit try-on worker (Gemini `generateContent` image; writes a unique `users/{uid}/outfits/{outfitId}/renders/{renderId}.png` and appends it to outfit history)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
+- Job-done inbox (`GET /me/events` + ack) so Flutter can stop blind-polling when item processing or try-on finishes (WARDROBE-114 / Flutter WARDROBE-115). Optional FCM push when `wardrobe/{stage}/firebase-fcm` is a real service-account JSON.
 
 ## Prerequisites
 
@@ -63,6 +64,16 @@ aws secretsmanager put-secret-value \
   --secret-id wardrobe/prod/firebase-project-id \
   --secret-string "your-actual-firebase-project-id"
 ```
+
+Optional FCM job-done push (WARDROBE-114) uses a **different** secret. The authorizer only needs the project ID. Push needs a Firebase **service-account JSON** (FCM HTTP v1). The in-app event API works if you leave the generated placeholder — workers skip push and never 5xx. Never commit the JSON.
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/firebase-fcm \
+  --secret-string file://firebase-fcm-service-account.json
+```
+
+Standard Google fields (`project_id`, `client_email`, `private_key`) or camelCase (`projectId`, `clientEmail`, `privateKey`) are accepted. The processing and outfit-render Lambdas read `FIREBASE_FCM_SECRET_ARN` at runtime.
 
 Background removal uses **Google Gemini** (`generateContent` image edit). After deploy, replace the generated placeholder with a Gemini API key. A plain key is enough (default model `gemini-2.5-flash-image`); JSON can override `model` and `endpoint`. Never commit the key.
 
@@ -195,11 +206,18 @@ Identity comes from the Firebase authorizer (`getUserId`). Body or query `userId
 GET    /me
 DELETE /me/content
 DELETE /me
+GET    /me/events
+POST   /me/events/ack
+POST   /me/events/{eventId}/ack
+PUT    /me/devices
+DELETE /me/devices/{deviceId}
 ```
 
 `GET /me` returns the Flutter entitlement DTO (WARDROBE-91). See **Entitlements** below.
 
-`DELETE` wipes the caller's wardrobes, items, outfits, worn-on dates, and personal AI profiles in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
+`DELETE` wipes the caller's wardrobes, items, outfits, worn-on dates, personal AI profiles, job-done events, and FCM device tokens in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
+
+Job-done inbox and device registration (WARDROBE-114 / Flutter WARDROBE-115) are documented under **AI job-done events**.
 
 | Endpoint | Keeps Firebase Auth user | Keeps entitlement | Cancels store subscription | Flutter next step |
 | --- | --- | --- | --- | --- |
@@ -806,7 +824,183 @@ The worker already accepts `PENDING` and skips `READY`. No new stuck-PENDING tim
 | 409 | `ITEM_NOT_RETRIABLE` | Status is `READY` (or any non-FAILED, non-in-flight value) |
 | 500 | `INTERNAL_ERROR` | Enqueue / Dynamo failure after the reset (status restored to `FAILED` when possible) |
 
-Flutter WARDROBE-124 should show the retry CTA on `FAILED` only, call this endpoint, then poll create / list / get until a terminal status. Treat `409 PROCESSING_IN_PROGRESS` as “already running” (keep polling). Do not invent a client-side stuck-PENDING timeout unless a later backend ticket defines one.
+Flutter WARDROBE-124 should show the retry CTA on `FAILED` only, call this endpoint, then wait for `GET /me/events` (WARDROBE-114) or poll create / list / get until a terminal status. Treat `409 PROCESSING_IN_PROGRESS` as “already running” (keep polling). Do not invent a client-side stuck-PENDING timeout unless a later backend ticket defines one.
+
+Flutter WARDROBE-115 should prefer **AI job-done events** (`GET /me/events`) instead of blind-polling these item endpoints. Polling remains valid as a fallback.
+
+### AI job-done events (WARDROBE-114) — Flutter WARDROBE-115 contract
+
+When an async AI job reaches a **terminal** status (`READY` or `FAILED`), the worker writes a durable inbox row the app can list and ack. Optional FCM push uses the same deep-link payload when a device token is registered and `wardrobe/{stage}/firebase-fcm` is a real service-account JSON.
+
+This is **not** a new AI feature. Only the existing SQS jobs emit events:
+
+| `jobType` | Worker | Deep-link fields | Terminal `status` |
+| --- | --- | --- | --- |
+| `PROCESS_WARDROBE_ITEM` | `ProcessingFn` | `wardrobeId`, `itemId` | `READY` / `FAILED` |
+| `RENDER_OUTFIT` | `OutfitRenderFn` | `wardrobeId`, `outfitId`, `renderId?`, `aiProfileId` | `READY` / `FAILED` |
+
+`PROCESS_AI_PROFILE` is not enqueued today and does **not** emit events. Free / Basic item create writes `READY` in-request (no SQS) and does **not** write an inbox event.
+
+Identity comes from the Firebase authorizer (`getUserId`). Body or query `userId` is ignored. These routes are **not** entitlement-gated (same as GET item / GET render).
+
+```http
+GET    /me/events
+POST   /me/events/{eventId}/ack
+POST   /me/events/ack
+PUT    /me/devices
+DELETE /me/devices/{deviceId}
+```
+
+#### `GET /me/events`
+
+Query:
+
+| Field | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `unreadOnly` | boolean string | No | `true` | `true` / `1` or `false` / `0`. Invalid values are `400 VALIDATION_ERROR`. |
+| `limit` | integer string | No | `20` | `1`–`50`. Newest first. |
+
+```json
+{
+  "events": [
+    {
+      "eventId": "evt_item_item_xyz123abcd_READY",
+      "jobType": "PROCESS_WARDROBE_ITEM",
+      "status": "READY",
+      "wardrobeId": "wd_abc123xyz0",
+      "itemId": "item_xyz123abcd",
+      "createdAt": "2026-09-19T10:00:00.000Z"
+    },
+    {
+      "eventId": "evt_render_rend_abc123xyz0_FAILED",
+      "jobType": "RENDER_OUTFIT",
+      "status": "FAILED",
+      "wardrobeId": "wd_abc123xyz0",
+      "outfitId": "outfit_qwerty12",
+      "renderId": "rend_abc123xyz0",
+      "aiProfileId": "profile_generic_01",
+      "error": "Gemini blocked the try-on request (SAFETY)",
+      "createdAt": "2026-09-19T09:55:00.000Z"
+    }
+  ],
+  "unreadCount": 2
+}
+```
+
+`JobEvent` fields (Flutter DTO — never `PK` / `SK` / FCM tokens):
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `eventId` | string | Yes | Deterministic. Item: `evt_item_{itemId}_{READY\|FAILED}`. Try-on: `evt_render_{renderId}_{READY\|FAILED}` (legacy jobs without `renderId` use `evt_render_{outfitId}_{aiProfileId}_{status}`). |
+| `jobType` | `PROCESS_WARDROBE_ITEM` \| `RENDER_OUTFIT` | Yes | Same values as SQS `jobType`. |
+| `status` | `READY` \| `FAILED` | Yes | Terminal only. Never `PENDING` / `PROCESSING`. |
+| `wardrobeId` | string | Yes | Always present for deep-link. |
+| `itemId` | string | Item jobs | Soft-omitted on try-on events. |
+| `outfitId` | string | Try-on jobs | Soft-omitted on item events. |
+| `renderId` | string | Try-on when known | Soft-omitted on legacy jobs and item events. |
+| `aiProfileId` | string | Try-on | Soft-omitted on item events. |
+| `error` | string | `FAILED` when the worker had a reason | Soft-omitted on `READY`. Same short reason as `processingError` / `render.error`. |
+| `createdAt` | ISO 8601 | Yes | When the inbox row was first written. |
+| `acknowledgedAt` | ISO 8601 | After ack | Soft-omitted while unread. |
+
+`unreadCount` is the total unread rows (not capped by `limit`). Soft-omit optional JSON fields — never send `null`.
+
+#### Ack
+
+```http
+POST /me/events/{eventId}/ack
+```
+
+`200` returns the acked `JobEvent` (includes `acknowledgedAt`). Already-acked events return `200` with the existing row (idempotent). Unknown / other-user ids return `404` `EVENT_NOT_FOUND`.
+
+```http
+POST /me/events/ack
+```
+
+```json
+{ "eventIds": ["evt_item_item_xyz123abcd_READY", "evt_render_rend_abc123xyz0_FAILED"] }
+```
+
+`200` `{ "events": [ JobEvent, ... ] }`. Unknown ids are skipped (so a retry after TTL expiry is still `200`). Empty `eventIds` is `400 VALIDATION_ERROR`. Max `50` ids.
+
+#### FCM device registration (optional)
+
+Push is optional. Flutter WARDROBE-115 can soft-stub inbox-only and add tokens later.
+
+```http
+PUT /me/devices
+```
+
+```json
+{
+  "token": "<fcm-registration-token>",
+  "platform": "IOS",
+  "deviceId": "iphone-1"
+}
+```
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `token` | string | Yes | FCM registration token. Write-only; never returned. Max 4096 chars. |
+| `platform` | `IOS` \| `ANDROID` | Yes | Other values are `400 VALIDATION_ERROR`. |
+| `deviceId` | string | No | Letters, numbers, `_`, `-`, max 64. If omitted, backend stores `dev_{sha256(token)[:16]}`. |
+
+`200` `{ "deviceId", "platform", "updatedAt" }`. Same `deviceId` upserts the token (idempotent).
+
+```http
+DELETE /me/devices/{deviceId}
+```
+
+`204` even when the device is already gone.
+
+#### Push payload (when FCM is configured)
+
+Data keys are **strings** (FCM requirement). Same deep-link fields as `JobEvent`:
+
+```json
+{
+  "eventId": "evt_item_item_xyz123abcd_READY",
+  "jobType": "PROCESS_WARDROBE_ITEM",
+  "status": "READY",
+  "wardrobeId": "wd_abc123xyz0",
+  "itemId": "item_xyz123abcd"
+}
+```
+
+Notification copy (also sent):
+
+| `jobType` | `status` | title | body |
+| --- | --- | --- | --- |
+| `PROCESS_WARDROBE_ITEM` | `READY` | Item ready | Your clothing item has finished processing. |
+| `PROCESS_WARDROBE_ITEM` | `FAILED` | Item processing failed | We could not finish processing this item. |
+| `RENDER_OUTFIT` | `READY` | Try-on ready | Your outfit try-on is ready to view. |
+| `RENDER_OUTFIT` | `FAILED` | Try-on failed | We could not finish this try-on. |
+
+Missing tokens, missing / placeholder `firebase-fcm`, Google OAuth failures, and `UNREGISTERED` tokens are **soft-fail**: the inbox row still exists, the worker does not 5xx, and stale tokens are deleted. Flutter must not require push to mark a job done.
+
+#### Writes / idempotency / TTL
+
+Workers call `recordJobDone` after they persist `READY` or `FAILED` (and again on the “already READY” skip path). Dynamo `Put` uses `attribute_not_exists(PK)` on `USER#{uid}` / `EVENT#{eventId}`. Retries and DLQ replays do not duplicate inbox rows or re-send FCM.
+
+Inbox rows set `ttl` (unix seconds, 30 days). The table already has TTL on `ttl`.
+
+#### Error codes
+
+| HTTP | `error.code` | When |
+| --- | --- | --- |
+| 401 | `UNAUTHENTICATED` | Missing / invalid Firebase ID token (authorizer). |
+| 400 | `VALIDATION_ERROR` | Bad query, empty `eventIds`, unknown `platform`, invalid `deviceId` / `limit`. |
+| 404 | `EVENT_NOT_FOUND` | Single ack of an unknown or other-user `eventId`. |
+| 500 | `INTERNAL_ERROR` | Unexpected handler failure. Workers never return this for missing FCM tokens. |
+
+#### Flutter inbox guidance (WARDROBE-115)
+
+1. After `POST` item (Premium) or `POST .../render`, keep a local PENDING row if you want an immediate tray.
+2. `GET /me/events?unreadOnly=true` (or handle FCM data) instead of tight-loop polling GET item / GET render.
+3. Deep-link: item → `GET /wardrobes/{wardrobeId}/items/{itemId}`; try-on → `GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render` (or the outfit).
+4. `POST .../ack` when the user opens or dismisses the row.
+5. Polling GET item / GET render remains the fallback if the inbox is empty (event write is best-effort relative to the status field).
+6. After `POST .../items/{itemId}/reprocess` (WARDROBE-123), wait for the next terminal event. `READY` is a new `eventId`. A second `FAILED` reuses `evt_item_{itemId}_FAILED` (idempotent — if that row was already acked, poll GET item).
 
 ### Outfits
 
@@ -1076,7 +1270,7 @@ aws secretsmanager put-secret-value \
 
 CDK creates the secret as a placeholder. IAM: `OutfitRenderFn` may `secretsmanager:GetSecretValue` on this secret only. `OutfitsFn` may `sqs:SendMessage` on the try-on queue. The worker may consume the queue, `GetItem` / `Query` / `UpdateItem` on the table, and S3 read + put (no delete). No extra IAM console steps if you deploy via CDK.
 3. Upload GENERIC_MODEL full-body photos if you have not already (WARDROBE-45 / WARDROBE-72 keys under `shared/ai-profiles/generic/{slug}/front.png`). A missing model photo marks the render `FAILED` with `Image not found: shared/ai-profiles/generic/...`.
-4. Confirm: `POST .../outfits/{outfitId}/render` with `{ "aiProfileId": "profile_generic_01" }`, then poll `GET .../render` until `READY` or `FAILED`.
+4. Confirm: `POST .../outfits/{outfitId}/render` with `{ "aiProfileId": "profile_generic_01" }`, then wait for `GET /me/events` (`jobType: RENDER_OUTFIT`) or poll `GET .../render` until `READY` or `FAILED`.
 5. If messages land on `wardrobe-outfit-render-dlq-{stage}`, check CloudWatch alarm `wardrobe-outfit-render-dlq-{stage}` and the worker logs. After filling the secret, redrive or have Flutter retry POST.
 
 ### Outfit recommendations
@@ -1752,6 +1946,7 @@ Repeat for `02`–`04`. `referenceImages` is a Dynamo string set or list of stri
 | Ticket | Hook |
 | --- | --- |
 | WARDROBE-47 | Secret `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT` on the dedicated outfit-render queue. See **Outfit try-on / render** above. |
+| WARDROBE-114 | Inbox `USER#{uid}` / `EVENT#{eventId}` + optional secret `wardrobe/{stage}/firebase-fcm`. See **AI job-done events**. |
 
 ## DynamoDB keys
 
@@ -1762,8 +1957,11 @@ USER#{uid}                 ENTITLEMENT
 USER#{uid}                 WARDROBE#{wardrobeId}
 USER#{uid}                 AIPROFILE#{aiProfileId}    (omitted — sparse)
 USER#{uid}                 SHOPPING#{itemId}          (24h TTL cache)
+USER#{uid}                 EVENT#{eventId}            (30d TTL inbox)
+USER#{uid}                 DEVICE#{deviceId}          (FCM token)
 WARDROBE#{wardrobeId}      ITEM#{itemId}
 WARDROBE#{wardrobeId}      OUTFIT#{outfitId}
+WARDROBE#{wardrobeId}      OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
 AIPROFILE#GENERIC_MODEL    AIPROFILE#{aiProfileId}    TYPE#GENERIC_MODEL    AIPROFILE#{aiProfileId}
 ```
 
@@ -1773,6 +1971,9 @@ Access patterns:
 List caller's PERSONAL profiles     Query PK=USER#{uid} begins_with SK=AIPROFILE#
 Get caller's PERSONAL profile       Get USER#{uid} / AIPROFILE#{id}
 Get caller's entitlement            Get USER#{uid} / ENTITLEMENT
+List job-done inbox                 Query PK=USER#{uid} begins_with SK=EVENT#
+Get / ack one event                 Get/Update USER#{uid} / EVENT#{eventId}
+Upsert / delete FCM device          Put/Delete USER#{uid} / DEVICE#{deviceId}
 List GENERIC_MODEL (picker)         Query GSI1 PK=TYPE#GENERIC_MODEL
                                     (fallback: Query PK=AIPROFILE#GENERIC_MODEL)
 Get GENERIC_MODEL                   Get AIPROFILE#GENERIC_MODEL / AIPROFILE#{id}
@@ -1795,6 +1996,7 @@ scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDRO
 src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103)
+  events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
   items/

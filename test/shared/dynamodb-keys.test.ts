@@ -12,6 +12,12 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.entitlementSk).toBe('ENTITLEMENT');
     expect(keys.shoppingCacheSk('item_xyz123')).toBe('SHOPPING#item_xyz123');
     expect(keys.shoppingCacheSkPrefix).toBe('SHOPPING#');
+    expect(keys.eventSk('evt_item_item_xyz_READY')).toBe(
+      'EVENT#evt_item_item_xyz_READY',
+    );
+    expect(keys.eventSkPrefix).toBe('EVENT#');
+    expect(keys.deviceSk('dev_abc')).toBe('DEVICE#dev_abc');
+    expect(keys.deviceSkPrefix).toBe('DEVICE#');
     expect(keys.wardrobeSk('wd_abc123')).toBe('WARDROBE#wd_abc123');
   });
 

@@ -624,6 +624,8 @@ USER#123                   WARDROBE#wd1
 USER#123                   WARDROBE#wd2
 
 USER#123                   AIPROFILE#profile1         (sparse — PERSONAL)
+USER#123                   EVENT#evt_item_item1_READY
+USER#123                   DEVICE#iphone-1
 
 WARDROBE#wd1               ITEM#item1
 WARDROBE#wd1               ITEM#item2
@@ -1065,6 +1067,8 @@ Use SQS when:
 - Retries are required.
 - Failed jobs should move to a dead-letter queue.
 - Backend processing must be decoupled from API request latency.
+
+Job-done notifications (WARDROBE-114) write a Dynamo inbox row (`USER#{uid}` / `EVENT#{eventId}`) from the existing SQS workers. That is not EventBridge fan-out.
 
 EventBridge may become useful later if the architecture needs:
 

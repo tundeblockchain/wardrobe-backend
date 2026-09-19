@@ -9,6 +9,7 @@ import {
   ProcessingStatus,
   ProcessWardrobeItemJob,
 } from '../../shared/types';
+import { recordJobDone } from '../events/record';
 import {
   isRetryableProcessingFailure,
   PermanentProcessingError,
@@ -98,7 +99,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
   // WARDROBE-59: DLQ is the safety net for timeouts / crashes that never
   // reached markFailed. Do not re-run the pipeline.
   if (isDlqRecord(record)) {
-    await markFailed(job.wardrobeId, job.itemId, EXHAUSTED_ERROR);
+    await markFailed(job, EXHAUSTED_ERROR);
     return;
   }
 
@@ -113,7 +114,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       itemId: job.itemId,
       wardrobeId: job.wardrobeId,
     });
-    await markFailed(job.wardrobeId, job.itemId, KEY_MISMATCH_ERROR);
+    await markFailed(job, KEY_MISMATCH_ERROR);
     return;
   }
 
@@ -122,6 +123,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       itemId: job.itemId,
       wardrobeId: job.wardrobeId,
     });
+    await notifyItemJobDone(job, 'READY');
     return;
   }
 
@@ -149,7 +151,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         wardrobeId: job.wardrobeId,
         error: error.message,
       });
-      await markFailed(job.wardrobeId, job.itemId, error.message);
+      await markFailed(job, error.message);
       return;
     }
     throw error instanceof RetryableProcessingError
@@ -161,6 +163,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
   }
 
   await setProcessingStatus(job.wardrobeId, job.itemId, 'READY');
+  await notifyItemJobDone(job, 'READY');
   logger.info('Clothing item processing completed', {
     itemId: job.itemId,
     wardrobeId: job.wardrobeId,
@@ -264,15 +267,37 @@ async function persistTerminalFailure(
       ? error.message
       : EXHAUSTED_ERROR;
 
-  await markFailed(job.wardrobeId, job.itemId, reason);
+  await markFailed(job, reason);
 }
 
 async function markFailed(
-  wardrobeId: string,
-  itemId: string,
+  job: ProcessWardrobeItemJob,
   reason: string,
 ): Promise<void> {
-  await setProcessingStatus(wardrobeId, itemId, 'FAILED', reason);
+  const written = await setProcessingStatus(
+    job.wardrobeId,
+    job.itemId,
+    'FAILED',
+    reason,
+  );
+  if (written) {
+    await notifyItemJobDone(job, 'FAILED', sanitizeProcessingError(reason));
+  }
+}
+
+async function notifyItemJobDone(
+  job: ProcessWardrobeItemJob,
+  status: 'READY' | 'FAILED',
+  error?: string,
+): Promise<void> {
+  await recordJobDone({
+    userId: job.userId,
+    jobType: job.jobType,
+    status,
+    wardrobeId: job.wardrobeId,
+    itemId: job.itemId,
+    ...(status === 'FAILED' && error ? { error } : {}),
+  });
 }
 
 async function setProcessingStatus(

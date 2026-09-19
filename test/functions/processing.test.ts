@@ -27,6 +27,12 @@ jest.mock('../../src/functions/processing/pipeline', () => ({
   runProcessingPipeline: (...args: unknown[]) => mockRunPipeline(...args),
 }));
 
+const mockRecordJobDone = jest.fn();
+
+jest.mock('../../src/functions/events/record', () => ({
+  recordJobDone: (...args: unknown[]) => mockRecordJobDone(...args),
+}));
+
 import { PermanentProcessingError } from '../../src/functions/processing/errors';
 import { handler } from '../../src/functions/processing/handler';
 
@@ -145,6 +151,7 @@ describe('processing worker (WARDROBE-17 / WARDROBE-59)', () => {
     process.env.TABLE_NAME = 'wardrobe-app-test';
     process.env.PROCESSING_DLQ_ARN = DLQ_ARN;
     mockRunPipeline.mockResolvedValue(undefined);
+    mockRecordJobDone.mockResolvedValue(true);
     mockSend.mockImplementation(async (command: Command) => {
       if (command._op === 'Get') {
         return { Item: dynamoItem() };
@@ -190,6 +197,13 @@ describe('processing worker (WARDROBE-17 / WARDROBE-59)', () => {
       itemId: ITEM_ID,
       originalImageKey: ORIGINAL_KEY,
       item: dynamoItem(),
+    });
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'PROCESS_WARDROBE_ITEM',
+      status: 'READY',
+      wardrobeId: WARDROBE_ID,
+      itemId: ITEM_ID,
     });
   });
 
@@ -282,6 +296,13 @@ describe('processing worker (WARDROBE-17 / WARDROBE-59)', () => {
     expect(result).toEqual({ batchItemFailures: [] });
     expect(statusUpdates()).toEqual([]);
     expect(mockRunPipeline).not.toHaveBeenCalled();
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'PROCESS_WARDROBE_ITEM',
+      status: 'READY',
+      wardrobeId: WARDROBE_ID,
+      itemId: ITEM_ID,
+    });
   });
 
   it('continues a PROCESSING retry through the stub pipeline to READY', async () => {
@@ -324,6 +345,14 @@ describe('processing worker (WARDROBE-17 / WARDROBE-59)', () => {
     expect(result).toEqual({ batchItemFailures: [] });
     expect(statusUpdates()).toEqual(['PROCESSING', 'FAILED']);
     expect(processingErrors()).toEqual([undefined, 'unusable image']);
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'PROCESS_WARDROBE_ITEM',
+      status: 'FAILED',
+      wardrobeId: WARDROBE_ID,
+      itemId: ITEM_ID,
+      error: 'unusable image',
+    });
   });
 
   it('sets FAILED with processingError when the Gemini classifier 404s (WARDROBE-64)', async () => {

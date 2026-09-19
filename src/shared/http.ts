@@ -5,7 +5,7 @@ import { logger } from './logger';
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Authorization,Content-Type',
-  'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+  'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
 };
 
 export function json(statusCode: number, body: unknown): APIGatewayProxyResultV2 {

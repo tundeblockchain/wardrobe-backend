@@ -49,6 +49,12 @@ export const keys = {
    */
   shoppingCacheSk: (itemId: string) => `SHOPPING#${itemId}`,
   shoppingCacheSkPrefix: 'SHOPPING#',
+  /** WARDROBE-114 durable job-done inbox (30-day TTL on `ttl`). */
+  eventSk: (eventId: string) => `EVENT#${eventId}`,
+  eventSkPrefix: 'EVENT#',
+  /** WARDROBE-114 FCM device token. */
+  deviceSk: (deviceId: string) => `DEVICE#${deviceId}`,
+  deviceSkPrefix: 'DEVICE#',
   aiProfileSk: (aiProfileId: string) => `AIPROFILE#${aiProfileId}`,
   /** Catalog partition for seeded GENERIC_MODEL rows (WARDROBE-45). */
   genericModelPk: () => 'AIPROFILE#GENERIC_MODEL',
@@ -63,6 +69,25 @@ export async function putItem(item: DynamoItem): Promise<void> {
       Item: item,
     }),
   );
+}
+
+/** Idempotent create. Returns false when the PK/SK already exists. */
+export async function putItemIfNotExists(item: DynamoItem): Promise<boolean> {
+  try {
+    await client.send(
+      new PutCommand({
+        TableName: tableName(),
+        Item: item,
+        ConditionExpression: 'attribute_not_exists(PK)',
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function getItem<T extends DynamoItem>(

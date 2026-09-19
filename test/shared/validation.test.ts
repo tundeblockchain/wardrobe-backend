@@ -5,6 +5,7 @@ import {
   optionalIntegerInRange,
   optionalIsoDate,
   optionalNonEmptyString,
+  optionalQueryBoolean,
   optionalQueryString,
   optionalReferenceImages,
   optionalStringArray,
@@ -188,6 +189,25 @@ describe('validation', () => {
 
     it('returns a trimmed string when present', () => {
       expect(optionalQueryString('  BLACK  ', 'colour')).toBe('BLACK');
+    });
+  });
+
+  describe('optionalQueryBoolean', () => {
+    it('returns undefined for missing or blank values', () => {
+      expect(optionalQueryBoolean(undefined, 'unreadOnly')).toBeUndefined();
+      expect(optionalQueryBoolean(null, 'unreadOnly')).toBeUndefined();
+      expect(optionalQueryBoolean('', 'unreadOnly')).toBeUndefined();
+    });
+
+    it('accepts true/1 and false/0', () => {
+      expect(optionalQueryBoolean('true', 'unreadOnly')).toBe(true);
+      expect(optionalQueryBoolean('1', 'unreadOnly')).toBe(true);
+      expect(optionalQueryBoolean('false', 'unreadOnly')).toBe(false);
+      expect(optionalQueryBoolean('0', 'unreadOnly')).toBe(false);
+    });
+
+    it('throws VALIDATION_ERROR for other values', () => {
+      expect(() => optionalQueryBoolean('yes', 'unreadOnly')).toThrow(AppError);
     });
   });
 

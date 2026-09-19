@@ -232,6 +232,78 @@ export interface RenderOutfitJob {
   renderId?: string;
 }
 
+/**
+ * Terminal statuses written to the in-app job-done inbox (WARDROBE-114).
+ * PENDING / PROCESSING never create events — Flutter still polls those.
+ */
+export const JOB_EVENT_STATUSES = ['READY', 'FAILED'] as const;
+export type JobEventStatus = (typeof JOB_EVENT_STATUSES)[number];
+
+/**
+ * Async job types that emit a durable inbox event when they finish.
+ * Values match existing SQS `jobType` fields. `PROCESS_AI_PROFILE` is not
+ * enqueued today and does not emit events.
+ */
+export const JOB_EVENT_JOB_TYPES = [
+  PROCESS_WARDROBE_ITEM_JOB,
+  RENDER_OUTFIT_JOB,
+] as const;
+export type JobEventJobType = (typeof JOB_EVENT_JOB_TYPES)[number];
+
+export const DEFAULT_JOB_EVENT_LIMIT = 20;
+export const MAX_JOB_EVENT_LIMIT = 50;
+/** Inbox rows expire after 30 days via the table `ttl` attribute. */
+export const JOB_EVENT_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+export const DEVICE_PLATFORMS = ['IOS', 'ANDROID'] as const;
+export type DevicePlatform = (typeof DEVICE_PLATFORMS)[number];
+
+/**
+ * Flutter `JobEvent` (WARDROBE-114 / Flutter WARDROBE-115).
+ * Deep-link with `wardrobeId` + `itemId` or `outfitId` / `renderId`
+ * plus `jobType` + `status`. Never expose Dynamo `PK` / `SK` or FCM tokens.
+ */
+export interface JobEvent {
+  eventId: string;
+  jobType: JobEventJobType;
+  status: JobEventStatus;
+  wardrobeId: string;
+  itemId?: string;
+  outfitId?: string;
+  renderId?: string;
+  aiProfileId?: string;
+  /** Present on `FAILED`. Soft-omitted on `READY`. */
+  error?: string;
+  createdAt: string;
+  /** Present after ack. Soft-omitted while unread. */
+  acknowledgedAt?: string;
+}
+
+/** `GET /me/events` — newest first. */
+export interface JobEventList {
+  events: JobEvent[];
+  unreadCount: number;
+}
+
+/** `POST /me/events/ack` */
+export interface JobEventAckRequest {
+  eventIds: string[];
+}
+
+export interface JobEventAckResponse {
+  events: JobEvent[];
+}
+
+/**
+ * Flutter device registration (WARDROBE-114). Token is write-only —
+ * list/get never return it.
+ */
+export interface Device {
+  deviceId: string;
+  platform: DevicePlatform;
+  updatedAt: string;
+}
+
 export interface Wardrobe {
   wardrobeId: string;
   name: string;
@@ -567,7 +639,9 @@ export type EntityType =
   | 'WORN_ON'
   | 'AIPROFILE'
   | 'ENTITLEMENT'
-  | 'SHOPPING_CACHE';
+  | 'SHOPPING_CACHE'
+  | 'JOB_EVENT'
+  | 'DEVICE';
 
 export interface DynamoItem {
   PK: string;

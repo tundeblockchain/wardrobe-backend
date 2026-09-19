@@ -253,6 +253,36 @@ function mockPopulatedWipe(
     if (command._op === 'Query') {
       const pk = command.input.ExpressionAttributeValues?.[':pk'];
       const sk = command.input.ExpressionAttributeValues?.[':sk'];
+      if (pk === `USER#${OWNER_ID}` && sk === 'EVENT#') {
+        return {
+          Items: [
+            {
+              PK: `USER#${OWNER_ID}`,
+              SK: `EVENT#evt_item_${ITEM_ID}_READY`,
+              entityType: 'JOB_EVENT',
+              userId: OWNER_ID,
+              eventId: `evt_item_${ITEM_ID}_READY`,
+              createdAt: '2026-09-19T00:00:00.000Z',
+              updatedAt: '2026-09-19T00:00:00.000Z',
+            },
+          ],
+        };
+      }
+      if (pk === `USER#${OWNER_ID}` && sk === 'DEVICE#') {
+        return {
+          Items: [
+            {
+              PK: `USER#${OWNER_ID}`,
+              SK: 'DEVICE#phone-1',
+              entityType: 'DEVICE',
+              userId: OWNER_ID,
+              deviceId: 'phone-1',
+              createdAt: '2026-09-19T00:00:00.000Z',
+              updatedAt: '2026-09-19T00:00:00.000Z',
+            },
+          ],
+        };
+      }
       if (pk === `USER#${OWNER_ID}` && sk === 'WARDROBE#') {
         return { Items: [dynamoWardrobe()] };
       }
@@ -366,6 +396,8 @@ describe('me handler (WARDROBE-36)', () => {
             SK: `OUTFIT#${OUTFIT_ID}#WORN#${WORN_ON}`,
           },
           { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
+          { PK: `USER#${OWNER_ID}`, SK: `EVENT#evt_item_${ITEM_ID}_READY` },
+          { PK: `USER#${OWNER_ID}`, SK: 'DEVICE#phone-1' },
         ]),
       );
       expect(deletedKeys()).not.toContainEqual({

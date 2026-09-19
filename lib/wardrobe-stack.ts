@@ -45,6 +45,7 @@ export class WardrobeStack extends cdk.Stack {
 
     // Single-table PK/SK matches backend.md §16–17 access patterns:
     // USER#{uid}                 / PROFILE | WARDROBE#{wardrobeId} | AIPROFILE#{id}
+    //                            / EVENT#{eventId} | DEVICE#{deviceId}
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
     //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
     // AIPROFILE#GENERIC_MODEL    / AIPROFILE#{id}
@@ -167,6 +168,15 @@ export class WardrobeStack extends cdk.Stack {
       secretName: firebaseSecretName,
       description:
         'Firebase project ID used to validate ID tokens. Replace the generated value with your Firebase project ID.',
+      removalPolicy,
+    });
+    // Optional FCM HTTP v1 (WARDROBE-114). Inbox events work without this.
+    // Replace the generated placeholder with a Firebase service-account JSON.
+    // Never commit the real key.
+    const firebaseFcmSecret = new secretsmanager.Secret(this, 'FirebaseFcmSecret', {
+      secretName: `wardrobe/${stage}/firebase-fcm`,
+      description:
+        'Optional Firebase service-account JSON for FCM HTTP v1 job-done push. Store { "project_id", "client_email", "private_key" }. Leave the placeholder to disable push. Never commit the real key.',
       removalPolicy,
     });
     const backgroundRemovalSecret = new secretsmanager.Secret(
@@ -311,6 +321,9 @@ export class WardrobeStack extends cdk.Stack {
       // Wipe can list/delete many Dynamo rows and S3 objects under users/{uid}/.
       timeout: cdk.Duration.seconds(29),
     });
+    // WARDROBE-114 job-done inbox + FCM device registration. Workers write
+    // events; this Lambda only lists / acks / registers tokens.
+    const eventsFn = this.lambda('EventsFn', 'events', commonLambdaProps);
     const wardrobesFn = this.lambda('WardrobesFn', 'wardrobes', commonLambdaProps);
     const itemsFn = this.lambda('ItemsFn', 'items', {
       ...commonLambdaProps,
@@ -411,6 +424,7 @@ export class WardrobeStack extends cdk.Stack {
         ...(geminiColourEndpoint
           ? { GEMINI_COLOUR_ENDPOINT: geminiColourEndpoint }
           : {}),
+        FIREBASE_FCM_SECRET_ARN: firebaseFcmSecret.secretArn,
       },
     });
     aiClassifierSecret.grantRead(processingFn);
@@ -428,10 +442,12 @@ export class WardrobeStack extends cdk.Stack {
         ...(geminiTryOnEndpoint
           ? { GEMINI_TRY_ON_ENDPOINT: geminiTryOnEndpoint }
           : {}),
+        FIREBASE_FCM_SECRET_ARN: firebaseFcmSecret.secretArn,
       },
     });
 
     table.grantReadWriteData(meFn);
+    table.grantReadWriteData(eventsFn);
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
     table.grantReadWriteData(outfitsFn);
@@ -444,8 +460,18 @@ export class WardrobeStack extends cdk.Stack {
     openaiShoppingSecret.grantRead(shoppingLinksFn);
     brightDataSecret.grantRead(shoppingLinksFn);
     mediaBucket.grantRead(shoppingLinksFn);
-    // Worker reads the item then updates processingStatus / AI metadata.
-    table.grant(processingFn, 'dynamodb:GetItem', 'dynamodb:UpdateItem');
+    // Worker reads the item, updates processingStatus / AI metadata, and
+    // writes an idempotent job-done event (WARDROBE-114). Query + Delete
+    // cover FCM device lookup and stale-token cleanup.
+    table.grant(
+      processingFn,
+      'dynamodb:GetItem',
+      'dynamodb:UpdateItem',
+      'dynamodb:PutItem',
+      'dynamodb:Query',
+      'dynamodb:DeleteItem',
+    );
+    firebaseFcmSecret.grantRead(processingFn);
     mediaBucket.grantPut(uploadsFn);
     // PERSONAL AI profile reference-image presign PUT (WARDROBE-44) and
     // short-lived GET for frontImageUrl / referenceImageUrls (WARDROBE-73).
@@ -468,8 +494,16 @@ export class WardrobeStack extends cdk.Stack {
     tryOnQueue.grantConsumeMessages(outfitRenderFn);
     tryOnSecret.grantRead(outfitRenderFn);
     // Worker reloads outfit, items, and READY profiles (PERSONAL + GSI1 GENERIC_MODEL).
+    // Put/Query/Delete are the WARDROBE-114 job-done event + FCM token path.
     table.grantReadData(outfitRenderFn);
-    table.grant(outfitRenderFn, 'dynamodb:UpdateItem');
+    table.grant(
+      outfitRenderFn,
+      'dynamodb:UpdateItem',
+      'dynamodb:PutItem',
+      'dynamodb:Query',
+      'dynamodb:DeleteItem',
+    );
+    firebaseFcmSecret.grantRead(outfitRenderFn);
     mediaBucket.grantRead(outfitRenderFn);
     mediaBucket.grantPut(outfitRenderFn);
     // Presigned GET for render.imageUrl on GET outfit / GET render.
@@ -594,6 +628,7 @@ export class WardrobeStack extends cdk.Stack {
         allowMethods: [
           apigwv2.CorsHttpMethod.GET,
           apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.PUT,
           apigwv2.CorsHttpMethod.PATCH,
           apigwv2.CorsHttpMethod.DELETE,
           apigwv2.CorsHttpMethod.OPTIONS,
@@ -624,6 +659,7 @@ export class WardrobeStack extends cdk.Stack {
 
     const healthIntegration = new HttpLambdaIntegration('HealthIntegration', healthFn);
     const meIntegration = new HttpLambdaIntegration('MeIntegration', meFn);
+    const eventsIntegration = new HttpLambdaIntegration('EventsIntegration', eventsFn);
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
     const itemsIntegration = new HttpLambdaIntegration('ItemsIntegration', itemsFn);
     const outfitsIntegration = new HttpLambdaIntegration('OutfitsIntegration', outfitsFn);
@@ -658,6 +694,41 @@ export class WardrobeStack extends cdk.Stack {
       path: '/me',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.DELETE],
       integration: meIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/me/events',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: eventsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/me/events/ack',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: eventsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/me/events/{eventId}/ack',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: eventsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/me/devices',
+      methods: [apigwv2.HttpMethod.PUT],
+      integration: eventsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/me/devices/{deviceId}',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: eventsIntegration,
       authorizer: firebaseAuthorizer,
     });
 
@@ -889,6 +960,12 @@ export class WardrobeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'FirebaseProjectIdSecretName', {
       value: firebaseProjectIdSecret.secretName,
       description: 'Secrets Manager secret that must contain the Firebase project ID',
+    });
+
+    new cdk.CfnOutput(this, 'FirebaseFcmSecretName', {
+      value: firebaseFcmSecret.secretName,
+      description:
+        'Optional Secrets Manager secret for Firebase FCM service-account JSON (WARDROBE-114). Inbox works if left as the generated placeholder.',
     });
 
     new cdk.CfnOutput(this, 'BackgroundRemovalSecretName', {
