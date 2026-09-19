@@ -55,6 +55,16 @@ export const keys = {
   /** WARDROBE-114 FCM device token. */
   deviceSk: (deviceId: string) => `DEVICE#${deviceId}`,
   deviceSkPrefix: 'DEVICE#',
+  /**
+   * WARDROBE-126 share-link token (public GET + owner revoke).
+   * Canonical row is `SHARE#{token}` / `SHARE`. Owner wipe uses sparse GSI1
+   * `SHARE#USER#{uid}` / `SHARE#{token}` (does not collide with GENERIC_MODEL).
+   */
+  sharePk: (token: string) => `SHARE#${token}`,
+  shareSk: 'SHARE',
+  gsi1ShareUserPk: (userId: string) => `SHARE#USER#${userId}`,
+  gsi1ShareSk: (token: string) => `SHARE#${token}`,
+  gsi1ShareSkPrefix: 'SHARE#',
   aiProfileSk: (aiProfileId: string) => `AIPROFILE#${aiProfileId}`,
   /** Catalog partition for seeded GENERIC_MODEL rows (WARDROBE-45). */
   genericModelPk: () => 'AIPROFILE#GENERIC_MODEL',

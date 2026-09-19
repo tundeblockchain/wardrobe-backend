@@ -18,6 +18,13 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.eventSkPrefix).toBe('EVENT#');
     expect(keys.deviceSk('dev_abc')).toBe('DEVICE#dev_abc');
     expect(keys.deviceSkPrefix).toBe('DEVICE#');
+    expect(keys.sharePk('shr_abc')).toBe('SHARE#shr_abc');
+    expect(keys.shareSk).toBe('SHARE');
+    expect(keys.gsi1ShareUserPk('firebase-uid-123')).toBe(
+      'SHARE#USER#firebase-uid-123',
+    );
+    expect(keys.gsi1ShareSk('shr_abc')).toBe('SHARE#shr_abc');
+    expect(keys.gsi1ShareSkPrefix).toBe('SHARE#');
     expect(keys.wardrobeSk('wd_abc123')).toBe('WARDROBE#wd_abc123');
   });
 

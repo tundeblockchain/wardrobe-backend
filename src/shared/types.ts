@@ -631,6 +631,40 @@ export interface Entitlement {
   updatedAt: string;
 }
 
+export const SHARE_RESOURCE_TYPES = ['ITEM', 'OUTFIT'] as const;
+export type ShareResourceType = (typeof SHARE_RESOURCE_TYPES)[number];
+
+/** Default share-link lifetime (WARDROBE-126). Dynamo `ttl` matches `expiresAt`. */
+export const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * Owner create / revoke DTO (WARDROBE-126 / Flutter WARDROBE-128 /
+ * Frontend WARDROBE-127). Never includes `userId` or Dynamo keys.
+ * Soft-omit unused `itemId` / `outfitId` — never JSON `null`.
+ */
+export interface Share {
+  token: string;
+  resourceType: ShareResourceType;
+  wardrobeId: string;
+  itemId?: string;
+  outfitId?: string;
+  sharePath: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+/**
+ * Public preview (no auth). Never includes firebase uid, wardrobe lists,
+ * other items, or private profile fields.
+ */
+export interface SharePreview {
+  resourceType: ShareResourceType;
+  title: string;
+  /** Short-lived presigned GET. Soft-omitted when no image or presign fails. */
+  imageUrl?: string;
+  expiresAt: string;
+}
+
 export type EntityType =
   | 'PROFILE'
   | 'WARDROBE'
@@ -641,7 +675,8 @@ export type EntityType =
   | 'ENTITLEMENT'
   | 'SHOPPING_CACHE'
   | 'JOB_EVENT'
-  | 'DEVICE';
+  | 'DEVICE'
+  | 'SHARE';
 
 export interface DynamoItem {
   PK: string;

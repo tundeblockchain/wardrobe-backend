@@ -62,6 +62,7 @@ const WARDROBE_ID = 'wd_abc123xyz0';
 const ITEM_ID = 'item_xyz123abcd';
 const OUTFIT_ID = 'outfit_qwerty12';
 const WORN_ON = '2026-09-18';
+const SHARE_TOKEN = 'shr_V1StGXR8_Z5jdHi6B-myT';
 
 interface DynamoCommand {
   _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
@@ -71,6 +72,7 @@ interface DynamoCommand {
     KeyConditionExpression?: string;
     ExpressionAttributeValues?: Record<string, unknown>;
     ExclusiveStartKey?: Record<string, unknown>;
+    IndexName?: string;
   };
 }
 
@@ -169,6 +171,25 @@ function dynamoWornOn(userId = OWNER_ID): DynamoItem {
   };
 }
 
+function dynamoShare(userId = OWNER_ID): DynamoItem {
+  return {
+    PK: `SHARE#${SHARE_TOKEN}`,
+    SK: 'SHARE',
+    GSI1PK: `SHARE#USER#${userId}`,
+    GSI1SK: `SHARE#${SHARE_TOKEN}`,
+    entityType: 'SHARE',
+    userId,
+    wardrobeId: WARDROBE_ID,
+    resourceType: 'ITEM',
+    itemId: ITEM_ID,
+    token: SHARE_TOKEN,
+    expiresAt: '2026-10-19T12:00:00.000Z',
+    createdAt: '2026-09-19T12:00:00.000Z',
+    updatedAt: '2026-09-19T12:00:00.000Z',
+    ttl: 1_774_000_000,
+  };
+}
+
 function dynamoProfile(userId = OWNER_ID): DynamoItem {
   return {
     PK: `USER#${userId}`,
@@ -253,6 +274,13 @@ function mockPopulatedWipe(
     if (command._op === 'Query') {
       const pk = command.input.ExpressionAttributeValues?.[':pk'];
       const sk = command.input.ExpressionAttributeValues?.[':sk'];
+      if (
+        command.input.IndexName === 'GSI1' &&
+        pk === `SHARE#USER#${OWNER_ID}` &&
+        sk === 'SHARE#'
+      ) {
+        return { Items: [dynamoShare()] };
+      }
       if (pk === `USER#${OWNER_ID}` && sk === 'EVENT#') {
         return {
           Items: [
@@ -398,6 +426,7 @@ describe('me handler (WARDROBE-36)', () => {
           { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
           { PK: `USER#${OWNER_ID}`, SK: `EVENT#evt_item_${ITEM_ID}_READY` },
           { PK: `USER#${OWNER_ID}`, SK: 'DEVICE#phone-1' },
+          { PK: `SHARE#${SHARE_TOKEN}`, SK: 'SHARE' },
         ]),
       );
       expect(deletedKeys()).not.toContainEqual({
@@ -621,6 +650,7 @@ describe('me handler (WARDROBE-36)', () => {
           },
           { PK: `USER#${OWNER_ID}`, SK: 'PROFILE' },
           { PK: `USER#${OWNER_ID}`, SK: 'ENTITLEMENT' },
+          { PK: `SHARE#${SHARE_TOKEN}`, SK: 'SHARE' },
         ]),
       );
       expect(JSON.stringify(bodyOf(result))).not.toContain('null');

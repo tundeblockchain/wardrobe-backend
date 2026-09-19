@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), events (job-done inbox + FCM devices), wardrobes, items, outfits, recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
@@ -30,6 +30,7 @@ Working in this first cut:
 - Outfit worn-on log (date-only entries for calendar / habit; Flutter WARDROBE-121)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
+- Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
 - AI Profile CRUD plus PERSONAL reference-image presign/attach, seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73)
 - Outfit try-on worker (Gemini `generateContent` image; writes a unique `users/{uid}/outfits/{outfitId}/renders/{renderId}.png` and appends it to outfit history)
@@ -215,7 +216,7 @@ DELETE /me/devices/{deviceId}
 
 `GET /me` returns the Flutter entitlement DTO (WARDROBE-91). See **Entitlements** below.
 
-`DELETE` wipes the caller's wardrobes, items, outfits, worn-on dates, personal AI profiles, job-done events, and FCM device tokens in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
+`DELETE` wipes the caller's wardrobes, items, outfits, worn-on dates, personal AI profiles, job-done events, FCM device tokens, and share-link tokens in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, and future AI-profile refs). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
 
 Job-done inbox and device registration (WARDROBE-114 / Flutter WARDROBE-115) are documented under **AI job-done events**.
 
@@ -514,6 +515,7 @@ DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
 POST   /wardrobes/{wardrobeId}/items/{itemId}/move
 POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
+POST   /wardrobes/{wardrobeId}/items/{itemId}/share
 ```
 
 List supports optional smart filters (WARDROBE-21 / WARDROBE-92):
@@ -1018,6 +1020,7 @@ POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}
 GET    /wardrobes/{wardrobeId}/worn-on
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/share
 ```
 
 Create body (`name` and `items` required):
@@ -1035,6 +1038,87 @@ Create body (`name` and `items` required):
 `name` is trimmed, 1–100 characters. `items` must contain at least one entry. `slot` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `ACCESSORY` may appear more than once; other slots may appear only once. Duplicate `itemId` values are rejected.
 
 Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render` / `renderHistory` / `renderImageUrls`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204` and also deletes that outfit’s worn-on dates. Create / PATCH never accept a client-supplied `render` or `renderHistory` object.
+
+### Share links (WARDROBE-126) — Flutter WARDROBE-128 / Frontend WARDROBE-127 contract
+
+Share a **single clothing item** or **outfit** as a link + public preview. Not whole-wardrobe shares. No comments or social feed. **Growth feature** — available on Free / Basic / Premium; not entitlement-gated.
+
+Identity on create / revoke comes from the Firebase authorizer (`getUserId`). Body / query / path `userId` is ignored. Public preview is a **separate API Gateway route with no Firebase authorizer** — the token is the capability.
+
+```http
+POST   /wardrobes/{wardrobeId}/items/{itemId}/share
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/share
+DELETE /shares/{token}
+GET    /public/shares/{token}
+```
+
+Flutter / Frontend should open `https://{your-app-origin}{sharePath}` (for example `https://app.example/share/shr_…`). This API only returns the path, not an absolute web origin.
+
+#### Create (owner only)
+
+No request body. Returns `201` `Share`:
+
+```json
+{
+  "token": "shr_V1StGXR8_Z5jdHi6B-myT",
+  "resourceType": "ITEM",
+  "wardrobeId": "wd_abc123xyz0",
+  "itemId": "item_xyz123abcd",
+  "sharePath": "/share/shr_V1StGXR8_Z5jdHi6B-myT",
+  "expiresAt": "2026-10-19T12:00:00.000Z",
+  "createdAt": "2026-09-19T12:00:00.000Z"
+}
+```
+
+Outfit create is the same shape with `"resourceType": "OUTFIT"` and `outfitId` instead of `itemId`. Soft-omit the unused id — never send JSON `null`.
+
+**Token:** `shr_` + 21 URL-safe `nanoid` characters. Longer than wardrobe / item ids because the token is the only secret on the public GET.
+
+**TTL:** 30 days. `expiresAt` is ISO 8601. Dynamo also sets `ttl` (unix seconds) to the same instant so expired rows are eventually removed.
+
+**Many tokens per resource (simpler option):** each `POST` issues a **new** token. Previous tokens stay valid until they expire or the owner revokes them. There is no one-active-per-resource constraint.
+
+**Revoke:** `DELETE /shares/{token}` returns `204`. Idempotent if the token is already missing, revoked, or expired. Another user’s token is `404` `SHARE_NOT_FOUND` (same owner-only pattern as other routes). Revoke writes `revokedAt` and keeps the row until the original TTL so public GET can return `410` `SHARE_GONE` instead of pretending the link never existed.
+
+Missing / other-user wardrobe, item, or outfit on create is the same as other routes: `404` `WARDROBE_NOT_FOUND` / `ITEM_NOT_FOUND` / `OUTFIT_NOT_FOUND`. Unauthenticated create / revoke is `401` `UNAUTHENTICATED`.
+
+#### Public preview (no auth)
+
+```http
+GET /public/shares/{token}
+```
+
+`200` `SharePreview`:
+
+```json
+{
+  "resourceType": "ITEM",
+  "title": "Black T-Shirt",
+  "imageUrl": "https://...presigned GetObject...",
+  "expiresAt": "2026-10-19T12:00:00.000Z"
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `resourceType` | `ITEM` or `OUTFIT` |
+| `title` | Item or outfit `name` |
+| `imageUrl` | Short-lived S3 **presigned GET** (`createPresignedGetUrl`, 900s). Soft-omitted when there is no image or presign fails. Item: `processedKey` then `originalKey`. Outfit: READY `render.imageKey`, else the first garment item’s processed/original. Never a public bucket ACL. |
+| `expiresAt` | Same ISO 8601 as create |
+
+**Never exposed:** firebase uid, `userId`, wardrobe lists, other items, private profile fields, Dynamo `PK` / `SK` / `GSI1*`, S3 object keys.
+
+| Condition | Status | Code |
+| --- | --- | --- |
+| Missing or invalid token | `404` | `SHARE_NOT_FOUND` |
+| Expired or revoked | `410` | `SHARE_GONE` |
+| Underlying item / outfit deleted (or no longer owned by the token’s user) | `410` | `SHARE_GONE` |
+
+**TTL drift:** while the share row still exists past `expiresAt`, GET is `410` `SHARE_GONE`. After Dynamo TTL deletes the row, GET is `404` `SHARE_NOT_FOUND`. Clients should treat both as “link no longer works.”
+
+Account wipe (`DELETE /me` / `DELETE /me/content`) deletes the caller’s share rows (GSI1 `SHARE#USER#{uid}`). `UserWipeResult` does **not** add a `deletedShares` count — Flutter WARDROBE-102 stays unchanged.
+
+Deleting an item or outfit does **not** eagerly delete its share rows. Public GET then returns `410` `SHARE_GONE`.
 
 ### Outfit worn-on log (WARDROBE-120) — Flutter WARDROBE-121 contract
 
@@ -1514,6 +1598,8 @@ Unit tests inject `fetchSecret` / HTTP clients / cache / S3 image loader — no 
 
 Identity always comes from the validated Firebase token (`sub` = Firebase UID). Clients must not send `userId` as proof of ownership.
 
+Unauthenticated routes: `GET /health`, `GET /public/shares/{token}` (WARDROBE-126 — token is the capability), Superwall / support webhooks.
+
 A Lambda authorizer reads the Firebase project ID from Secrets Manager and validates the ID token:
 
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
@@ -1962,6 +2048,7 @@ USER#{uid}                 DEVICE#{deviceId}          (FCM token)
 WARDROBE#{wardrobeId}      ITEM#{itemId}
 WARDROBE#{wardrobeId}      OUTFIT#{outfitId}
 WARDROBE#{wardrobeId}      OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
+SHARE#{token}              SHARE                      SHARE#USER#{uid}      SHARE#{token}
 AIPROFILE#GENERIC_MODEL    AIPROFILE#{aiProfileId}    TYPE#GENERIC_MODEL    AIPROFILE#{aiProfileId}
 ```
 
@@ -1977,6 +2064,8 @@ Upsert / delete FCM device          Put/Delete USER#{uid} / DEVICE#{deviceId}
 List GENERIC_MODEL (picker)         Query GSI1 PK=TYPE#GENERIC_MODEL
                                     (fallback: Query PK=AIPROFILE#GENERIC_MODEL)
 Get GENERIC_MODEL                   Get AIPROFILE#GENERIC_MODEL / AIPROFILE#{id}
+Get share by token                  Get SHARE#{token} / SHARE
+List caller's shares (account wipe) Query GSI1 PK=SHARE#USER#{uid} begins_with SK=SHARE#
 ```
 
 API responses never expose `PK` / `SK` / `GSI1PK` / `GSI1SK`.
@@ -2001,6 +2090,7 @@ src/functions/
   wardrobes/
   items/
   outfits/             CRUD + POST/GET render (WARDROBE-47) + append-only history (WARDROBE-85)
+  shares/              item/outfit share tokens + public preview (WARDROBE-126)
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   shopping-links/      owner-only related shopping (WARDROBE-96); OpenAI keywords + Bright Data SERP
   uploads/
