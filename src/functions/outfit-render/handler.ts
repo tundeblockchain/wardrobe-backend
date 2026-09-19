@@ -23,6 +23,7 @@ import {
   pickAiProfileBodyContext,
 } from '../ai-profiles/body-context';
 import { normalizeReferenceImageKeys } from '../ai-profiles/model';
+import { recordJobDone } from '../events/record';
 import {
   isRetryableProcessingFailure,
   PermanentProcessingError,
@@ -117,6 +118,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       wardrobeId: job.wardrobeId,
       renderId: job.renderId,
     });
+    await notifyRenderJobDone(job, 'READY', job.renderId ?? currentRenderId);
     return;
   }
 
@@ -164,6 +166,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       },
       renderHistory,
     );
+    await notifyRenderJobDone(job, 'READY', renderId);
     logger.info('Outfit render completed', {
       outfitId: job.outfitId,
       wardrobeId: job.wardrobeId,
@@ -179,12 +182,15 @@ async function processRecord(record: SQSRecord): Promise<void> {
         wardrobeId: job.wardrobeId,
         error: error.message,
       });
-      await setRender(job, {
+      const written = await setRender(job, {
         status: 'FAILED',
         aiProfileId: job.aiProfileId,
         error: error.message,
         renderId,
       });
+      if (written) {
+        await notifyRenderJobDone(job, 'FAILED', renderId, error.message);
+      }
       return;
     }
     throw error instanceof RetryableProcessingError
@@ -406,4 +412,22 @@ async function setRender(
           error,
         );
   }
+}
+
+async function notifyRenderJobDone(
+  job: RenderOutfitJob,
+  status: 'READY' | 'FAILED',
+  renderId?: string,
+  error?: string,
+): Promise<void> {
+  await recordJobDone({
+    userId: job.userId,
+    jobType: job.jobType,
+    status,
+    wardrobeId: job.wardrobeId,
+    outfitId: job.outfitId,
+    aiProfileId: job.aiProfileId,
+    ...(renderId ? { renderId } : {}),
+    ...(status === 'FAILED' && error ? { error } : {}),
+  });
 }

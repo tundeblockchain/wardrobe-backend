@@ -7,6 +7,7 @@ export type ErrorCode =
   | 'OUTFIT_NOT_FOUND'
   | 'RENDER_NOT_FOUND'
   | 'AI_PROFILE_NOT_FOUND'
+  | 'EVENT_NOT_FOUND'
   | 'UPLOAD_INVALID'
   | 'PROCESSING_FAILED'
   | 'PROCESSING_IN_PROGRESS'
@@ -54,6 +55,9 @@ export const Errors = {
 
   aiProfileNotFound: (message = 'AI profile not found.') =>
     new AppError('AI_PROFILE_NOT_FOUND', message, 404),
+
+  eventNotFound: (message = 'Job event not found.') =>
+    new AppError('EVENT_NOT_FOUND', message, 404),
 
   uploadInvalid: (message: string) =>
     new AppError('UPLOAD_INVALID', message, 400),

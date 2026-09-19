@@ -31,6 +31,12 @@ jest.mock('../../src/functions/processing/try-on', () => ({
   runOutfitTryOn: (...args: unknown[]) => mockRunTryOn(...args),
 }));
 
+const mockRecordJobDone = jest.fn();
+
+jest.mock('../../src/functions/events/record', () => ({
+  recordJobDone: (...args: unknown[]) => mockRecordJobDone(...args),
+}));
+
 import { PermanentProcessingError } from '../../src/functions/processing/errors';
 import { handler } from '../../src/functions/outfit-render/handler';
 
@@ -176,6 +182,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
     mockRunTryOn.mockResolvedValue(RENDER_KEY);
+    mockRecordJobDone.mockResolvedValue(true);
     mockSend.mockImplementation(async (command: Command) => {
       if (command._op === 'Get') {
         const sk = command.input.Key?.SK ?? '';
@@ -228,6 +235,15 @@ describe('outfit render worker (WARDROBE-47)', () => {
           name: 'Tee',
         },
       ],
+      renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
+    });
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'RENDER_OUTFIT',
+      status: 'READY',
+      wardrobeId: WARDROBE_ID,
+      outfitId: OUTFIT_ID,
+      aiProfileId: PROFILE_ID,
       renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
     });
   });
@@ -570,6 +586,14 @@ describe('outfit render worker (WARDROBE-47)', () => {
 
     expect(result).toEqual({ batchItemFailures: [] });
     expect(mockRunTryOn).not.toHaveBeenCalled();
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'RENDER_OUTFIT',
+      status: 'READY',
+      wardrobeId: WARDROBE_ID,
+      outfitId: OUTFIT_ID,
+      aiProfileId: PROFILE_ID,
+    });
   });
 
   it('sets FAILED and acks permanent Gemini errors', async () => {
@@ -587,6 +611,16 @@ describe('outfit render worker (WARDROBE-47)', () => {
     expect(renderUpdates()[1].error).toBe(
       'Gemini blocked the try-on request (SAFETY)',
     );
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'RENDER_OUTFIT',
+      status: 'FAILED',
+      wardrobeId: WARDROBE_ID,
+      outfitId: OUTFIT_ID,
+      aiProfileId: PROFILE_ID,
+      renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
+      error: 'Gemini blocked the try-on request (SAFETY)',
+    });
   });
 
   it('reports retryable failures so SQS can redeliver toward the DLQ', async () => {

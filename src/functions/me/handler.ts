@@ -38,9 +38,10 @@ export interface MeHandlerDeps {
  *
  * GET    /me         — current entitlement (WARDROBE-91). Flutter WARDROBE-90
  *                      reads this to soft-gate Superwall UX.
- * DELETE /me/content — wipe wardrobes, items, outfits, personal AI profiles,
- *                      and S3 under users/{uid}/. Entitlement + Firebase Auth stay.
- *                      No subscription cancel (WARDROBE-103).
+ * DELETE /me/content — wipe wardrobes, items, outfits, worn-on dates,
+ *                      personal AI profiles, job-done events, device tokens,
+ *                      and S3 under users/{uid}/. Entitlement + Firebase Auth
+ *                      stay. No subscription cancel (WARDROBE-103).
  * DELETE /me         — cancel store subscription when possible, revoke
  *                      ENTITLEMENT, then the same Dynamo + S3 wipe (plus
  *                      PROFILE). Returns WARDROBE-102 outcome so Flutter can
@@ -246,6 +247,20 @@ async function collectOwnedRows(
   );
   for (const cache of shoppingCaches) {
     add(cache.PK, cache.SK, 'SHOPPING_CACHE');
+  }
+
+  const jobEvents = (
+    await queryByPk(keys.userPk(userId), keys.eventSkPrefix)
+  ).filter((item) => item.entityType === 'JOB_EVENT' && item.userId === userId);
+  for (const jobEvent of jobEvents) {
+    add(jobEvent.PK, jobEvent.SK, 'JOB_EVENT');
+  }
+
+  const devices = (
+    await queryByPk(keys.userPk(userId), keys.deviceSkPrefix)
+  ).filter((item) => item.entityType === 'DEVICE' && item.userId === userId);
+  for (const device of devices) {
+    add(device.PK, device.SK, 'DEVICE');
   }
 
   const wardrobes = (await queryByPk(keys.userPk(userId), 'WARDROBE#')).filter(

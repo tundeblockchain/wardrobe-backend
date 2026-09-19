@@ -100,6 +100,18 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps EVENT_NOT_FOUND to a 404 envelope', () => {
+    const result = asResult(errorResponse(Errors.eventNotFound()));
+
+    expect(result.statusCode).toBe(404);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'EVENT_NOT_FOUND',
+        message: 'Job event not found.',
+      },
+    });
+  });
+
   it('maps AI_PROFILE_NOT_FOUND to a 404 envelope', () => {
     const result = asResult(errorResponse(Errors.aiProfileNotFound()));
 

@@ -316,6 +316,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     for (const fnId of [
       'HealthFn',
       'MeFn',
+      'EventsFn',
       'WardrobesFn',
       'RecommendationsFn',
       'ShoppingLinksFn',
@@ -457,11 +458,14 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
 
     const dynamo = actionsFor('ProcessingFn', 'dynamodb:');
     expect(dynamo).toEqual(
-      expect.arrayContaining(['dynamodb:GetItem', 'dynamodb:UpdateItem']),
+      expect.arrayContaining([
+        'dynamodb:GetItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:PutItem',
+        'dynamodb:Query',
+        'dynamodb:DeleteItem',
+      ]),
     );
-    expect(dynamo).not.toContain('dynamodb:PutItem');
-    expect(dynamo).not.toContain('dynamodb:DeleteItem');
-    expect(dynamo).not.toContain('dynamodb:Query');
     expect(dynamo).not.toContain('dynamodb:Scan');
     expect(dynamo).not.toContain('dynamodb:*');
 
@@ -1259,6 +1263,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /me',
       'DELETE /me',
       'DELETE /me/content',
+      'GET /me/events',
+      'POST /me/events/ack',
+      'POST /me/events/{eventId}/ack',
+      'PUT /me/devices',
+      'DELETE /me/devices/{deviceId}',
       'GET /ai-profiles',
       'POST /ai-profiles',
       'GET /ai-profiles/models',
@@ -1271,5 +1280,19 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
     }
+  });
+
+  test('WARDROBE-114 job-done inbox routes and optional FCM secret', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/firebase-fcm',
+    });
+    template.hasOutput('FirebaseFcmSecretName', {
+      Description: Match.stringLikeRegexp('FCM'),
+    });
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).toContain('FIREBASE_FCM_SECRET_ARN');
+    expect(synthesized).not.toMatch(/-----BEGIN PRIVATE KEY-----/);
+    expect(synthesized).not.toMatch(/"private_key":\s*"-----BEGIN/);
   });
 });
