@@ -14,6 +14,77 @@ export interface SupportMessage {
   meta?: Record<string, string>;
 }
 
+export const WEBSITE_NAME_MAX = 100;
+export const WEBSITE_MESSAGE_MAX = 5_000;
+export const WEBSITE_SUBJECT_MAX = 200;
+export const WEBSITE_EMAIL_MAX = 254;
+
+export interface WebsiteContactMessage {
+  name: string;
+  email: string;
+  message: string;
+  subject: string;
+}
+
+export function isHoneypotTripped(company: unknown): boolean {
+  if (company === undefined || company === null) {
+    return false;
+  }
+  if (typeof company === 'string') {
+    return company.trim().length > 0;
+  }
+  return true;
+}
+
+export function parseWebsiteContact(body: unknown): WebsiteContactMessage {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw Errors.validation('Request body must be an object.');
+  }
+
+  const raw = body as {
+    name?: unknown;
+    email?: unknown;
+    message?: unknown;
+    subject?: unknown;
+  };
+
+  const name = stripHeaderBreaks(
+    requireNonEmptyString(raw.name, 'name', WEBSITE_NAME_MAX),
+  );
+  if (name.length === 0) {
+    throw Errors.validation('name is required.');
+  }
+  if (name.length > WEBSITE_NAME_MAX) {
+    throw Errors.validation(`name must be ${WEBSITE_NAME_MAX} characters or fewer.`);
+  }
+
+  const email = requireNonEmptyString(raw.email, 'email', WEBSITE_EMAIL_MAX);
+  if (!isEmailAddress(email)) {
+    throw Errors.validation('email must be a valid email address.');
+  }
+
+  const message = requireNonEmptyString(raw.message, 'message', WEBSITE_MESSAGE_MAX);
+
+  const subjectRaw = optionalNonEmptyString(
+    raw.subject,
+    'subject',
+    WEBSITE_SUBJECT_MAX,
+  );
+  const subject = stripHeaderBreaks(
+    subjectRaw ?? `Website contact from ${name}`,
+  );
+  if (subject.length === 0) {
+    throw Errors.validation('subject is required.');
+  }
+  if (subject.length > WEBSITE_SUBJECT_MAX) {
+    throw Errors.validation(
+      `subject must be ${WEBSITE_SUBJECT_MAX} characters or fewer.`,
+    );
+  }
+
+  return { name, email, message, subject };
+}
+
 export function parseSupportMessage(body: unknown): SupportMessage {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     throw Errors.validation('Request body must be an object.');

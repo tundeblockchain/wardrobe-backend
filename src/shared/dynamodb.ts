@@ -9,6 +9,7 @@ import {
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { Errors } from './errors';
+import { nowIso } from './ids';
 import { DynamoItem } from './types';
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -70,6 +71,12 @@ export const keys = {
   genericModelPk: () => 'AIPROFILE#GENERIC_MODEL',
   gsi1GenericTypePk: () => 'TYPE#GENERIC_MODEL',
   gsi1AiProfileSk: (aiProfileId: string) => `AIPROFILE#${aiProfileId}`,
+  /**
+   * WARDROBE-143 anonymous POST /support/contact rate-limit window.
+   * PK stores a SHA-256 of the source IP — never the raw address.
+   */
+  rateLimitPk: (scope: string, hashedId: string) => `RATE#${scope}#${hashedId}`,
+  rateLimitSk: (windowStart: number) => `WINDOW#${windowStart}`,
 };
 
 export async function putItem(item: DynamoItem): Promise<void> {
@@ -253,6 +260,44 @@ export async function transactWrite(ops: TransactWriteOp[]): Promise<void> {
       }),
     }),
   );
+}
+
+/**
+ * Atomic fixed-window counter (WARDROBE-143). ADD is safe under concurrency.
+ * Returns the post-increment count. Sets `ttl` once so Dynamo expires the row.
+ */
+export async function incrementCounter(input: {
+  pk: string;
+  sk: string;
+  ttl: number;
+  entityType: string;
+}): Promise<number> {
+  const now = nowIso();
+  const result = await client.send(
+    new UpdateCommand({
+      TableName: tableName(),
+      Key: { PK: input.pk, SK: input.sk },
+      UpdateExpression:
+        'ADD #count :one SET #ttl = if_not_exists(#ttl, :ttl), #entityType = if_not_exists(#entityType, :entityType), #createdAt = if_not_exists(#createdAt, :now), #updatedAt = :now',
+      ExpressionAttributeNames: {
+        '#count': 'count',
+        '#ttl': 'ttl',
+        '#entityType': 'entityType',
+        '#createdAt': 'createdAt',
+        '#updatedAt': 'updatedAt',
+      },
+      ExpressionAttributeValues: {
+        ':one': 1,
+        ':ttl': input.ttl,
+        ':entityType': input.entityType,
+        ':now': now,
+      },
+      ReturnValues: 'ALL_NEW',
+    }),
+  );
+
+  const count = result.Attributes?.count;
+  return typeof count === 'number' ? count : 0;
 }
 
 export async function updateAttributes(

@@ -2086,7 +2086,7 @@ API responses never expose `PK` / `SK` / `GSI1PK` / `GSI1SK`.
 bin/app.ts
 lib/wardrobe-stack.ts
 lib/entitlements.ts    isolated WARDROBE-91 Superwall webhook wiring
-lib/support-mail.ts    isolated WARDROBE-38 Resend wiring (rebase-friendly)
+lib/support-mail.ts    isolated WARDROBE-38 / WARDROBE-143 Resend wiring (rebase-friendly)
 lib/wardrobe-pipeline-stack.ts
 lib/wardrobe-stage.ts
 cdk.json.example
@@ -2107,10 +2107,12 @@ src/functions/
   ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45); body context (80)
   processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline
   outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47)
-  support/             WARDROBE-38 outbound contact/bug + Resend client + Svix verify
+  support/             WARDROBE-38 outbound contact/bug + WARDROBE-143 public website contact + Resend client + Svix verify
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
 src/shared/
   auth.ts
+  firebase-token.ts
+  firebase-verify.ts   shared Firebase ID-token verification (authorizer + SupportFn)
   dynamodb.ts
   entitlements.ts
   superwall-config.ts  wardrobe/{stage}/superwall JSON (WARDROBE-91 webhook + WARDROBE-103 optional cancel)
@@ -2133,6 +2135,15 @@ npm run deploy -- -c stage=staging
 ```
 
 Then set `wardrobe/staging/firebase-project-id` in Secrets Manager.
+
+Public website contact allowlist (WARDROBE-143) is empty by default. Set it at synth/deploy so Netlify can POST:
+
+```bash
+npm run deploy -- \
+  -c supportContactAllowedOrigins="https://pocketcloset.app,https://*--pocket-closet.netlify.app"
+```
+
+Or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` before `npm run synth` / `npm run deploy`. Optional: `SUPPORT_CONTACT_RATE_LIMIT` (default 5) and `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` (default 3600).
 
 Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. Staging and production retain data.
 
@@ -2215,14 +2226,14 @@ Flutter UI is WARDROBE-34 (out of scope here). Configure DNS in the Resend dashb
 
 ### Flutter endpoint contracts
 
-Both routes require the Firebase authorizer:
+`POST /support/bug` still requires the Firebase authorizer. `POST /support/contact` accepts an optional `Authorization: Bearer <firebase-id-token>`: a valid token uses this app schema; a present-but-invalid token is `401 UNAUTHORIZED` (never the website path). No Authorization header uses the public website contract below.
 
 ```http
 Authorization: Bearer <firebase-id-token>
 Content-Type: application/json
 ```
 
-Identity comes from the token (`getUserId`). Body `userId` is ignored.
+Identity comes from the token. Body `userId` is ignored.
 
 ```http
 POST /support/contact
@@ -2251,12 +2262,81 @@ POST /support/bug
 `202`:
 
 ```json
-{ "status": "sent", "kind": "contact" }
+{ "status": "sent", "kind": "contact", "source": "app" }
 ```
 
-`kind` is `contact` or `bug`. Resend’s message id is included as `id` when the Send API returns one.
+`kind` is `contact` or `bug`. `source` is `app` for this path. Resend’s message id is included as `id` when the Send API returns one.
 
-Validation failures are `400 VALIDATION_ERROR`. Missing Firebase identity is `401 UNAUTHENTICATED`. Resend / secret failures are `500 INTERNAL_ERROR`.
+Validation failures are `400 VALIDATION_ERROR`. Missing Firebase identity on `/support/bug` is `401 UNAUTHENTICATED`. A present-but-invalid token on `/support/contact` is `401 UNAUTHORIZED`. Resend / secret failures are `500 INTERNAL_ERROR`.
+
+### Public website contact (WARDROBE-143)
+
+The Netlify landing site (and deploy previews) POST the same `POST /support/contact` handler without Firebase auth. API-level CORS stays `allowOrigins: ['*']` so `GET /public/shares/{token}` and mobile clients (no `Origin`) keep working; the Support Lambda enforces `SUPPORT_CONTACT_ALLOWED_ORIGINS` on the anonymous path only.
+
+```http
+POST /support/contact
+Content-Type: application/json
+Origin: https://pocketcloset.app
+```
+
+```json
+{
+  "name": "Ada Lovelace",
+  "email": "ada@example.com",
+  "message": "I would like a demo of Pocket Closet.",
+  "subject": "Optional subject",
+  "company": ""
+}
+```
+
+| Field | Rules |
+| --- | --- |
+| `name` | required, trimmed, 1–100 characters, CR/LF stripped |
+| `email` | required, valid address, max 254 |
+| `message` | required, trimmed, 1–5000 characters |
+| `subject` | optional, max 200, CR/LF stripped; default `Website contact from <name>` |
+| `company` | honeypot; must be absent or empty |
+
+Unknown extra fields are ignored. Raw body larger than **16 KB** is rejected before JSON parse (`413 VALIDATION_ERROR`).
+
+**Honeypot:** a non-empty `company` returns the normal `202` success shape but does **not** send email and does **not** count toward the rate limit. The Lambda logs `support.contact.honeypot`.
+
+**Rate limit (anonymous path only):** 5 requests per client IP per hour. Keyed on `requestContext.http.sourceIp`; Dynamo stores a SHA-256 of the IP (never the raw address) in `RATE#SUPPORT_CONTACT#{hash}` / `WINDOW#{unix}` with table TTL on `ttl`. Configurable via `SUPPORT_CONTACT_RATE_LIMIT` and `SUPPORT_CONTACT_RATE_WINDOW_SECONDS`. Over limit: `429 RATE_LIMITED` with `Retry-After` (seconds).
+
+**CORS env:** `SUPPORT_CONTACT_ALLOWED_ORIGINS` (comma-separated). Exact origins (`https://pocketcloset.app`) and a single `*` DNS-label wildcard (`https://*--pocket-closet.netlify.app`) are supported. Empty default: every browser (`Origin`-bearing) anonymous call is `403 ORIGIN_NOT_ALLOWED`. Requests with no `Origin` (curl / mobile) are allowed. Valid Firebase tokens skip this check.
+
+`202`:
+
+```json
+{ "status": "sent", "kind": "contact", "source": "website" }
+```
+
+Mail is sent on the same Resend path with a `[Website]` subject prefix, a `Source: website` line, no `userId`, and `replyTo` set to the visitor email.
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 / 413 | `VALIDATION_ERROR` | missing/invalid fields, or raw body > 16 KB |
+| 401 | `UNAUTHORIZED` | `Authorization` present but token invalid |
+| 403 | `ORIGIN_NOT_ALLOWED` | anonymous request `Origin` not on the allowlist |
+| 429 | `RATE_LIMITED` | anonymous IP over the window (see `Retry-After`) |
+| 500 | `INTERNAL_ERROR` | Resend / secret / unexpected failure |
+
+Example (anonymous; set `SUPPORT_CONTACT_ALLOWED_ORIGINS` or omit `Origin`):
+
+```bash
+curl -X POST "$API_URL/support/contact" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Ada Lovelace","email":"ada@example.com","message":"Hello from the site"}'
+```
+
+Example (authed app — unchanged schema):
+
+```bash
+curl -X POST "$API_URL/support/contact" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"subject":"Upload stuck","body":"The camera sheet hangs."}'
+```
 
 Public inbound webhook (configure this URL in the Resend dashboard):
 
@@ -2278,10 +2358,19 @@ HMAC-SHA256 over `${svix-id}.${svix-timestamp}.${rawBody}` using the `whsec_…`
 
 Never commit API keys. CDK creates placeholders; replace them after deploy.
 
-| Secret ID | JSON (or raw) | Runtime env on both support Lambdas |
+| Secret ID | JSON (or raw) | Runtime env |
 | --- | --- | --- |
-| `wardrobe/{stage}/resend` | `{ "apiKey", "webhookSecret" }` or a raw Resend API key | `RESEND_SECRET_ARN` |
-| `wardrobe/{stage}/support-mail` | `{ "fromEmail", "forwardTo" }` | `SUPPORT_MAIL_SECRET_ARN` |
+| `wardrobe/{stage}/resend` | `{ "apiKey", "webhookSecret" }` or a raw Resend API key | `RESEND_SECRET_ARN` (both support Lambdas) |
+| `wardrobe/{stage}/support-mail` | `{ "fromEmail", "forwardTo" }` | `SUPPORT_MAIL_SECRET_ARN` (both support Lambdas) |
+| `wardrobe/{stage}/firebase-project-id` | raw project ID or `{ "projectId" }` | `FIREBASE_PROJECT_ID_SECRET_ARN` (SupportFn, for in-Lambda token verify) |
+
+Public website contact (WARDROBE-143) — CDK context / env, empty-origins default:
+
+| Env / context | Default | Meaning |
+| --- | --- | --- |
+| `SUPPORT_CONTACT_ALLOWED_ORIGINS` / `supportContactAllowedOrigins` | `""` | Comma-separated exact origins and one-`*` preview patterns |
+| `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
+| `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
 
 Conceptual keys (loaded from those secrets; env overrides win — useful in unit tests only):
 
