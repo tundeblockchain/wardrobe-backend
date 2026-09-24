@@ -1173,6 +1173,9 @@ describe('outfits handler (WARDROBE-7)', () => {
       );
 
       expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual Try On and other AI features require Premium.',
+      );
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
 
@@ -1202,6 +1205,9 @@ describe('outfits handler (WARDROBE-7)', () => {
       );
 
       expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual Try On and other AI features require Premium.',
+      );
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
 
@@ -1275,6 +1281,32 @@ describe('outfits handler (WARDROBE-7)', () => {
       );
 
       expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual profile must be READY before requesting a try-on (current status: PENDING).',
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects a profile with no reference images', async () => {
+      mockRenderLookups({
+        personal: dynamoPersonalProfile(OWNER_ID, { referenceImages: [] }),
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            outfitId: OUTFIT_ID,
+            render: true,
+            body: { aiProfileId: PERSONAL_PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual profile has no reference images.',
+      );
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
 
@@ -1293,6 +1325,9 @@ describe('outfits handler (WARDROBE-7)', () => {
       );
 
       expectEnvelope(result, 404, 'AI_PROFILE_NOT_FOUND');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual profile not found.',
+      );
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
 

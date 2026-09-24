@@ -143,7 +143,7 @@ describe('shared error envelope', () => {
     expect(bodyOf(result)).toEqual({
       error: {
         code: 'AI_PROFILE_NOT_FOUND',
-        message: 'AI profile not found.',
+        message: 'Virtual profile not found.',
       },
     });
   });
@@ -229,7 +229,7 @@ describe('shared error envelope', () => {
     expect(bodyOf(result)).toEqual({
       error: {
         code: 'ENTITLEMENT_AI_REQUIRED',
-        message: 'AI Try On and other AI features require Premium.',
+        message: 'Virtual Try On and other AI features require Premium.',
       },
     });
   });

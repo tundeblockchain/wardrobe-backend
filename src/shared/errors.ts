@@ -82,7 +82,7 @@ export const Errors = {
   renderNotFound: (message = 'No render has been requested for this outfit.') =>
     new AppError('RENDER_NOT_FOUND', message, 404),
 
-  aiProfileNotFound: (message = 'AI profile not found.') =>
+  aiProfileNotFound: (message = 'Virtual profile not found.') =>
     new AppError('AI_PROFILE_NOT_FOUND', message, 404),
 
   eventNotFound: (message = 'Job event not found.') =>
@@ -122,7 +122,7 @@ export const Errors = {
 
   /** Try-on and other AI — Flutter WARDROBE-90 maps to Superwall Premium. */
   aiRequired: (
-    message = 'AI Try On and other AI features require Premium.',
+    message = 'Virtual Try On and other AI features require Premium.',
   ) => new AppError('ENTITLEMENT_AI_REQUIRED', message, 403),
 
   notImplemented: (message = 'This endpoint is not implemented yet.') =>

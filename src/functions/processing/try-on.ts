@@ -140,7 +140,7 @@ export async function runOutfitTryOn(
   const profileKeys = selectTryOnProfileImageKeys(input.profileImageKeys);
   if (profileKeys.length === 0) {
     throw new PermanentProcessingError(
-      'AI profile has no reference images to render against.',
+      'Virtual profile has no reference images to render against.',
     );
   }
   if (input.garmentImages.length === 0) {

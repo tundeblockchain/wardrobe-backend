@@ -416,7 +416,9 @@ describe('runOutfitTryOn', () => {
           },
         },
       ),
-    ).rejects.toThrow(PermanentProcessingError);
+    ).rejects.toThrow(
+      'Virtual profile has no reference images to render against.',
+    );
   });
 });
 

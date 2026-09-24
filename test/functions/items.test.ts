@@ -1999,6 +1999,9 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
         const result = asResult(await handler(reprocessEvent()));
 
         expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+        expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+          'Virtual Try On and other AI features require Premium.',
+        );
         expect(mockSqsSend).not.toHaveBeenCalled();
       }
     });

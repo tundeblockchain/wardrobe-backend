@@ -267,24 +267,24 @@ async function loadReadyProfile(
       throw error instanceof RetryableProcessingError
         ? error
         : new RetryableProcessingError(
-            error instanceof Error ? error.message : 'Failed to load AI profile',
+            error instanceof Error ? error.message : 'Failed to load Virtual profile',
             error,
           );
     }
     throw new PermanentProcessingError(
-      error instanceof Error ? error.message : 'AI profile is not available.',
+      error instanceof Error ? error.message : 'Virtual profile is not available.',
     );
   }
 
   if (profile.status !== 'READY') {
     throw new PermanentProcessingError(
-      `AI profile must be READY (current status: ${String(profile.status)}).`,
+      `Virtual profile must be READY (current status: ${String(profile.status)}).`,
     );
   }
 
   const referenceImages = normalizeReferenceImageKeys(profile.referenceImages);
   if (referenceImages.length === 0) {
-    throw new PermanentProcessingError('AI profile has no reference images.');
+    throw new PermanentProcessingError('Virtual profile has no reference images.');
   }
 
   return { referenceImages, body: pickAiProfileBodyContext(profile) };
