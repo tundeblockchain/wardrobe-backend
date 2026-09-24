@@ -34,6 +34,26 @@ export class WardrobePipelineStack extends cdk.Stack {
       },
     );
 
+    const synthEnv: Record<string, string> = {
+      CI: 'true',
+      STAGE: 'prod',
+      GITHUB_OWNER: config.githubOwner,
+      GITHUB_REPO: config.githubRepo,
+      GITHUB_BRANCH: config.githubBranch,
+      CODESTAR_CONNECTION_ARN: config.connectionArn,
+    };
+    if (config.supportContactAllowedOrigins) {
+      synthEnv.SUPPORT_CONTACT_ALLOWED_ORIGINS =
+        config.supportContactAllowedOrigins;
+    }
+    if (config.supportContactRateLimit) {
+      synthEnv.SUPPORT_CONTACT_RATE_LIMIT = config.supportContactRateLimit;
+    }
+    if (config.supportContactRateWindowSeconds) {
+      synthEnv.SUPPORT_CONTACT_RATE_WINDOW_SECONDS =
+        config.supportContactRateWindowSeconds;
+    }
+
     const synth = new CodeBuildStep('Synth', {
       input: source,
       commands: [
@@ -41,14 +61,7 @@ export class WardrobePipelineStack extends cdk.Stack {
         'node scripts/ensure-cdk-json.js',
         `npx cdk synth --app "${CDK_APP}"`,
       ],
-      env: {
-        CI: 'true',
-        STAGE: 'prod',
-        GITHUB_OWNER: config.githubOwner,
-        GITHUB_REPO: config.githubRepo,
-        GITHUB_BRANCH: config.githubBranch,
-        CODESTAR_CONNECTION_ARN: config.connectionArn,
-      },
+      env: synthEnv,
       primaryOutputDirectory: 'cdk.out',
     });
 

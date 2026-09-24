@@ -2143,7 +2143,7 @@ npm run deploy -- \
   -c supportContactAllowedOrigins="https://pocketcloset.app,https://*--pocket-closet.netlify.app"
 ```
 
-Or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` before `npm run synth` / `npm run deploy`. Optional: `SUPPORT_CONTACT_RATE_LIMIT` (default 5) and `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` (default 3600).
+Or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` before `npm run synth` / `npm run deploy`. Optional: `SUPPORT_CONTACT_RATE_LIMIT` (default 5) and `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` (default 3600). For production via CodePipeline, pass the same values to `npm run deploy:pipeline` (see CI/CD below). A direct `npm run deploy` of `WardrobeStack-prod` is overwritten by the next pipeline run.
 
 Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. Staging and production retain data.
 
@@ -2151,7 +2151,7 @@ Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. S
 
 Pushes to `master` trigger an AWS CodePipeline that synths and deploys `WardrobeStack-prod`.
 
-`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID stays in Secrets Manager.
+`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings, and any non-empty `SUPPORT_CONTACT_*` values). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID stays in Secrets Manager.
 
 ### One-time setup
 
@@ -2170,11 +2170,20 @@ Pushes to `master` trigger an AWS CodePipeline that synths and deploys `Wardrobe
 }
 ```
 
-4. Deploy the pipeline once from your machine:
+4. Deploy the pipeline once from your machine. `githubBranch` defaults to `master`; set it to `main` if that is the tracked branch. To apply the public website contact allowlist (WARDROBE-143) in prod, pass it here so the Synth CodeBuild step keeps it on every subsequent run (including self-mutation):
 
 ```bash
-npm run deploy:pipeline
+npm run deploy:pipeline -- \
+  -c githubOwner=your-github-user \
+  -c githubRepo=wardrobe-backend \
+  -c githubBranch=main \
+  -c connectionArn=arn:aws:codeconnections:REGION:ACCOUNT:connection/xxxxxxxx \
+  -c supportContactAllowedOrigins="https://a.example,https://*--b.netlify.app"
 ```
+
+Optional: `-c supportContactRateLimit=5` and `-c supportContactRateWindowSeconds=3600`, or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` / `SUPPORT_CONTACT_RATE_LIMIT` / `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` before `npm run deploy:pipeline`. Empty values are not baked into the Synth step.
+
+A direct `npm run deploy` of `WardrobeStack-prod` is overwritten by the next pipeline run.
 
 After that, every push to `master` runs:
 
