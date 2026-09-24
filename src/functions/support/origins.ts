@@ -51,17 +51,19 @@ export function isOriginAllowed(
   return allowlist.some((pattern) => originMatches(origin, pattern));
 }
 
+/** Single DNS label: letters, digits, hyphen. No dots, no match-all `*`. */
+const WILDCARD_LABEL = '[a-z0-9-]+';
+
 export function originMatches(origin: string, pattern: string): boolean {
   if (origin === pattern) {
     return true;
   }
-  const stars = pattern.split('*').length - 1;
-  if (stars !== 1) {
+  const parts = pattern.split('*');
+  if (parts.length !== 2 || pattern === '*') {
     return false;
   }
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(
-    /\*/g,
-    '[^.]+',
-  );
+  const escaped = parts
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+    .join(WILDCARD_LABEL);
   return new RegExp(`^${escaped}$`).test(origin);
 }

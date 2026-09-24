@@ -307,6 +307,41 @@ describe('support outbound (WARDROBE-38 / WARDROBE-143)', () => {
     });
   });
 
+  it('rate-limits using requestContext.http.sourceIp and ignores X-Forwarded-For', async () => {
+    const result = asResult(
+      await handleSupport(
+        event({
+          path: '/support/contact',
+          authorization: null,
+          sourceIp: '203.0.113.9',
+          body: websiteBody,
+        }),
+        { loadConfig, sendEmail, consumeRateLimit },
+      ),
+    );
+
+    // Inject a spoofed forwarded-for header after the event is built.
+    const spoofed = event({
+      path: '/support/contact',
+      authorization: null,
+      sourceIp: '203.0.113.9',
+      body: websiteBody,
+    });
+    spoofed.headers = {
+      ...spoofed.headers,
+      'x-forwarded-for': '198.51.100.1, 192.0.2.1',
+    };
+
+    await handleSupport(spoofed, { loadConfig, sendEmail, consumeRateLimit });
+
+    expect(result.statusCode).toBe(202);
+    expect(consumeRateLimit).toHaveBeenCalledWith('203.0.113.9');
+    expect(consumeRateLimit).not.toHaveBeenCalledWith('198.51.100.1');
+    expect(consumeRateLimit).not.toHaveBeenCalledWith(
+      expect.stringContaining('198.51.100'),
+    );
+  });
+
   it('sends an anonymous website contact with the website tag', async () => {
     const result = asResult(
       await handleSupport(
@@ -653,6 +688,25 @@ describe('support contact origins', () => {
 
   it('rejects browser Origin when the allowlist is empty', () => {
     expect(isOriginAllowed('https://pocketcloset.app', [])).toBe(false);
+  });
+
+  it('rejects wildcard lookalikes that add extra labels or suffixes', () => {
+    const allowlist = ['https://*--pocket-closet.netlify.app'];
+    expect(
+      isOriginAllowed(
+        'https://deploy-preview-12--pocket-closet.netlify.app',
+        allowlist,
+      ),
+    ).toBe(true);
+    expect(
+      isOriginAllowed(
+        'https://evil--pocket-closet.netlify.app.attacker.com',
+        allowlist,
+      ),
+    ).toBe(false);
+    expect(
+      isOriginAllowed('https://x.evil--pocket-closet.netlify.app', allowlist),
+    ).toBe(false);
   });
 });
 

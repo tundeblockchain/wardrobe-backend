@@ -69,6 +69,22 @@ describe('support mail stack wiring (WARDROBE-38)', () => {
     expect(bug?.Properties.AuthorizationType).toBe('CUSTOM');
     expect(bug?.Properties).toHaveProperty('AuthorizerId');
     expect(webhook?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
+    // HTTP API corsPreflight answers OPTIONS /support/contact without the
+    // Firebase authorizer (no OPTIONS route is synthesized; CORS is on the API).
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: {
+        AllowOrigins: ['*'],
+        AllowMethods: Match.arrayWith(['POST', 'OPTIONS']),
+        AllowHeaders: Match.arrayWith(['Authorization', 'Content-Type']),
+      },
+    });
+    const optionRoutes = routes.filter((route) =>
+      route.Properties.RouteKey.startsWith('OPTIONS'),
+    );
+    for (const route of optionRoutes) {
+      expect(route.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+    }
   });
 
   test('support Lambdas receive secret ARNs, not raw keys', () => {

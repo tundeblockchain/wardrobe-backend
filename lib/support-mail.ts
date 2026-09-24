@@ -132,6 +132,8 @@ export function addSupportMail(
 
   // WARDROBE-143: public website may POST without Firebase. Token, when
   // present, is verified in-Lambda. /support/bug stays on the authorizer.
+  // OPTIONS preflight is answered by API-level corsPreflight (allowOrigins
+  // ['*']) and never hits this authorizer.
   httpApi.addRoutes({
     path: '/support/contact',
     methods: [apigwv2.HttpMethod.POST],

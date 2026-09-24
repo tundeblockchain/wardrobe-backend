@@ -150,6 +150,7 @@ async function handleWebsiteContact(
   }
 
   const message = parseWebsiteContact(raw);
+  // HTTP API payload v2 — only the API Gateway source IP. Never X-Forwarded-For.
   const sourceIp = event.requestContext.http.sourceIp ?? '';
   const consume = deps.consumeRateLimit ?? consumeContactRateLimit;
   const decision = await consume(sourceIp);
