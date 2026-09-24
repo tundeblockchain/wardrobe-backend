@@ -623,12 +623,12 @@ describe('outfit render worker (WARDROBE-47)', () => {
       'FAILED',
     ]);
     expect(renderUpdates()[1].error).toBe(
-      'Virtual profile must be READY (current status: PENDING).',
+      'Virtual Profile must be READY (current status: PENDING).',
     );
     expect(mockRecordJobDone).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'FAILED',
-        error: 'Virtual profile must be READY (current status: PENDING).',
+        error: 'Virtual Profile must be READY (current status: PENDING).',
       }),
     );
   });
@@ -657,7 +657,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
     expect(result).toEqual({ batchItemFailures: [] });
     expect(renderUpdates()[1]).toMatchObject({
       status: 'FAILED',
-      error: 'Virtual profile has no reference images.',
+      error: 'Virtual Profile has no reference images.',
     });
   });
 

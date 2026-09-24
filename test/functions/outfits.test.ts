@@ -1282,7 +1282,7 @@ describe('outfits handler (WARDROBE-7)', () => {
 
       expectEnvelope(result, 400, 'VALIDATION_ERROR');
       expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
-        'Virtual profile must be READY before requesting a try-on (current status: PENDING).',
+        'Virtual Profile must be READY before requesting a try-on (current status: PENDING).',
       );
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
@@ -1305,7 +1305,7 @@ describe('outfits handler (WARDROBE-7)', () => {
 
       expectEnvelope(result, 400, 'VALIDATION_ERROR');
       expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
-        'Virtual profile has no reference images.',
+        'Virtual Profile has no reference images.',
       );
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
@@ -1326,7 +1326,7 @@ describe('outfits handler (WARDROBE-7)', () => {
 
       expectEnvelope(result, 404, 'AI_PROFILE_NOT_FOUND');
       expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
-        'Virtual profile not found.',
+        'Virtual Profile not found.',
       );
       expect(mockSqsSend).not.toHaveBeenCalled();
     });

@@ -1,12 +1,12 @@
 import { Errors } from '../../src/shared/errors';
 
 describe('user-facing error copy (WARDROBE-146)', () => {
-  it('keeps AI_PROFILE_NOT_FOUND and uses Virtual profile wording', () => {
+  it('keeps AI_PROFILE_NOT_FOUND and uses Virtual Profile wording', () => {
     const error = Errors.aiProfileNotFound();
 
     expect(error.code).toBe('AI_PROFILE_NOT_FOUND');
     expect(error.statusCode).toBe(404);
-    expect(error.message).toBe('Virtual profile not found.');
+    expect(error.message).toBe('Virtual Profile not found.');
   });
 
   it('keeps ENTITLEMENT_AI_REQUIRED and uses Virtual Try On wording', () => {

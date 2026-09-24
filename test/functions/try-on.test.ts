@@ -417,7 +417,7 @@ describe('runOutfitTryOn', () => {
         },
       ),
     ).rejects.toThrow(
-      'Virtual profile has no reference images to render against.',
+      'Virtual Profile has no reference images to render against.',
     );
   });
 });

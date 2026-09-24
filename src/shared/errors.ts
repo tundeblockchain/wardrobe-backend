@@ -82,7 +82,7 @@ export const Errors = {
   renderNotFound: (message = 'No render has been requested for this outfit.') =>
     new AppError('RENDER_NOT_FOUND', message, 404),
 
-  aiProfileNotFound: (message = 'Virtual profile not found.') =>
+  aiProfileNotFound: (message = 'Virtual Profile not found.') =>
     new AppError('AI_PROFILE_NOT_FOUND', message, 404),
 
   eventNotFound: (message = 'Job event not found.') =>

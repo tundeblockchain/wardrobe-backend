@@ -143,7 +143,7 @@ describe('shared error envelope', () => {
     expect(bodyOf(result)).toEqual({
       error: {
         code: 'AI_PROFILE_NOT_FOUND',
-        message: 'Virtual profile not found.',
+        message: 'Virtual Profile not found.',
       },
     });
   });

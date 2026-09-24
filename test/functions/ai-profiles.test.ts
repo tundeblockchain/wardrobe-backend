@@ -707,7 +707,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
       expectEnvelope(result, 404, 'AI_PROFILE_NOT_FOUND');
       expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
-        'Virtual profile not found.',
+        'Virtual Profile not found.',
       );
     });
 
