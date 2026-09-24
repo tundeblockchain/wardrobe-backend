@@ -4,6 +4,9 @@ export interface AppConfig {
   githubRepo?: string;
   githubBranch: string;
   connectionArn?: string;
+  supportContactAllowedOrigins?: string;
+  supportContactRateLimit?: string;
+  supportContactRateWindowSeconds?: string;
 }
 
 interface ContextReader {
@@ -38,6 +41,21 @@ export function resolveAppConfig(node: ContextReader): AppConfig {
       node,
       'connectionArn',
       process.env.CODESTAR_CONNECTION_ARN,
+    ),
+    supportContactAllowedOrigins: readString(
+      node,
+      'supportContactAllowedOrigins',
+      process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS,
+    ),
+    supportContactRateLimit: readString(
+      node,
+      'supportContactRateLimit',
+      process.env.SUPPORT_CONTACT_RATE_LIMIT,
+    ),
+    supportContactRateWindowSeconds: readString(
+      node,
+      'supportContactRateWindowSeconds',
+      process.env.SUPPORT_CONTACT_RATE_WINDOW_SECONDS,
     ),
   };
 }
