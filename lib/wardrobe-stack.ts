@@ -49,6 +49,7 @@ export class WardrobeStack extends cdk.Stack {
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
     //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
     // SHARE#{token}              / SHARE
+    // RATE#SUPPORT_CONTACT#{sha256(ip)} / WINDOW#{unixWindowStart}
     // AIPROFILE#GENERIC_MODEL    / AIPROFILE#{id}
     // GSI1 (sparse): TYPE#GENERIC_MODEL / AIPROFILE#{id}
     //                SHARE#USER#{uid}   / SHARE#{token}
@@ -632,6 +633,10 @@ export class WardrobeStack extends cdk.Stack {
     const httpApi = new apigwv2.HttpApi(this, 'WardrobeApi', {
       apiName: `wardrobe-api-${stage}`,
       description: 'Digital Wardrobe HTTP API',
+      // Keep API-level allowOrigins ['*'] so GET /public/shares/{token} and
+      // mobile clients keep working. API Gateway overrides Lambda CORS
+      // headers when corsPreflight is set. WARDROBE-143 origin allowlist is
+      // enforced in the Support Lambda on the anonymous contact path only.
       corsPreflight: {
         allowOrigins: ['*'],
         allowMethods: [
@@ -949,6 +954,8 @@ export class WardrobeStack extends cdk.Stack {
       stage,
       httpApi,
       authorizer: firebaseAuthorizer,
+      table,
+      firebaseProjectIdSecret,
       commonLambdaProps,
       removalPolicy,
     });

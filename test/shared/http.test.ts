@@ -233,4 +233,41 @@ describe('shared error envelope', () => {
       },
     });
   });
+
+  it('maps RATE_LIMITED to a 429 envelope with Retry-After', () => {
+    const result = asResult(errorResponse(Errors.rateLimited(17)));
+
+    expect(result.statusCode).toBe(429);
+    expect(result.headers?.['Retry-After']).toBe('17');
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'RATE_LIMITED',
+        message: 'Too many requests. Try again later.',
+      },
+    });
+  });
+
+  it('maps ORIGIN_NOT_ALLOWED to a 403 envelope', () => {
+    const result = asResult(errorResponse(Errors.originNotAllowed()));
+
+    expect(result.statusCode).toBe(403);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ORIGIN_NOT_ALLOWED',
+        message: 'Origin is not allowed.',
+      },
+    });
+  });
+
+  it('maps invalidToken to a 401 UNAUTHORIZED envelope', () => {
+    const result = asResult(errorResponse(Errors.invalidToken()));
+
+    expect(result.statusCode).toBe(401);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid or expired token.',
+      },
+    });
+  });
 });

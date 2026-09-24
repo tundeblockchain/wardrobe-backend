@@ -2,6 +2,8 @@ export type ErrorCode =
   | 'UNAUTHENTICATED'
   | 'UNAUTHORIZED'
   | 'VALIDATION_ERROR'
+  | 'RATE_LIMITED'
+  | 'ORIGIN_NOT_ALLOWED'
   | 'WARDROBE_NOT_FOUND'
   | 'ITEM_NOT_FOUND'
   | 'OUTFIT_NOT_FOUND'
@@ -24,12 +26,19 @@ export type ErrorCode =
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly statusCode: number;
+  readonly headers?: Record<string, string>;
 
-  constructor(code: ErrorCode, message: string, statusCode: number) {
+  constructor(
+    code: ErrorCode,
+    message: string,
+    statusCode: number,
+    headers?: Record<string, string>,
+  ) {
     super(message);
     this.name = 'AppError';
     this.code = code;
     this.statusCode = statusCode;
+    this.headers = headers;
   }
 }
 
@@ -40,8 +49,26 @@ export const Errors = {
   unauthorized: (message = 'You do not have access to this resource.') =>
     new AppError('UNAUTHORIZED', message, 403),
 
+  /** Present-but-invalid Firebase token (WARDROBE-143). Never 403 here. */
+  invalidToken: (message = 'Invalid or expired token.') =>
+    new AppError('UNAUTHORIZED', message, 401),
+
   validation: (message: string) =>
     new AppError('VALIDATION_ERROR', message, 400),
+
+  payloadTooLarge: (message = 'Request body is too large.') =>
+    new AppError('VALIDATION_ERROR', message, 413),
+
+  rateLimited: (
+    retryAfterSeconds: number,
+    message = 'Too many requests. Try again later.',
+  ) =>
+    new AppError('RATE_LIMITED', message, 429, {
+      'Retry-After': String(Math.max(1, Math.ceil(retryAfterSeconds))),
+    }),
+
+  originNotAllowed: (message = 'Origin is not allowed.') =>
+    new AppError('ORIGIN_NOT_ALLOWED', message, 403),
 
   wardrobeNotFound: (message = 'Wardrobe not found.') =>
     new AppError('WARDROBE_NOT_FOUND', message, 404),

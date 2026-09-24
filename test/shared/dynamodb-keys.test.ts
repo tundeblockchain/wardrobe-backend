@@ -25,6 +25,10 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     );
     expect(keys.gsi1ShareSk('shr_abc')).toBe('SHARE#shr_abc');
     expect(keys.gsi1ShareSkPrefix).toBe('SHARE#');
+    expect(keys.rateLimitPk('SUPPORT_CONTACT', 'abc123')).toBe(
+      'RATE#SUPPORT_CONTACT#abc123',
+    );
+    expect(keys.rateLimitSk(1_700_000_000)).toBe('WINDOW#1700000000');
     expect(keys.wardrobeSk('wd_abc123')).toBe('WARDROBE#wd_abc123');
   });
 

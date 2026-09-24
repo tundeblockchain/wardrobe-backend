@@ -6,6 +6,7 @@ export const DEFAULT_RESEND_TIMEOUT_MS = 8_000;
 export const RESEND_USER_AGENT = 'wardrobe-backend/support';
 
 export type SupportKind = 'contact' | 'bug';
+export type SupportSource = 'app' | 'website';
 
 export type FetchLike = (
   url: string,
@@ -144,17 +145,24 @@ export async function fetchReceivedEmail(
 
 export function formatOutboundMail(input: {
   kind: SupportKind;
-  userId: string;
+  source?: SupportSource;
+  userId?: string;
+  name?: string;
   subject: string;
   body: string;
   replyTo?: string;
   meta?: Record<string, string>;
 }): { subject: string; text: string; html: string } {
+  const website = input.source === 'website';
   const label = input.kind === 'bug' ? 'Bug report' : 'Contact us';
-  const subject = `[Wardrobe ${label}] ${input.subject}`;
+  const subject = website
+    ? `[Website] ${input.subject}`
+    : `[Wardrobe ${label}] ${input.subject}`;
   const lines = [
     `Kind: ${input.kind}`,
-    `User ID: ${input.userId}`,
+    website ? 'Source: website' : undefined,
+    !website && input.userId ? `User ID: ${input.userId}` : undefined,
+    website && input.name ? `Name: ${input.name}` : undefined,
     input.replyTo ? `Reply-To: ${input.replyTo}` : undefined,
     '',
     input.body,

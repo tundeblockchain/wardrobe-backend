@@ -685,7 +685,8 @@ export type EntityType =
   | 'SHOPPING_CACHE'
   | 'JOB_EVENT'
   | 'DEVICE'
-  | 'SHARE';
+  | 'SHARE'
+  | 'RATE_LIMIT';
 
 export interface DynamoItem {
   PK: string;

@@ -47,7 +47,7 @@ describe('support mail stack wiring (WARDROBE-38)', () => {
     expect(synthesized).not.toMatch(/RESEND_API_KEY\s*[:=]/);
   });
 
-  test('outbound support routes are Firebase-auth; inbound webhook is public', () => {
+  test('contact is public; bug stays Firebase-auth; inbound webhook is public', () => {
     const routes = Object.values(
       template.findResources('AWS::ApiGatewayV2::Route'),
     ) as Array<{
@@ -64,9 +64,27 @@ describe('support mail stack wiring (WARDROBE-38)', () => {
       (route) => route.Properties.RouteKey === 'POST /webhooks/resend',
     );
 
-    expect(contact?.Properties.AuthorizationType).toBe('CUSTOM');
+    expect(contact?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+    expect(contact?.Properties).not.toHaveProperty('AuthorizerId');
     expect(bug?.Properties.AuthorizationType).toBe('CUSTOM');
+    expect(bug?.Properties).toHaveProperty('AuthorizerId');
     expect(webhook?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
+    // HTTP API corsPreflight answers OPTIONS /support/contact without the
+    // Firebase authorizer (no OPTIONS route is synthesized; CORS is on the API).
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: {
+        AllowOrigins: ['*'],
+        AllowMethods: Match.arrayWith(['POST', 'OPTIONS']),
+        AllowHeaders: Match.arrayWith(['Authorization', 'Content-Type']),
+      },
+    });
+    const optionRoutes = routes.filter((route) =>
+      route.Properties.RouteKey.startsWith('OPTIONS'),
+    );
+    for (const route of optionRoutes) {
+      expect(route.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+    }
   });
 
   test('support Lambdas receive secret ARNs, not raw keys', () => {
@@ -104,9 +122,21 @@ describe('support mail stack wiring (WARDROBE-38)', () => {
         'SUPPORT_FORWARD_TO',
       );
     }
+
+    const outbound = supportFns.find(
+      (fn) => fn.Properties.Environment?.Variables?.FIREBASE_PROJECT_ID_SECRET_ARN,
+    );
+    expect(outbound?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        FIREBASE_PROJECT_ID_SECRET_ARN: expect.anything(),
+        SUPPORT_CONTACT_ALLOWED_ORIGINS: '',
+        SUPPORT_CONTACT_RATE_LIMIT: '5',
+        SUPPORT_CONTACT_RATE_WINDOW_SECONDS: '3600',
+      }),
+    );
   });
 
-  test('support Lambdas can read secrets and do not get SQS or Dynamo write', () => {
+  test('support Lambdas can read secrets; only SupportFn gets rate-limit UpdateItem', () => {
     type PolicyResource = {
       Properties: {
         PolicyDocument: {
@@ -140,8 +170,16 @@ describe('support mail stack wiring (WARDROBE-38)', () => {
         'secretsmanager:*',
       );
       expect(actionsFor(fnId, 'sqs:')).toEqual([]);
-      expect(actionsFor(fnId, 'dynamodb:')).toEqual([]);
     }
+
+    expect(actionsFor('SupportFn', 'dynamodb:')).toEqual(['dynamodb:UpdateItem']);
+    expect(actionsFor('SupportWebhookFn', 'dynamodb:')).toEqual([]);
+
+    const supportPolicies = policies.filter((policy) =>
+      JSON.stringify(policy).includes('SupportFn'),
+    );
+    const leadingKeys = JSON.stringify(supportPolicies);
+    expect(leadingKeys).toContain('RATE#SUPPORT_CONTACT#*');
   });
 
   test('stage suffix is applied to support secret names', () => {

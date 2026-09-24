@@ -31,6 +31,9 @@ const envToContext = {
   GITHUB_REPO: 'githubRepo',
   GITHUB_BRANCH: 'githubBranch',
   CODESTAR_CONNECTION_ARN: 'connectionArn',
+  SUPPORT_CONTACT_ALLOWED_ORIGINS: 'supportContactAllowedOrigins',
+  SUPPORT_CONTACT_RATE_LIMIT: 'supportContactRateLimit',
+  SUPPORT_CONTACT_RATE_WINDOW_SECONDS: 'supportContactRateWindowSeconds',
 };
 
 for (const [envName, contextKey] of Object.entries(envToContext)) {
