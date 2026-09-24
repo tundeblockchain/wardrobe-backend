@@ -110,6 +110,14 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     });
   });
 
+  test('HTTP API CORS exposes Retry-After on 429 RATE_LIMITED', () => {
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: Match.objectLike({
+        ExposeHeaders: ['Retry-After'],
+      }),
+    });
+  });
+
   test('CloudWatch log groups exist for Lambdas and the HTTP API', () => {
     const logGroups = template.findResources('AWS::Logs::LogGroup');
     expect(Object.keys(logGroups).length).toBeGreaterThanOrEqual(7);

@@ -648,6 +648,7 @@ export class WardrobeStack extends cdk.Stack {
           apigwv2.CorsHttpMethod.OPTIONS,
         ],
         allowHeaders: ['Authorization', 'Content-Type'],
+        exposeHeaders: ['Retry-After'],
         maxAge: cdk.Duration.days(1),
       },
     });

@@ -2301,7 +2301,7 @@ Unknown extra fields are ignored. Raw body larger than **16 KB** is rejected bef
 
 **Honeypot:** a non-empty `company` returns the normal `202` success shape but does **not** send email and does **not** count toward the rate limit. The Lambda logs `support.contact.honeypot`.
 
-**Rate limit (anonymous path only):** 5 requests per client IP per hour. Keyed on `requestContext.http.sourceIp`; Dynamo stores a SHA-256 of the IP (never the raw address) in `RATE#SUPPORT_CONTACT#{hash}` / `WINDOW#{unix}` with table TTL on `ttl`. Configurable via `SUPPORT_CONTACT_RATE_LIMIT` and `SUPPORT_CONTACT_RATE_WINDOW_SECONDS`. Over limit: `429 RATE_LIMITED` with `Retry-After` (seconds).
+**Rate limit (anonymous path only):** 5 requests per client IP per hour. Keyed on `requestContext.http.sourceIp`; Dynamo stores a SHA-256 of the IP (never the raw address) in `RATE#SUPPORT_CONTACT#{hash}` / `WINDOW#{unix}` with table TTL on `ttl`. Configurable via `SUPPORT_CONTACT_RATE_LIMIT` and `SUPPORT_CONTACT_RATE_WINDOW_SECONDS`. Over limit: `429 RATE_LIMITED` with `Retry-After` (seconds). API-level `corsPreflight` exposes `Retry-After` so browsers on the landing site can read that header.
 
 **CORS env:** `SUPPORT_CONTACT_ALLOWED_ORIGINS` (comma-separated). Exact origins (`https://pocketcloset.app`) and a single `*` DNS-label wildcard (`https://*--pocket-closet.netlify.app`) are supported. Empty default: every browser (`Origin`-bearing) anonymous call is `403 ORIGIN_NOT_ALLOWED`. Requests with no `Origin` (curl / mobile) are allowed. Valid Firebase tokens skip this check.
 
