@@ -63,7 +63,7 @@ export async function handleSupport(
 
     const kind = resolveSupportKind(event);
     if (kind === 'contact' && !hasAuthorizationHeader(event)) {
-      return handleWebsiteContact(event, deps);
+      return await handleWebsiteContact(event, deps);
     }
 
     const userId =
@@ -73,7 +73,7 @@ export async function handleSupport(
 
     assertBodyWithinLimit(event);
     const message = parseSupportMessage(parseJsonBody(event));
-    return sendSupportMail({
+    return await sendSupportMail({
       deps,
       kind,
       source: 'app',
@@ -157,7 +157,7 @@ async function handleWebsiteContact(
     throw Errors.rateLimited(decision.retryAfterSeconds);
   }
 
-  return sendSupportMail({
+  return await sendSupportMail({
     deps,
     kind: 'contact',
     source: 'website',
