@@ -208,11 +208,11 @@ export async function requireReadyRenderableProfile(
   const profile = await getReadableAiProfile(userId, aiProfileId);
   if (profile.status !== 'READY') {
     throw Errors.validation(
-      `AI profile must be READY before requesting a try-on (current status: ${String(profile.status)}).`,
+      `Virtual Profile must be READY before requesting a try-on (current status: ${String(profile.status)}).`,
     );
   }
   if (profileReferenceImages(profile).length === 0) {
-    throw Errors.validation('AI profile has no reference images.');
+    throw Errors.validation('Virtual Profile has no reference images.');
   }
   return profile;
 }

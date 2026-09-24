@@ -270,6 +270,9 @@ describe('recommendations handler (WARDROBE-23)', () => {
       const result = asResult(await handler(event()));
 
       expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual Try On and other AI features require Premium.',
+      );
     });
 
     it('rejects recommendations on Free with ENTITLEMENT_AI_REQUIRED', async () => {
@@ -286,6 +289,9 @@ describe('recommendations handler (WARDROBE-23)', () => {
       const result = asResult(await handler(event()));
 
       expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual Try On and other AI features require Premium.',
+      );
     });
 
     it('returns 200 with an empty list when the wardrobe has no READY items', async () => {

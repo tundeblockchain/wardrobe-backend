@@ -596,6 +596,71 @@ describe('outfit render worker (WARDROBE-47)', () => {
     });
   });
 
+  it('sets FAILED when the profile is not READY', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        if (sk.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: { ...dynamoGenericProfile(), status: 'PENDING' } };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoOutfit() };
+    });
+
+    const result = await handler(eventFor(job()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(renderUpdates().map((render) => render.status)).toEqual([
+      'PROCESSING',
+      'FAILED',
+    ]);
+    expect(renderUpdates()[1].error).toBe(
+      'Virtual Profile must be READY (current status: PENDING).',
+    );
+    expect(mockRecordJobDone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'FAILED',
+        error: 'Virtual Profile must be READY (current status: PENDING).',
+      }),
+    );
+  });
+
+  it('sets FAILED when the profile has no reference images', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit() };
+        }
+        if (sk.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: { ...dynamoGenericProfile(), referenceImages: [] } };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoOutfit() };
+    });
+
+    const result = await handler(eventFor(job()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(renderUpdates()[1]).toMatchObject({
+      status: 'FAILED',
+      error: 'Virtual Profile has no reference images.',
+    });
+  });
+
   it('sets FAILED and acks permanent Gemini errors', async () => {
     mockRunTryOn.mockRejectedValue(
       new PermanentProcessingError('Gemini blocked the try-on request (SAFETY)'),
