@@ -39,10 +39,12 @@ import {
   deleteObjectBestEffort,
   deleteObjectsUnderUserPrefix,
   extensionForContentType,
-  outfitRenderPrefix,
   getObjectBytes,
+  itemRenderObjectKey,
+  itemRenderPrefix,
   MAX_UPLOAD_BYTES,
   outfitRenderObjectKey,
+  outfitRenderPrefix,
   PRESIGNED_URL_EXPIRES_IN,
   processedImageObjectKey,
   putObjectBytes,
@@ -188,6 +190,34 @@ describe('s3 helpers (WARDROBE-8)', () => {
     it('uses users/{userId}/items/{itemId}/processed.png', () => {
       expect(processedImageObjectKey('uid-1', 'item_abc')).toBe(
         'users/uid-1/items/item_abc/processed.png',
+      );
+    });
+  });
+
+  describe('itemRenderObjectKey', () => {
+    it('uses users/{userId}/items/{itemId}/render.png', () => {
+      expect(itemRenderObjectKey('uid-1', 'item_abc')).toBe(
+        'users/uid-1/items/item_abc/render.png',
+      );
+    });
+
+    it('uses a unique renders/{renderId}.png key when a renderId is given', () => {
+      expect(itemRenderObjectKey('uid-1', 'item_abc', 'rend_new1abcd')).toBe(
+        'users/uid-1/items/item_abc/renders/rend_new1abcd.png',
+      );
+    });
+
+    it('does not collide with processed.png', () => {
+      expect(itemRenderObjectKey('uid-1', 'item_abc', 'rend_new1abcd')).not.toBe(
+        processedImageObjectKey('uid-1', 'item_abc'),
+      );
+    });
+  });
+
+  describe('itemRenderPrefix', () => {
+    it('builds users/{uid}/items/{itemId}/renders/', () => {
+      expect(itemRenderPrefix('uid-1', 'item_abc')).toBe(
+        'users/uid-1/items/item_abc/renders/',
       );
     });
   });

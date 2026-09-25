@@ -346,6 +346,19 @@ export interface ClothingItem {
    * Omitted on PENDING / PROCESSING / READY.
    */
   processingError?: string;
+  /**
+   * Current Virtual Try On on this item (WARDROBE-149 / WARDROBE-150).
+   * Same shape as outfit `render`. Soft-omitted when unset. Generate is
+   * WARDROBE-150 — this ticket only deletes stored photos.
+   */
+  render?: OutfitRender;
+  /**
+   * Successful item try-ons, newest first. Same shape as outfit
+   * `renderHistory`. Soft-omitted when empty.
+   */
+  renderHistory?: OutfitRenderHistoryEntry[];
+  /** Presigned GET URLs for item try-ons, newest first. Soft-omitted when empty. */
+  renderImageUrls?: string[];
   createdAt: string;
   updatedAt: string;
 }

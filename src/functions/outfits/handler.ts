@@ -39,9 +39,8 @@ import {
 } from '../../shared/validation';
 import {
   clothingItemImageKey,
-  currentRenderAfterDelete,
   pendingRender,
-  removeHistoryEntry,
+  planRenderPhotoDelete,
   requireReadyRenderableProfile,
   seedHistoryFromCurrentRender,
   toOutfitRender,
@@ -282,38 +281,13 @@ async function deleteOutfitRenderPhoto(
 ): Promise<void> {
   const imageKey = requireOwnedOutfitRenderKey(body.imageKey, userId, outfitId);
   const outfit = await getOwnedOutfit(userId, wardrobeId, outfitId);
-  const current = toOutfitRender(outfit.render);
-  const history = seedHistoryFromCurrentRender(
-    toRenderHistory(outfit.renderHistory),
-    current,
-    outfit.updatedAt,
-  );
-  const remaining = removeHistoryEntry(history, imageKey);
-  const currentKeyMatches = current?.imageKey === imageKey;
-  const historyChanged = remaining.length !== history.length;
-
-  if (historyChanged || currentKeyMatches) {
-    const next = currentRenderAfterDelete(current, remaining, imageKey);
-    const updates: Record<string, unknown> = { updatedAt: nowIso() };
-    const remove: string[] = [];
-
-    if (remaining.length > 0) {
-      updates.renderHistory = remaining;
-    } else {
-      remove.push('renderHistory');
-    }
-
-    if (next.removeRender) {
-      remove.push('render');
-    } else if (next.render && currentKeyMatches) {
-      updates.render = next.render;
-    }
-
+  const plan = planRenderPhotoDelete(outfit, imageKey);
+  if (plan) {
     await updateAttributes(
       keys.wardrobePk(wardrobeId),
       keys.outfitSk(outfitId),
-      updates,
-      remove.length > 0 ? { remove } : undefined,
+      plan.updates,
+      plan.remove.length > 0 ? { remove: plan.remove } : undefined,
     );
   }
 

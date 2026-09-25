@@ -1,5 +1,10 @@
 import { Errors } from './errors';
-import { aiProfileReferencePrefix, outfitRenderPrefix } from './s3';
+import {
+  aiProfileReferencePrefix,
+  itemRenderObjectKey,
+  itemRenderPrefix,
+  outfitRenderPrefix,
+} from './s3';
 import {
   AI_PROFILE_TYPES,
   AiProfileBodyContext,
@@ -313,6 +318,39 @@ export function requireOwnedOutfitRenderKey(
   }
 
   return imageKey;
+}
+
+/**
+ * Item Virtual Try On keys (WARDROBE-149). Allows
+ * `users/{uid}/items/{itemId}/renders/…` and legacy `…/render.png`.
+ * Refuses `processed.png` and other clothing-item image keys.
+ */
+export function requireOwnedItemRenderKey(
+  value: unknown,
+  userId: string,
+  itemId: string,
+  field = 'imageKey',
+): string {
+  const imageKey = requireOwnedImageKey(value, userId, field);
+  const rendersPrefix = itemRenderPrefix(userId, itemId);
+  const legacyKey = itemRenderObjectKey(userId, itemId);
+  const remainder = imageKey.slice(rendersPrefix.length);
+
+  if (imageKey === legacyKey) {
+    return imageKey;
+  }
+
+  if (
+    imageKey.startsWith(rendersPrefix) &&
+    remainder &&
+    !remainder.endsWith('/')
+  ) {
+    return imageKey;
+  }
+
+  throw Errors.validation(
+    `${field} must be under users/{userId}/items/{itemId}/renders/.`,
+  );
 }
 
 export function requireAiProfileType(

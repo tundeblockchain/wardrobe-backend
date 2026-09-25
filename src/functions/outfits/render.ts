@@ -1,5 +1,6 @@
 import { getReadableAiProfile } from '../../shared/dynamodb';
 import { Errors } from '../../shared/errors';
+import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import { createPresignedGetUrl } from '../../shared/s3';
 import {
@@ -162,6 +163,45 @@ export function currentRenderAfterDelete(
   }
 
   return { removeRender: true };
+}
+
+/**
+ * Dynamo SET / REMOVE for deleting one try-on photo (WARDROBE-149).
+ * `undefined` means the key is already gone — caller still 204s.
+ */
+export function planRenderPhotoDelete(
+  item: DynamoItem,
+  imageKey: string,
+): { updates: Record<string, unknown>; remove: string[] } | undefined {
+  const current = toOutfitRender(item.render);
+  const history = seedHistoryFromCurrentRender(
+    toRenderHistory(item.renderHistory),
+    current,
+    item.updatedAt,
+  );
+  const remaining = removeHistoryEntry(history, imageKey);
+  const currentKeyMatches = current?.imageKey === imageKey;
+  if (remaining.length === history.length && !currentKeyMatches) {
+    return undefined;
+  }
+
+  const next = currentRenderAfterDelete(current, remaining, imageKey);
+  const updates: Record<string, unknown> = { updatedAt: nowIso() };
+  const remove: string[] = [];
+
+  if (remaining.length > 0) {
+    updates.renderHistory = remaining;
+  } else {
+    remove.push('renderHistory');
+  }
+
+  if (next.removeRender) {
+    remove.push('render');
+  } else if (next.render && currentKeyMatches) {
+    updates.render = next.render;
+  }
+
+  return { updates, remove };
 }
 
 export async function signedRenderImageUrl(

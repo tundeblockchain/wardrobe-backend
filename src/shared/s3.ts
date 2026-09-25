@@ -93,6 +93,47 @@ export function processedImageObjectKey(userId: string, itemId: string): string 
 }
 
 /**
+ * Unique Virtual Try On photos for a clothing item (WARDROBE-149 / 150).
+ * `users/{uid}/items/{itemId}/renders/` — not `processed.png`.
+ */
+export function itemRenderPrefix(userId: string, itemId: string): string {
+  const uid = userId.trim();
+  const id = itemId.trim();
+  if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
+    throw Errors.validation('itemId is not a valid object-key segment.');
+  }
+  return `users/${uid}/items/${id}/renders/`;
+}
+
+/**
+ * Item try-on object key. Unique: `…/renders/{renderId}.png`.
+ * Optional legacy single file: `users/{uid}/items/{itemId}/render.png`.
+ */
+export function itemRenderObjectKey(
+  userId: string,
+  itemId: string,
+  renderId?: string,
+): string {
+  const uid = userId.trim();
+  const id = itemId.trim();
+  if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
+    throw Errors.internal(
+      'Refusing to build an item render key for an invalid id.',
+    );
+  }
+  if (renderId !== undefined) {
+    const entryId = renderId.trim();
+    if (!isSafeObjectKeySegment(entryId)) {
+      throw Errors.internal(
+        'Refusing to build an item render key for an invalid id.',
+      );
+    }
+    return `users/${uid}/items/${id}/renders/${entryId}.png`;
+  }
+  return `users/${uid}/items/${id}/render.png`;
+}
+
+/**
  * Owner-scoped prefix for Virtual Try On outfit renders (WARDROBE-149).
  * Keys must stay under `users/{uid}/outfits/{outfitId}/`.
  */

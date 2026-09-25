@@ -513,6 +513,7 @@ GET    /wardrobes/{wardrobeId}/items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
+DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders
 POST   /wardrobes/{wardrobeId}/items/{itemId}/move
 POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 POST   /wardrobes/{wardrobeId}/items/{itemId}/share
@@ -663,7 +664,7 @@ users/{uid}/uploads/{id}.jpg          original (create / PATCH imageKey)
 users/{uid}/items/{itemId}/processed.png   background-removed cutout
 ```
 
-Keys are **user-scoped**, not wardrobe-scoped. Item `DELETE` does not remove S3 objects. `ItemsFn` may only `GetObject` (presign `originalImageUrl` / `processedImageUrl`) — it has no `CopyObject` / `PutObject`. Sharing keeps ownership under `users/{uid}/` and avoids a second object. Flutter should treat `image.*` keys as opaque. After a copy, deleting the source item does **not** break the copy's URLs (objects stay until account wipe).
+Keys are **user-scoped**, not wardrobe-scoped. Item `DELETE` does not remove S3 objects. `ItemsFn` may `GetObject` (presign `originalImageUrl` / `processedImageUrl`) and `DeleteObject` for `DELETE .../items/{itemId}/renders` (WARDROBE-149) — it has no `CopyObject` / `PutObject`. Sharing keeps ownership under `users/{uid}/` and avoids a second object. Flutter should treat `image.*` keys as opaque. After a copy, deleting the source item does **not** break the copy's URLs (objects stay until account wipe).
 
 **Status gate:** `PENDING` / `PROCESSING` cannot be moved or copied (`400 VALIDATION_ERROR`). The processing worker reloads by the SQS `wardrobeId` + `itemId`; moving an in-flight item would orphan that job. Poll create / list / get until `READY` or `FAILED`, then transfer.
 
@@ -1349,13 +1350,16 @@ Flutter WARDROBE-84 should:
 
 ### Delete a Virtual Try On photo (WARDROBE-149) — Flutter contract
 
-Remove **one** successful try-on photo from an outfit the caller owns. Does **not** delete the outfit, clothing items, or Virtual Profile / reference images. Not Premium-gated (generate still is). Identity is the Firebase UID only — body `userId` is ignored.
+Remove **one** successful try-on photo from an **outfit or clothing item** the caller owns. Does **not** delete the outfit, item, wardrobe, or Virtual Profile / reference images. Not Premium-gated (generate still is). Identity is the Firebase UID only — body `userId` is ignored.
+
+Item **generate** is WARDROBE-150 (separate). Item delete still reads/writes the same `render` / `renderHistory` fields outfits use so generate can plug in.
 
 ```http
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders
+DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders
 ```
 
-Request body (`imageKey` required). Use the `imageKey` from that outfit’s `renderHistory[]` (or `render.imageKey`). Keys contain slashes — they must stay in the JSON body, not the path.
+Request body (`imageKey` required). Use the `imageKey` from that resource’s `renderHistory[]` (or `render.imageKey`). Keys contain slashes — they must stay in the JSON body, not the path.
 
 ```json
 { "imageKey": "users/{uid}/outfits/outfit_xyz123ab/renders/rend_new1abcd.png" }
@@ -1363,13 +1367,13 @@ Request body (`imageKey` required). Use the `imageKey` from that outfit’s `ren
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `imageKey` | string | yes | S3 object key for that try-on. Must be under `users/{uid}/outfits/{outfitId}/` (legacy `…/render.png` or `…/renders/{renderId}.png`). Arbitrary keys (other users, clothing items, Virtual Profile photos) are rejected. |
+| `imageKey` | string | yes | S3 object key for that try-on. Outfit: `users/{uid}/outfits/{outfitId}/` (`…/render.png` or `…/renders/{renderId}.png`). Item: `users/{uid}/items/{itemId}/renders/{renderId}.png` (legacy `…/items/{itemId}/render.png` also accepted). Clothing-item `processed.png`, uploads, Virtual Profile photos, and other users’ keys are rejected. |
 
-Success: **`204` No Content**. After this, GET outfit / list omit that history entry and GET `/render` no longer returns that image.
+Success: **`204` No Content**. After this, GET outfit / GET item / list omit that history entry. Outfit GET `/render` no longer returns that image.
 
-**Idempotent:** if the outfit is owned and that `imageKey` is already gone from `renderHistory` / current `render`, the response is still `204`.
+**Idempotent:** if the resource is owned and that `imageKey` is already gone from `renderHistory` / current `render`, the response is still `204`.
 
-**Hero fallback:** if the deleted key is the current `render.imageKey`, current `render` is rebuilt from the newest remaining successful history entry (`READY` + that `imageKey` + `aiProfileId`). If history is then empty, `render` image fields are cleared (GET `/render` is `404 RENDER_NOT_FOUND` when no current render remains). An in-flight `PENDING` / `FAILED` current render is left alone unless its `imageKey` actually matches (PENDING usually has none).
+**Hero fallback:** if the deleted key is the current `render.imageKey`, current `render` is rebuilt from the newest remaining successful history entry (`READY` + that `imageKey` + `aiProfileId`). If history is then empty, `render` image fields are cleared (outfit GET `/render` is `404 RENDER_NOT_FOUND` when no current render remains). An in-flight `PENDING` / `FAILED` current render is left alone unless its `imageKey` actually matches (PENDING usually has none).
 
 The S3 object is deleted best-effort (already-missing is fine). Dynamo is updated first so GET stops returning the photo even if S3 is briefly inconsistent.
 
@@ -1378,11 +1382,12 @@ The S3 object is deleted best-effort (already-missing is fine). Dynamo is update
 | Missing token | `401 UNAUTHENTICATED` |
 | Other-user / missing wardrobe | `404 WARDROBE_NOT_FOUND` |
 | Other-user / missing outfit | `404 OUTFIT_NOT_FOUND` |
+| Other-user / missing item | `404 ITEM_NOT_FOUND` |
 | Missing / blank / non-string `imageKey` | `400 VALIDATION_ERROR` |
-| `imageKey` not under this user’s outfit render prefix | `400 VALIDATION_ERROR` |
-| Already deleted (owned outfit) | `204` |
+| `imageKey` not under that resource’s render prefix | `400 VALIDATION_ERROR` |
+| Already deleted (owned outfit or item) | `204` |
 
-Do not use `DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}` for this — that deletes the whole outfit.
+Do not use `DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}` or `DELETE .../items/{itemId}` for this — those delete the whole outfit or item.
 
 **Secret** `wardrobe/{stage}/gemini-try-on` (stack output `GeminiTryOnSecretName`):
 

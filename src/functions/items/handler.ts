@@ -27,7 +27,7 @@ import {
 } from '../../shared/http';
 import { newItemId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
-import { createPresignedGetUrl } from '../../shared/s3';
+import { createPresignedGetUrl, deleteObjectBestEffort } from '../../shared/s3';
 import { enqueueProcessWardrobeItem } from '../../shared/sqs';
 import {
   ClothingCategory,
@@ -43,7 +43,16 @@ import {
   requireCategory,
   requireNonEmptyString,
   requireOwnedImageKey,
+  requireOwnedItemRenderKey,
 } from '../../shared/validation';
+import {
+  planRenderPhotoDelete,
+  seedHistoryFromCurrentRender,
+  toOutfitRender,
+  toRenderHistory,
+  withSignedRenderHistory,
+  withSignedRenderUrl,
+} from '../outfits/render';
 import {
   ItemListFilters,
   itemMatchesFilters,
@@ -80,6 +89,11 @@ interface UpdateItemBody {
   processingStatus?: unknown;
 }
 
+interface DeleteRenderBody {
+  imageKey?: unknown;
+  userId?: unknown;
+}
+
 const CREATE_PROCESSING_STATUS: ProcessingStatus = 'PENDING';
 
 export async function handler(
@@ -101,6 +115,22 @@ export async function handler(
       }
       if (method === 'POST') {
         return accepted(await reprocessItem(userId, wardrobeId, itemId));
+      }
+      throw Errors.validation(`Unsupported method: ${method}`);
+    }
+
+    if (isItemRendersRoute(event)) {
+      if (!itemId) {
+        throw Errors.validation('itemId is required.');
+      }
+      if (method === 'DELETE') {
+        await deleteItemRenderPhoto(
+          userId,
+          wardrobeId,
+          itemId,
+          parseJsonBody(event),
+        );
+        return noContent();
       }
       throw Errors.validation(`Unsupported method: ${method}`);
     }
@@ -160,6 +190,15 @@ export async function handler(
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+function isItemRendersRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return (
+    key.includes('/items/{itemId}/renders') ||
+    /\/items\/[^/]+\/renders\/?$/.test(path)
+  );
 }
 
 function isReprocessRoute(event: APIGatewayProxyEventV2): boolean {
@@ -489,6 +528,27 @@ async function removeItem(
   await deleteItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
 }
 
+async function deleteItemRenderPhoto(
+  userId: string,
+  wardrobeId: string,
+  itemId: string,
+  body: DeleteRenderBody,
+): Promise<void> {
+  const imageKey = requireOwnedItemRenderKey(body.imageKey, userId, itemId);
+  const item = await getOwnedItem(userId, wardrobeId, itemId);
+  const plan = planRenderPhotoDelete(item, imageKey);
+  if (plan) {
+    await updateAttributes(
+      keys.wardrobePk(wardrobeId),
+      keys.itemSk(itemId),
+      plan.updates,
+      plan.remove.length > 0 ? { remove: plan.remove } : undefined,
+    );
+  }
+
+  await deleteObjectBestEffort(imageKey);
+}
+
 async function toClothingItem(item: DynamoItem): Promise<ClothingItem> {
   const dto: ClothingItem = {
     itemId: String(item.itemId),
@@ -545,6 +605,24 @@ async function toClothingItem(item: DynamoItem): Promise<ClothingItem> {
   );
   if (processedImageUrl) {
     dto.processedImageUrl = processedImageUrl;
+  }
+
+  const render = toOutfitRender(item.render);
+  const signedHistory = await withSignedRenderHistory(
+    seedHistoryFromCurrentRender(
+      toRenderHistory(item.renderHistory),
+      render,
+      item.updatedAt,
+    ),
+  );
+  if (render) {
+    dto.render = await withSignedRenderUrl(render);
+  }
+  if (signedHistory.renderHistory) {
+    dto.renderHistory = signedHistory.renderHistory;
+  }
+  if (signedHistory.renderImageUrls) {
+    dto.renderImageUrls = signedHistory.renderImageUrls;
   }
 
   return dto;

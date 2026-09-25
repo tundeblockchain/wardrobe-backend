@@ -20,6 +20,7 @@ import {
   requireOutfitItems,
   requireOwnedAiProfileReferenceKey,
   requireOwnedImageKey,
+  requireOwnedItemRenderKey,
   requireOwnedOutfitRenderKey,
   requireSlot,
   requireSubcategory,
@@ -421,6 +422,41 @@ describe('validation', () => {
           'users/other-user/outfits/outfit_xyz123ab/renders/rend_new1abcd.png',
           userId,
           outfitId,
+        ),
+      ).toThrow(AppError);
+    });
+  });
+
+  describe('requireOwnedItemRenderKey (WARDROBE-149)', () => {
+    const userId = 'firebase-uid-owner';
+    const itemId = 'item_xyz123abcd';
+    const renderKey = `users/${userId}/items/${itemId}/renders/rend_new1abcd.png`;
+    const legacyKey = `users/${userId}/items/${itemId}/render.png`;
+
+    it('accepts a unique renders/{renderId}.png key', () => {
+      expect(requireOwnedItemRenderKey(renderKey, userId, itemId)).toBe(renderKey);
+    });
+
+    it('accepts the legacy render.png key', () => {
+      expect(requireOwnedItemRenderKey(legacyKey, userId, itemId)).toBe(legacyKey);
+    });
+
+    it('rejects processed.png on the same item', () => {
+      expect(() =>
+        requireOwnedItemRenderKey(
+          `users/${userId}/items/${itemId}/processed.png`,
+          userId,
+          itemId,
+        ),
+      ).toThrow(AppError);
+    });
+
+    it('rejects an upload / clothing-item original key', () => {
+      expect(() =>
+        requireOwnedItemRenderKey(
+          `users/${userId}/uploads/photo.jpg`,
+          userId,
+          itemId,
         ),
       ).toThrow(AppError);
     });
