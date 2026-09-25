@@ -19,6 +19,10 @@ jest.mock('@aws-sdk/client-s3', () => ({
     _op: 'DeleteObjects',
     input,
   })),
+  DeleteObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'DeleteObject',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
@@ -32,8 +36,10 @@ import {
   bucketName,
   createPresignedGetUrl,
   createPresignedPutUrl,
+  deleteObjectBestEffort,
   deleteObjectsUnderUserPrefix,
   extensionForContentType,
+  outfitRenderPrefix,
   getObjectBytes,
   MAX_UPLOAD_BYTES,
   outfitRenderObjectKey,
@@ -183,6 +189,39 @@ describe('s3 helpers (WARDROBE-8)', () => {
       expect(processedImageObjectKey('uid-1', 'item_abc')).toBe(
         'users/uid-1/items/item_abc/processed.png',
       );
+    });
+  });
+
+  describe('outfitRenderPrefix', () => {
+    it('builds users/{uid}/outfits/{outfitId}/', () => {
+      expect(outfitRenderPrefix('uid-1', 'outfit_abc')).toBe(
+        'users/uid-1/outfits/outfit_abc/',
+      );
+    });
+
+    it('rejects path-like ids', () => {
+      expect(() => outfitRenderPrefix('uid-1', '../secret')).toThrow(AppError);
+    });
+  });
+
+  describe('deleteObjectBestEffort', () => {
+    it('deletes a single object and does not throw when S3 fails', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await deleteObjectBestEffort('users/uid-1/outfits/outfit_abc/render.png');
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'DeleteObject',
+          input: {
+            Bucket: 'wardrobe-media-test',
+            Key: 'users/uid-1/outfits/outfit_abc/render.png',
+          },
+        }),
+      );
+
+      mockSend.mockRejectedValueOnce(new Error('S3 unavailable'));
+      await expect(
+        deleteObjectBestEffort('users/uid-1/outfits/outfit_abc/render.png'),
+      ).resolves.toBeUndefined();
     });
   });
 

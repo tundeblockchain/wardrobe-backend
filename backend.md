@@ -1033,7 +1033,7 @@ WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`
 
 ## 24. Outfit Render Data
 
-An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47). WARDROBE-85 appends each successful try-on to `renderHistory` (S3 key `users/{uid}/outfits/{outfitId}/renders/{renderId}.png`) and list/get add newest-first presigned `renderImageUrls`. Existing `render` fields stay the current / latest try-on. See README “Outfit render history (WARDROBE-85)” for the Flutter WARDROBE-84 contract.
+An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47). WARDROBE-85 appends each successful try-on to `renderHistory` (S3 key `users/{uid}/outfits/{outfitId}/renders/{renderId}.png`) and list/get add newest-first presigned `renderImageUrls`. Existing `render` fields stay the current / latest try-on. `DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders` with `{ "imageKey" }` removes one owned Virtual Try On photo (S3 + that history entry) without deleting the outfit (WARDROBE-149). See README “Outfit render history (WARDROBE-85)” and “Delete a Virtual Try On photo (WARDROBE-149)” for the Flutter contract.
 
 Example:
 

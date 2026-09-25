@@ -23,6 +23,7 @@ import {
 } from '../../shared/http';
 import { newOutfitId, newOutfitRenderId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
+import { deleteObjectBestEffort } from '../../shared/s3';
 import { enqueueRenderOutfit } from '../../shared/sqs';
 import {
   DynamoItem,
@@ -31,10 +32,16 @@ import {
   OutfitRender,
   OutfitSlot,
 } from '../../shared/types';
-import { requireNonEmptyString, requireOutfitItems } from '../../shared/validation';
+import {
+  requireNonEmptyString,
+  requireOutfitItems,
+  requireOwnedOutfitRenderKey,
+} from '../../shared/validation';
 import {
   clothingItemImageKey,
+  currentRenderAfterDelete,
   pendingRender,
+  removeHistoryEntry,
   requireReadyRenderableProfile,
   seedHistoryFromCurrentRender,
   toOutfitRender,
@@ -63,6 +70,11 @@ interface RequestRenderBody {
   userId?: unknown;
 }
 
+interface DeleteRenderBody {
+  imageKey?: unknown;
+  userId?: unknown;
+}
+
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyResultV2> {
@@ -78,6 +90,22 @@ export async function handler(
 
     if (isWornOnRoute(event)) {
       return await handleWornOn(event, userId, wardrobeId, outfitId);
+    }
+
+    if (isRendersRoute(event)) {
+      if (!outfitId) {
+        throw Errors.validation('outfitId is required.');
+      }
+      if (method === 'DELETE') {
+        await deleteOutfitRenderPhoto(
+          userId,
+          wardrobeId,
+          outfitId,
+          parseJsonBody(event),
+        );
+        return noContent();
+      }
+      throw Errors.validation(`Unsupported method: ${method}`);
     }
 
     if (isRenderRoute(event)) {
@@ -135,7 +163,19 @@ export async function handler(
   }
 }
 
+function isRendersRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return (
+    key.includes('/outfits/{outfitId}/renders') ||
+    /\/outfits\/[^/]+\/renders\/?$/.test(path)
+  );
+}
+
 function isRenderRoute(event: APIGatewayProxyEventV2): boolean {
+  if (isRendersRoute(event)) {
+    return false;
+  }
   const key = routeKey(event);
   const path = event.rawPath ?? '';
   return (
@@ -232,6 +272,52 @@ async function removeOutfit(
   await getOwnedOutfit(userId, wardrobeId, outfitId);
   await deleteWornOnForOutfit(userId, wardrobeId, outfitId);
   await deleteItem(keys.wardrobePk(wardrobeId), keys.outfitSk(outfitId));
+}
+
+async function deleteOutfitRenderPhoto(
+  userId: string,
+  wardrobeId: string,
+  outfitId: string,
+  body: DeleteRenderBody,
+): Promise<void> {
+  const imageKey = requireOwnedOutfitRenderKey(body.imageKey, userId, outfitId);
+  const outfit = await getOwnedOutfit(userId, wardrobeId, outfitId);
+  const current = toOutfitRender(outfit.render);
+  const history = seedHistoryFromCurrentRender(
+    toRenderHistory(outfit.renderHistory),
+    current,
+    outfit.updatedAt,
+  );
+  const remaining = removeHistoryEntry(history, imageKey);
+  const currentKeyMatches = current?.imageKey === imageKey;
+  const historyChanged = remaining.length !== history.length;
+
+  if (historyChanged || currentKeyMatches) {
+    const next = currentRenderAfterDelete(current, remaining, imageKey);
+    const updates: Record<string, unknown> = { updatedAt: nowIso() };
+    const remove: string[] = [];
+
+    if (remaining.length > 0) {
+      updates.renderHistory = remaining;
+    } else {
+      remove.push('renderHistory');
+    }
+
+    if (next.removeRender) {
+      remove.push('render');
+    } else if (next.render && currentKeyMatches) {
+      updates.render = next.render;
+    }
+
+    await updateAttributes(
+      keys.wardrobePk(wardrobeId),
+      keys.outfitSk(outfitId),
+      updates,
+      remove.length > 0 ? { remove } : undefined,
+    );
+  }
+
+  await deleteObjectBestEffort(imageKey);
 }
 
 async function getOutfitRender(

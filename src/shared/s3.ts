@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   ListObjectsV2Command,
@@ -92,6 +93,21 @@ export function processedImageObjectKey(userId: string, itemId: string): string 
 }
 
 /**
+ * Owner-scoped prefix for Virtual Try On outfit renders (WARDROBE-149).
+ * Keys must stay under `users/{uid}/outfits/{outfitId}/`.
+ */
+export function outfitRenderPrefix(userId: string, outfitId: string): string {
+  const uid = userId.trim();
+  const id = outfitId.trim();
+  if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
+    throw Errors.validation(
+      'outfitId is not a valid object-key segment.',
+    );
+  }
+  return `users/${uid}/outfits/${id}/`;
+}
+
+/**
  * Architecture §24 / WARDROBE-85.
  * Legacy single file: users/{uid}/outfits/{outfitId}/render.png
  * Append-only try-on: users/{uid}/outfits/{outfitId}/renders/{renderId}.png
@@ -118,6 +134,26 @@ export function outfitRenderObjectKey(
     return `users/${uid}/outfits/${id}/renders/${entryId}.png`;
   }
   return `users/${uid}/outfits/${id}/render.png`;
+}
+
+/**
+ * Best-effort single-object delete. S3 DeleteObject is already idempotent
+ * when the key is missing. Logs and continues on other failures.
+ */
+export async function deleteObjectBestEffort(objectKey: string): Promise<void> {
+  try {
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: bucketName(),
+        Key: objectKey,
+      }),
+    );
+  } catch (error) {
+    logger.warn('S3 object delete failed', {
+      key: objectKey,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+  }
 }
 
 export async function createPresignedGetUrl(params: {

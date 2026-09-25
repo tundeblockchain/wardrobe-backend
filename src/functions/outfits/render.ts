@@ -128,6 +128,42 @@ export function newestFirstHistory(
   return [...history].reverse();
 }
 
+export function removeHistoryEntry(
+  history: OutfitRenderHistoryEntry[],
+  imageKey: string,
+): OutfitRenderHistoryEntry[] {
+  return history.filter((entry) => entry.imageKey !== imageKey);
+}
+
+/**
+ * After deleting `imageKey`, rebuild current `render` when that key was the
+ * hero image. Leave PENDING / FAILED (or a READY hero that is a different
+ * key) untouched. `undefined` means omit / REMOVE `render`.
+ */
+export function currentRenderAfterDelete(
+  current: OutfitRender | undefined,
+  remainingHistory: OutfitRenderHistoryEntry[],
+  deletedImageKey: string,
+): { render?: OutfitRender; removeRender: boolean } {
+  if (!current || current.imageKey !== deletedImageKey) {
+    return { render: current, removeRender: false };
+  }
+
+  const newest = remainingHistory[remainingHistory.length - 1];
+  if (newest) {
+    return {
+      render: {
+        status: 'READY',
+        aiProfileId: newest.aiProfileId,
+        imageKey: newest.imageKey,
+      },
+      removeRender: false,
+    };
+  }
+
+  return { removeRender: true };
+}
+
 export async function signedRenderImageUrl(
   objectKey: string,
 ): Promise<string | undefined> {

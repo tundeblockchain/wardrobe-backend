@@ -20,6 +20,7 @@ import {
   requireOutfitItems,
   requireOwnedAiProfileReferenceKey,
   requireOwnedImageKey,
+  requireOwnedOutfitRenderKey,
   requireSlot,
   requireSubcategory,
 } from '../../src/shared/validation';
@@ -372,6 +373,55 @@ describe('validation', () => {
     it('rejects path traversal', () => {
       expect(() =>
         requireOwnedImageKey(`users/${userId}/uploads/../secret.jpg`, userId),
+      ).toThrow(AppError);
+    });
+  });
+
+  describe('requireOwnedOutfitRenderKey (WARDROBE-149)', () => {
+    const userId = 'firebase-uid-owner';
+    const outfitId = 'outfit_xyz123ab';
+    const renderKey = `users/${userId}/outfits/${outfitId}/renders/rend_new1abcd.png`;
+    const legacyKey = `users/${userId}/outfits/${outfitId}/render.png`;
+
+    it('accepts a unique renders/{renderId}.png key', () => {
+      expect(requireOwnedOutfitRenderKey(renderKey, userId, outfitId)).toBe(
+        renderKey,
+      );
+    });
+
+    it('accepts the legacy render.png key', () => {
+      expect(requireOwnedOutfitRenderKey(legacyKey, userId, outfitId)).toBe(
+        legacyKey,
+      );
+    });
+
+    it('rejects a clothing-item key under the same user', () => {
+      expect(() =>
+        requireOwnedOutfitRenderKey(
+          `users/${userId}/uploads/photo.jpg`,
+          userId,
+          outfitId,
+        ),
+      ).toThrow(AppError);
+    });
+
+    it('rejects another outfit’s render key', () => {
+      expect(() =>
+        requireOwnedOutfitRenderKey(
+          `users/${userId}/outfits/outfit_other99zz/renders/rend_new1abcd.png`,
+          userId,
+          outfitId,
+        ),
+      ).toThrow(AppError);
+    });
+
+    it('rejects a cross-user key', () => {
+      expect(() =>
+        requireOwnedOutfitRenderKey(
+          'users/other-user/outfits/outfit_xyz123ab/renders/rend_new1abcd.png',
+          userId,
+          outfitId,
+        ),
       ).toThrow(AppError);
     });
   });

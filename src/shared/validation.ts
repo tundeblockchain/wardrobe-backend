@@ -1,5 +1,5 @@
 import { Errors } from './errors';
-import { aiProfileReferencePrefix } from './s3';
+import { aiProfileReferencePrefix, outfitRenderPrefix } from './s3';
 import {
   AI_PROFILE_TYPES,
   AiProfileBodyContext,
@@ -282,6 +282,33 @@ export function requireOwnedImageKey(
   if (!remainder || remainder.endsWith('/')) {
     throw Errors.validation(
       `${field} must be under users/{userId}/uploads/ or another owned path.`,
+    );
+  }
+
+  return imageKey;
+}
+
+/**
+ * Virtual Try On photo keys (WARDROBE-149) must sit under this outfit:
+ * `users/{uid}/outfits/{outfitId}/…` (legacy `render.png` or `renders/{id}.png`).
+ */
+export function requireOwnedOutfitRenderKey(
+  value: unknown,
+  userId: string,
+  outfitId: string,
+  field = 'imageKey',
+): string {
+  const imageKey = requireOwnedImageKey(value, userId, field);
+  const prefix = outfitRenderPrefix(userId, outfitId);
+  const remainder = imageKey.slice(prefix.length);
+
+  if (
+    !imageKey.startsWith(prefix) ||
+    !remainder ||
+    remainder.endsWith('/')
+  ) {
+    throw Errors.validation(
+      `${field} must be under users/{userId}/outfits/{outfitId}/.`,
     );
   }
 

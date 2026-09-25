@@ -410,6 +410,7 @@ export interface Outfit {
   /**
    * Successful try-ons, newest first (WARDROBE-85 / Flutter WARDROBE-84).
    * Includes the latest READY image. Soft-omitted when empty.
+   * DELETE .../renders removes one entry by `imageKey` (WARDROBE-149).
    */
   renderHistory?: OutfitRenderHistoryEntry[];
   /**
