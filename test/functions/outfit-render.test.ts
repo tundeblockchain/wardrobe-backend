@@ -26,9 +26,11 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
 }));
 
 const mockRunTryOn = jest.fn();
+const mockRunItemTryOn = jest.fn();
 
 jest.mock('../../src/functions/processing/try-on', () => ({
   runOutfitTryOn: (...args: unknown[]) => mockRunTryOn(...args),
+  runItemTryOn: (...args: unknown[]) => mockRunItemTryOn(...args),
 }));
 
 const mockRecordJobDone = jest.fn();
@@ -714,5 +716,148 @@ describe('outfit render worker (WARDROBE-47)', () => {
     expect(result).toEqual({
       batchItemFailures: [{ itemIdentifier: 'retry-me' }],
     });
+  });
+});
+
+describe('item render worker (WARDROBE-150)', () => {
+  const ITEM_RENDER_KEY = `users/${OWNER_ID}/items/${TOP_ITEM_ID}/renders/rend_item1abcd.png`;
+
+  function itemJob(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      jobType: 'RENDER_ITEM',
+      userId: OWNER_ID,
+      wardrobeId: WARDROBE_ID,
+      itemId: TOP_ITEM_ID,
+      aiProfileId: PROFILE_ID,
+      renderId: 'rend_item1abcd',
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TABLE_NAME = 'wardrobe-app-test';
+    mockRunItemTryOn.mockResolvedValue(ITEM_RENDER_KEY);
+    mockRecordJobDone.mockResolvedValue(true);
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: dynamoGenericProfile() };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoItem() };
+    });
+  });
+
+  it('loads the item, sets PROCESSING then READY, and calls item try-on', async () => {
+    const result = await handler(eventFor(itemJob()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(renderUpdates().map((render) => render.status)).toEqual([
+      'PROCESSING',
+      'READY',
+    ]);
+    expect(renderUpdates()[1]).toMatchObject({
+      status: 'READY',
+      aiProfileId: PROFILE_ID,
+      imageKey: ITEM_RENDER_KEY,
+    });
+    expect(mockRunItemTryOn).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      itemId: TOP_ITEM_ID,
+      profileImageKeys: ['shared/ai-profiles/generic/alex/front.png'],
+      garmentImages: [
+        {
+          slot: 'TOP',
+          objectKey: `users/${OWNER_ID}/uploads/tee.jpg`,
+          category: 'TOP',
+          name: 'Tee',
+        },
+      ],
+      renderId: 'rend_item1abcd',
+    });
+    expect(mockRunTryOn).not.toHaveBeenCalled();
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'RENDER_ITEM',
+      status: 'READY',
+      wardrobeId: WARDROBE_ID,
+      itemId: TOP_ITEM_ID,
+      aiProfileId: PROFILE_ID,
+      renderId: 'rend_item1abcd',
+    });
+  });
+
+  it('acks a missing item without writing FAILED', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+        return {};
+      }
+      return { Attributes: dynamoItem() };
+    });
+
+    const result = await handler(eventFor(itemJob()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(renderUpdates()).toEqual([]);
+    expect(mockRunItemTryOn).not.toHaveBeenCalled();
+  });
+
+  it('sets FAILED when the item has no image', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('ITEM#')) {
+          return {
+            Item: {
+              ...dynamoItem(),
+              originalKey: undefined,
+              processedKey: undefined,
+            },
+          };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: dynamoGenericProfile() };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoItem() };
+    });
+
+    const result = await handler(eventFor(itemJob()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(renderUpdates().map((render) => render.status)).toEqual([
+      'PROCESSING',
+      'FAILED',
+    ]);
+    expect(renderUpdates()[1].error).toBe(
+      `Clothing item ${TOP_ITEM_ID} has no image to render.`,
+    );
+    expect(mockRunItemTryOn).not.toHaveBeenCalled();
+  });
+
+  it('appends a successful item try-on to renderHistory', async () => {
+    const result = await handler(eventFor(itemJob()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(historyUpdates().filter(Boolean)).toEqual([
+      [
+        {
+          imageKey: ITEM_RENDER_KEY,
+          createdAt: expect.stringMatching(
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+          ),
+          aiProfileId: PROFILE_ID,
+        },
+      ],
+    ]);
   });
 });

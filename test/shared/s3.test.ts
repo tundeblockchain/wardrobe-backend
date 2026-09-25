@@ -212,6 +212,13 @@ describe('s3 helpers (WARDROBE-8)', () => {
         processedImageObjectKey('uid-1', 'item_abc'),
       );
     });
+
+    it('rejects path-like ids', () => {
+      expect(() => itemRenderObjectKey('uid-1', '../secret')).toThrow(AppError);
+      expect(() =>
+        itemRenderObjectKey('uid-1', 'item_abc', '../secret'),
+      ).toThrow(AppError);
+    });
   });
 
   describe('itemRenderPrefix', () => {

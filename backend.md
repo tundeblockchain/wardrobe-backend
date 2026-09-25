@@ -1035,6 +1035,8 @@ WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`
 
 An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47). WARDROBE-85 appends each successful try-on to `renderHistory` (S3 key `users/{uid}/outfits/{outfitId}/renders/{renderId}.png`) and list/get add newest-first presigned `renderImageUrls`. Existing `render` fields stay the current / latest try-on. `DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders` and `DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders` with `{ "imageKey" }` remove one owned Virtual Try On photo (S3 + that history entry) without deleting the outfit or item (WARDROBE-149). Item generate is WARDROBE-150; item keys are `users/{uid}/items/{itemId}/renders/{renderId}.png`. See README “Delete a Virtual Try On photo (WARDROBE-149)” for the Flutter contract.
 
+WARDROBE-150 adds the same `render` / `renderHistory` / `renderImageUrls` fields on the clothing **item** (`users/{uid}/items/{itemId}/renders/{renderId}.png`). POST generate is Premium-only; GET is not gated. Delete of a stored `imageKey` is WARDROBE-149.
+
 Example:
 
 ```json

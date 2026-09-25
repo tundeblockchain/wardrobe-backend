@@ -24,6 +24,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
 }));
 
 import {
+  jobDoneNotificationCopy,
   jobDonePushData,
   parseFcmServiceAccount,
   resetFcmAccessTokenCache,
@@ -88,6 +89,21 @@ describe('FCM job-done push (WARDROBE-114)', () => {
 
     expect(parseFcmServiceAccount('not-json-placeholder')).toBeUndefined();
     expect(parseFcmServiceAccount('{"apiKey":"x"}')).toBeUndefined();
+  });
+
+  it('uses Virtual Try On copy for item renders', () => {
+    expect(
+      jobDoneNotificationCopy({
+        userId: OWNER_ID,
+        jobType: 'RENDER_ITEM',
+        status: 'READY',
+        wardrobeId: 'wd_1',
+        itemId: 'item_1',
+      }),
+    ).toEqual({
+      title: 'Try-on ready',
+      body: 'Your Virtual Try On is ready to view.',
+    });
   });
 
   it('builds a string-only deep-link data payload', () => {

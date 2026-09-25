@@ -232,6 +232,22 @@ export interface RenderOutfitJob {
   renderId?: string;
 }
 
+/** WARDROBE-150 — async item Virtual Try On / render job. */
+export const RENDER_ITEM_JOB = 'RENDER_ITEM' as const;
+
+export interface RenderItemJob {
+  jobType: typeof RENDER_ITEM_JOB;
+  userId: string;
+  wardrobeId: string;
+  itemId: string;
+  aiProfileId: string;
+  /**
+   * Per-request id. Present on new POSTs so a second try-on with the
+   * same profile appends history. Optional on in-flight legacy jobs.
+   */
+  renderId?: string;
+}
+
 /**
  * Terminal statuses written to the in-app job-done inbox (WARDROBE-114).
  * PENDING / PROCESSING never create events — Flutter still polls those.
@@ -247,6 +263,7 @@ export type JobEventStatus = (typeof JOB_EVENT_STATUSES)[number];
 export const JOB_EVENT_JOB_TYPES = [
   PROCESS_WARDROBE_ITEM_JOB,
   RENDER_OUTFIT_JOB,
+  RENDER_ITEM_JOB,
 ] as const;
 export type JobEventJobType = (typeof JOB_EVENT_JOB_TYPES)[number];
 
@@ -261,7 +278,8 @@ export type DevicePlatform = (typeof DEVICE_PLATFORMS)[number];
 /**
  * Flutter `JobEvent` (WARDROBE-114 / Flutter WARDROBE-115).
  * Deep-link with `wardrobeId` + `itemId` or `outfitId` / `renderId`
- * plus `jobType` + `status`. Never expose Dynamo `PK` / `SK` or FCM tokens.
+ * plus `jobType` + `status`. Item try-on uses `RENDER_ITEM` + `itemId`.
+ * Never expose Dynamo `PK` / `SK` or FCM tokens.
  */
 export interface JobEvent {
   eventId: string;
@@ -347,17 +365,20 @@ export interface ClothingItem {
    */
   processingError?: string;
   /**
-   * Current Virtual Try On on this item (WARDROBE-149 / WARDROBE-150).
-   * Same shape as outfit `render`. Soft-omitted when unset. Generate is
-   * WARDROBE-150 — this ticket only deletes stored photos.
+   * Current Virtual Try On (WARDROBE-150). Same fields as outfit `render`.
+   * Soft-omitted when no try-on has been requested. WARDROBE-149 deletes
+   * stored photos by `imageKey`.
    */
   render?: OutfitRender;
   /**
-   * Successful item try-ons, newest first. Same shape as outfit
-   * `renderHistory`. Soft-omitted when empty.
+   * Successful item try-ons, newest first. Soft-omitted when empty.
+   * Same entry shape as outfit history (`imageKey`, `createdAt`, `aiProfileId`).
    */
   renderHistory?: OutfitRenderHistoryEntry[];
-  /** Presigned GET URLs for item try-ons, newest first. Soft-omitted when empty. */
+  /**
+   * Presigned GET URLs for successful item try-ons, newest first.
+   * Soft-omitted when empty (no history or every presign failed).
+   */
   renderImageUrls?: string[];
   createdAt: string;
   updatedAt: string;
@@ -612,7 +633,7 @@ export interface EntitlementUsage {
 export interface EntitlementFeatures {
   /** True on Basic and Premium (unlimited wardrobes / items / outfits). */
   unlimitedCatalog: boolean;
-  /** Virtual try-on / outfit render. Premium only. */
+  /** Virtual Try On — outfit and item render. Premium only. */
   aiTryOn: boolean;
   /** Classify, colour, bg-removal enqueue, recommendations. Premium only. */
   otherAi: boolean;

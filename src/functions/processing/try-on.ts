@@ -1,6 +1,7 @@
 import { logger } from '../../shared/logger';
 import {
   getObjectBytes,
+  itemRenderObjectKey,
   MAX_UPLOAD_BYTES,
   outfitRenderObjectKey,
   putObjectBytes,
@@ -137,6 +138,68 @@ export async function runOutfitTryOn(
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
+  return runTryOnRender(
+    {
+      imageKey: outfitRenderObjectKey(
+        input.userId,
+        input.outfitId,
+        input.renderId,
+      ),
+      emptyGarmentsMessage: 'Outfit has no garment images to render.',
+      emptyWornMessage: 'Outfit has no compatible garments to render together.',
+      writeFailureMessage: 'Failed to write outfit render image',
+      logLabel: 'Outfit try-on render stored',
+      logContext: { outfitId: input.outfitId },
+      profileImageKeys: input.profileImageKeys,
+      garmentImages: input.garmentImages,
+      profileBody: input.profileBody,
+    },
+    deps,
+  );
+}
+
+/** WARDROBE-150 — same Gemini path as outfits, one garment, item S3 prefix. */
+export async function runItemTryOn(
+  input: {
+    userId: string;
+    itemId: string;
+    profileImageKeys: string[];
+    garmentImages: OutfitTryOnGarment[];
+    profileBody?: AiProfileBodyContext;
+    renderId?: string;
+  },
+  deps: TryOnDeps = {},
+): Promise<string> {
+  return runTryOnRender(
+    {
+      imageKey: itemRenderObjectKey(input.userId, input.itemId, input.renderId),
+      emptyGarmentsMessage: 'Item has no garment image to render.',
+      emptyWornMessage: 'Item has no compatible garment to render.',
+      writeFailureMessage: 'Failed to write item render image',
+      logLabel: 'Item try-on render stored',
+      logContext: { itemId: input.itemId },
+      profileImageKeys: input.profileImageKeys,
+      garmentImages: input.garmentImages,
+      profileBody: input.profileBody,
+    },
+    deps,
+  );
+}
+
+async function runTryOnRender(
+  input: {
+    imageKey: string;
+    emptyGarmentsMessage: string;
+    emptyWornMessage: string;
+    writeFailureMessage: string;
+    logLabel: string;
+    logContext: Record<string, unknown>;
+    profileImageKeys: string[];
+    garmentImages: OutfitTryOnGarment[];
+    profileBody?: AiProfileBodyContext;
+  },
+  deps: TryOnDeps = {},
+): Promise<string> {
   const profileKeys = selectTryOnProfileImageKeys(input.profileImageKeys);
   if (profileKeys.length === 0) {
     throw new PermanentProcessingError(
@@ -144,7 +207,7 @@ export async function runOutfitTryOn(
     );
   }
   if (input.garmentImages.length === 0) {
-    throw new PermanentProcessingError('Outfit has no garment images to render.');
+    throw new PermanentProcessingError(input.emptyGarmentsMessage);
   }
 
   const composed = composeOutfitTryOn(input.garmentImages);
@@ -155,9 +218,7 @@ export async function runOutfitTryOn(
       : input.profileBody,
   );
   if (composed.worn.length === 0) {
-    throw new PermanentProcessingError(
-      'Outfit has no compatible garments to render together.',
-    );
+    throw new PermanentProcessingError(input.emptyWornMessage);
   }
 
   const store = deps.store ?? defaultObjectStore();
@@ -182,30 +243,25 @@ export async function runOutfitTryOn(
   }
 
   const rendered = await invokeClient(client, images, prompt);
-  const imageKey = outfitRenderObjectKey(
-    input.userId,
-    input.outfitId,
-    input.renderId,
-  );
   const contentType =
     detectGeminiImageMimeType(rendered) ?? RENDER_OBJECT_CONTENT_TYPE;
 
   try {
-    await store.putObject(imageKey, rendered, contentType);
+    await store.putObject(input.imageKey, rendered, contentType);
   } catch (error) {
-    throw toRetryable(error, 'Failed to write outfit render image');
+    throw toRetryable(error, input.writeFailureMessage);
   }
 
-  logger.info('Outfit try-on render stored', {
-    outfitId: input.outfitId,
-    imageKey,
+  logger.info(input.logLabel, {
+    ...input.logContext,
+    imageKey: input.imageKey,
     profileImages: profileKeys.length,
     garments: input.garmentImages.length,
     wornGarments: composed.worn.length,
     omittedGarments: composed.omitted.length,
   });
 
-  return imageKey;
+  return input.imageKey;
 }
 
 function defaultObjectStore(): ObjectStore {

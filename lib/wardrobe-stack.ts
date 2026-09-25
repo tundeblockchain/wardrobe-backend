@@ -333,6 +333,7 @@ export class WardrobeStack extends cdk.Stack {
       environment: {
         ...commonLambdaProps.environment,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+        TRY_ON_QUEUE_URL: tryOnQueue.queueUrl,
       },
     });
     const outfitsFn = this.lambda('OutfitsFn', 'outfits', {
@@ -498,7 +499,9 @@ export class WardrobeStack extends cdk.Stack {
     mediaBucket.grantDelete(itemsFn);
     processingQueue.grantSendMessages(itemsFn);
     processingQueue.grantConsumeMessages(processingFn);
-    // Try-on: outfits enqueue RENDER_OUTFIT; worker consumes + reads Gemini secret.
+    // Try-on: outfits enqueue RENDER_OUTFIT; items enqueue RENDER_ITEM
+    // (WARDROBE-150). Worker consumes both + reads Gemini secret.
+    tryOnQueue.grantSendMessages(itemsFn);
     tryOnQueue.grantSendMessages(outfitsFn);
     tryOnQueue.grantConsumeMessages(outfitRenderFn);
     tryOnSecret.grantRead(outfitRenderFn);
@@ -801,6 +804,13 @@ export class WardrobeStack extends cdk.Stack {
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/items/{itemId}/renders',
       methods: [apigwv2.HttpMethod.DELETE],
+      integration: itemsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/items/{itemId}/render',
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: itemsIntegration,
       authorizer: firebaseAuthorizer,
     });

@@ -509,6 +509,46 @@ describe('item move/copy (WARDROBE-118)', () => {
       expect(mockSqsSend).not.toHaveBeenCalled();
     });
 
+    it('does not copy item try-on render keys onto the new itemId', async () => {
+      const renderKey = `users/${OWNER_ID}/items/${ITEM_ID}/renders/rend_old1abcd.png`;
+      mockHappyPath({
+        item: dynamoItem({
+          render: {
+            status: 'READY',
+            aiProfileId: 'profile_generic_01',
+            imageKey: renderKey,
+          },
+          renderHistory: [
+            {
+              imageKey: renderKey,
+              createdAt: '2026-09-11T08:00:00.000Z',
+              aiProfileId: 'profile_generic_01',
+            },
+          ],
+        }),
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            action: 'copy',
+            body: { targetWardrobeId: TARGET_WARDROBE_ID },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(201);
+      const body = bodyOf(result) as ClothingItem;
+      expect(body).not.toHaveProperty('render');
+      expect(body).not.toHaveProperty('renderHistory');
+      const put = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Put',
+      )?.[0] as Command;
+      expect(put.input.Item).not.toHaveProperty('render');
+      expect(put.input.Item).not.toHaveProperty('renderHistory');
+    });
+
     it('allows copy when the source item is used in an outfit', async () => {
       mockHappyPath({ outfits: [dynamoOutfit()] });
 

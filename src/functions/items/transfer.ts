@@ -112,6 +112,10 @@ export async function copyItemToWardrobe(
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+  // Try-on S3 keys include the source itemId. Do not share them on a
+  // new id — WARDROBE-149 deletes by stored `imageKey`.
+  delete copied.render;
+  delete copied.renderHistory;
 
   await putItem(copied);
   return copied;

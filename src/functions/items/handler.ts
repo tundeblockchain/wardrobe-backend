@@ -25,15 +25,19 @@ import {
   parseJsonBody,
   routeKey,
 } from '../../shared/http';
-import { newItemId, nowIso } from '../../shared/ids';
+import { newItemId, newOutfitRenderId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import { createPresignedGetUrl, deleteObjectBestEffort } from '../../shared/s3';
-import { enqueueProcessWardrobeItem } from '../../shared/sqs';
+import {
+  enqueueProcessWardrobeItem,
+  enqueueRenderItem,
+} from '../../shared/sqs';
 import {
   ClothingCategory,
   ClothingItem,
   ClothingItemList,
   DynamoItem,
+  OutfitRender,
   ProcessingStatus,
 } from '../../shared/types';
 import {
@@ -46,7 +50,10 @@ import {
   requireOwnedItemRenderKey,
 } from '../../shared/validation';
 import {
+  clothingItemImageKey,
+  pendingRender,
   planRenderPhotoDelete,
+  requireReadyRenderableProfile,
   seedHistoryFromCurrentRender,
   toOutfitRender,
   toRenderHistory,
@@ -94,6 +101,11 @@ interface DeleteRenderBody {
   userId?: unknown;
 }
 
+interface RequestItemRenderBody {
+  aiProfileId?: unknown;
+  userId?: unknown;
+}
+
 const CREATE_PROCESSING_STATUS: ProcessingStatus = 'PENDING';
 
 export async function handler(
@@ -131,6 +143,26 @@ export async function handler(
           parseJsonBody(event),
         );
         return noContent();
+      }
+      throw Errors.validation(`Unsupported method: ${method}`);
+    }
+
+    if (isItemRenderRoute(event)) {
+      if (!itemId) {
+        throw Errors.validation('itemId is required.');
+      }
+      if (method === 'GET') {
+        return ok(await getItemRender(userId, wardrobeId, itemId));
+      }
+      if (method === 'POST') {
+        return accepted(
+          await requestItemRender(
+            userId,
+            wardrobeId,
+            itemId,
+            parseJsonBody(event),
+          ),
+        );
       }
       throw Errors.validation(`Unsupported method: ${method}`);
     }
@@ -208,6 +240,106 @@ function isReprocessRoute(event: APIGatewayProxyEventV2): boolean {
     key.includes('/items/{itemId}/reprocess') ||
     (key.includes('/reprocess') && key.includes('/items/')) ||
     /\/items\/[^/]+\/reprocess\/?$/.test(path)
+  );
+}
+
+/**
+ * Current poll + generate. Do not match WARDROBE-149
+ * `DELETE .../items/{itemId}/renders` (plural).
+ */
+function isItemRenderRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return (
+    (key.includes('/items/{itemId}/render') &&
+      !key.includes('/items/{itemId}/renders')) ||
+    /\/items\/[^/]+\/render\/?$/.test(path)
+  );
+}
+
+async function getItemRender(
+  userId: string,
+  wardrobeId: string,
+  itemId: string,
+): Promise<OutfitRender> {
+  const item = await getOwnedItem(userId, wardrobeId, itemId);
+  const render = toOutfitRender(item.render);
+  if (!render) {
+    throw Errors.renderNotFound();
+  }
+  return withSignedRenderUrl(render);
+}
+
+async function requestItemRender(
+  userId: string,
+  wardrobeId: string,
+  itemId: string,
+  body: RequestItemRenderBody,
+): Promise<ClothingItem> {
+  const existing = await getOwnedItem(userId, wardrobeId, itemId);
+  await assertPremiumAi(userId);
+  const previousRender = existing.render;
+  const aiProfileId = requireNonEmptyString(body.aiProfileId, 'aiProfileId');
+  await requireReadyRenderableProfile(userId, aiProfileId);
+
+  if (!clothingItemImageKey(existing)) {
+    throw Errors.validation(`Clothing item ${itemId} has no image to render.`);
+  }
+
+  const renderId = newOutfitRenderId();
+  const render = pendingRender(aiProfileId, renderId);
+  const renderHistory = seedHistoryFromCurrentRender(
+    toRenderHistory(existing.renderHistory),
+    toOutfitRender(previousRender),
+    existing.updatedAt,
+  );
+  const updates: Record<string, unknown> = {
+    render,
+    updatedAt: nowIso(),
+    ...(renderHistory.length > 0 ? { renderHistory } : {}),
+  };
+
+  const updated = await updateAttributes(
+    keys.wardrobePk(wardrobeId),
+    keys.itemSk(itemId),
+    updates,
+  );
+
+  try {
+    await enqueueRenderItem({
+      userId,
+      wardrobeId,
+      itemId,
+      aiProfileId,
+      renderId,
+    });
+  } catch (error) {
+    try {
+      await updateAttributes(keys.wardrobePk(wardrobeId), keys.itemSk(itemId), {
+        render: previousRender ?? null,
+        updatedAt: nowIso(),
+      });
+    } catch (compensateError) {
+      logger.error('Failed to roll back item render after enqueue failure', {
+        itemId,
+        wardrobeId,
+        error:
+          compensateError instanceof Error
+            ? compensateError.message
+            : 'unknown',
+      });
+    }
+    throw error;
+  }
+
+  return toClothingItem(updated);
+}
+
+function storedRenderHistory(item: DynamoItem) {
+  return seedHistoryFromCurrentRender(
+    toRenderHistory(item.renderHistory),
+    toOutfitRender(item.render),
+    item.updatedAt,
   );
 }
 
@@ -608,13 +740,7 @@ async function toClothingItem(item: DynamoItem): Promise<ClothingItem> {
   }
 
   const render = toOutfitRender(item.render);
-  const signedHistory = await withSignedRenderHistory(
-    seedHistoryFromCurrentRender(
-      toRenderHistory(item.renderHistory),
-      render,
-      item.updatedAt,
-    ),
-  );
+  const signedHistory = await withSignedRenderHistory(storedRenderHistory(item));
   if (render) {
     dto.render = await withSignedRenderUrl(render);
   }
