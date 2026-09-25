@@ -19,7 +19,9 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 import {
   appendSuccessfulRender,
+  currentRenderAfterDelete,
   newestFirstHistory,
+  removeHistoryEntry,
   seedHistoryFromCurrentRender,
   toOutfitRender,
   toRenderHistory,
@@ -197,5 +199,64 @@ describe('outfit render history helpers (WARDROBE-85)', () => {
       },
     ]);
     expect(signed.renderImageUrls).toBeUndefined();
+  });
+
+  it('removes one history entry by imageKey', () => {
+    const remaining = removeHistoryEntry(
+      [
+        {
+          imageKey: OLD_KEY,
+          createdAt: '2026-09-10T08:00:00.000Z',
+          aiProfileId: 'profile_a',
+        },
+        {
+          imageKey: NEW_KEY,
+          createdAt: '2026-09-11T08:00:00.000Z',
+          aiProfileId: 'profile_b',
+        },
+      ],
+      NEW_KEY,
+    );
+
+    expect(remaining.map((entry) => entry.imageKey)).toEqual([OLD_KEY]);
+  });
+
+  it('rebuilds READY hero from the newest remaining entry', () => {
+    const next = currentRenderAfterDelete(
+      { status: 'READY', aiProfileId: 'profile_b', imageKey: NEW_KEY },
+      [
+        {
+          imageKey: OLD_KEY,
+          createdAt: '2026-09-10T08:00:00.000Z',
+          aiProfileId: 'profile_a',
+        },
+      ],
+      NEW_KEY,
+    );
+
+    expect(next).toEqual({
+      render: {
+        status: 'READY',
+        aiProfileId: 'profile_a',
+        imageKey: OLD_KEY,
+      },
+      removeRender: false,
+    });
+  });
+
+  it('clears READY hero when history is empty and leaves PENDING alone', () => {
+    expect(
+      currentRenderAfterDelete(
+        { status: 'READY', aiProfileId: 'profile_b', imageKey: NEW_KEY },
+        [],
+        NEW_KEY,
+      ),
+    ).toEqual({ removeRender: true });
+
+    const pending = { status: 'PENDING' as const, aiProfileId: 'profile_b' };
+    expect(currentRenderAfterDelete(pending, [], NEW_KEY)).toEqual({
+      render: pending,
+      removeRender: false,
+    });
   });
 });

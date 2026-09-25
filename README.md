@@ -513,6 +513,7 @@ GET    /wardrobes/{wardrobeId}/items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
+DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders
 POST   /wardrobes/{wardrobeId}/items/{itemId}/move
 POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 POST   /wardrobes/{wardrobeId}/items/{itemId}/share
@@ -663,7 +664,7 @@ users/{uid}/uploads/{id}.jpg          original (create / PATCH imageKey)
 users/{uid}/items/{itemId}/processed.png   background-removed cutout
 ```
 
-Keys are **user-scoped**, not wardrobe-scoped. Item `DELETE` does not remove S3 objects. `ItemsFn` may only `GetObject` (presign `originalImageUrl` / `processedImageUrl`) — it has no `CopyObject` / `PutObject`. Sharing keeps ownership under `users/{uid}/` and avoids a second object. Flutter should treat `image.*` keys as opaque. After a copy, deleting the source item does **not** break the copy's URLs (objects stay until account wipe).
+Keys are **user-scoped**, not wardrobe-scoped. Item `DELETE` does not remove S3 objects. `ItemsFn` may `GetObject` (presign `originalImageUrl` / `processedImageUrl`) and `DeleteObject` for `DELETE .../items/{itemId}/renders` (WARDROBE-149) — it has no `CopyObject` / `PutObject`. Sharing keeps ownership under `users/{uid}/` and avoids a second object. Flutter should treat `image.*` keys as opaque. After a copy, deleting the source item does **not** break the copy's URLs (objects stay until account wipe).
 
 **Status gate:** `PENDING` / `PROCESSING` cannot be moved or copied (`400 VALIDATION_ERROR`). The processing worker reloads by the SQS `wardrobeId` + `itemId`; moving an in-flight item would orphan that job. Poll create / list / get until `READY` or `FAILED`, then transfer.
 
@@ -1016,6 +1017,7 @@ PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
 POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/render
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders
 POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}
@@ -1206,8 +1208,9 @@ No `WORN_ON_NOT_FOUND`. Soft-omit unused optional fields; never send JSON `null`
 Identity comes from the Firebase authorizer (`getUserId`). Body / query / path `userId` is ignored. The outfit must belong to that user. The AI profile must be `READY` and readable: owner `PERSONAL`, or any authenticated user for shared `GENERIC_MODEL`.
 
 ```http
-POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render
-GET  /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+POST   /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+GET    /wardrobes/{wardrobeId}/outfits/{outfitId}/render
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders
 ```
 
 Request body (`aiProfileId` required). Optional `items` replaces the outfit item set for this render (same `{itemId, slot}` shape as create). Optional `itemIds` selects a subset of the outfit's existing items (must already be on the outfit; use `items` to change slots):
@@ -1267,7 +1270,7 @@ The clothing-item worker is unchanged (`PROCESS_WARDROBE_ITEM` only). Try-on use
 
 ### Outfit render history (WARDROBE-85) — Flutter WARDROBE-84 contract
 
-Successful try-ons are **append-only**. A later POST `/render` updates the current `render` status (`PENDING` → worker → `READY` / `FAILED`) but does **not** replace earlier READY images in S3 or Dynamo.
+Successful try-ons are **append-only** on generate. A later POST `/render` updates the current `render` status (`PENDING` → worker → `READY` / `FAILED`) but does **not** replace earlier READY images in S3 or Dynamo. The owner can remove one photo with `DELETE .../renders` (WARDROBE-149) — see below.
 
 **Shape:** existing `render` (current / latest try-on) **plus** a newest-first history array **plus** a newest-first URL list. Latest is clearly `render.imageUrl` when the current render is `READY` and that presign succeeds, and is also `renderImageUrls[0]` / `renderHistory[0]` when those fields are present.
 
@@ -1343,6 +1346,48 @@ Flutter WARDROBE-84 should:
 2. Bind the gallery to `renderImageUrls` (newest first; index `0` is latest when present).
 3. Use `renderHistory` when a timestamp or `aiProfileId` caption is needed. Skip entries with no `imageUrl`.
 4. Treat a missing `renderImageUrls` as an empty gallery, not an error.
+5. To remove one gallery photo, call `DELETE .../renders` with that entry’s `imageKey` (WARDROBE-149). Do not send `imageKey` in the URL — S3 keys contain slashes.
+
+### Delete a Virtual Try On photo (WARDROBE-149) — Flutter contract
+
+Remove **one** successful try-on photo from an **outfit or clothing item** the caller owns. Does **not** delete the outfit, item, wardrobe, or Virtual Profile / reference images. Not Premium-gated (generate still is). Identity is the Firebase UID only — body `userId` is ignored.
+
+Item **generate** is WARDROBE-150 (separate). Item delete still reads/writes the same `render` / `renderHistory` fields outfits use so generate can plug in.
+
+```http
+DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders
+DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders
+```
+
+Request body (`imageKey` required). Use the `imageKey` from that resource’s `renderHistory[]` (or `render.imageKey`). Keys contain slashes — they must stay in the JSON body, not the path.
+
+```json
+{ "imageKey": "users/{uid}/outfits/outfit_xyz123ab/renders/rend_new1abcd.png" }
+```
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `imageKey` | string | yes | S3 object key for that try-on. Outfit: `users/{uid}/outfits/{outfitId}/` (`…/render.png` or `…/renders/{renderId}.png`). Item: `users/{uid}/items/{itemId}/renders/{renderId}.png` (legacy `…/items/{itemId}/render.png` also accepted). Clothing-item `processed.png`, uploads, Virtual Profile photos, and other users’ keys are rejected. |
+
+Success: **`204` No Content**. After this, GET outfit / GET item / list omit that history entry. Outfit GET `/render` no longer returns that image.
+
+**Idempotent:** if the resource is owned and that `imageKey` is already gone from `renderHistory` / current `render`, the response is still `204`.
+
+**Hero fallback:** if the deleted key is the current `render.imageKey`, current `render` is rebuilt from the newest remaining successful history entry (`READY` + that `imageKey` + `aiProfileId`). If history is then empty, `render` image fields are cleared (outfit GET `/render` is `404 RENDER_NOT_FOUND` when no current render remains). An in-flight `PENDING` / `FAILED` current render is left alone unless its `imageKey` actually matches (PENDING usually has none).
+
+The S3 object is deleted best-effort (already-missing is fine). Dynamo is updated first so GET stops returning the photo even if S3 is briefly inconsistent.
+
+| Case | Response |
+| --- | --- |
+| Missing token | `401 UNAUTHENTICATED` |
+| Other-user / missing wardrobe | `404 WARDROBE_NOT_FOUND` |
+| Other-user / missing outfit | `404 OUTFIT_NOT_FOUND` |
+| Other-user / missing item | `404 ITEM_NOT_FOUND` |
+| Missing / blank / non-string `imageKey` | `400 VALIDATION_ERROR` |
+| `imageKey` not under that resource’s render prefix | `400 VALIDATION_ERROR` |
+| Already deleted (owned outfit or item) | `204` |
+
+Do not use `DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}` or `DELETE .../items/{itemId}` for this — those delete the whole outfit or item.
 
 **Secret** `wardrobe/{stage}/gemini-try-on` (stack output `GeminiTryOnSecretName`):
 
@@ -1362,7 +1407,7 @@ aws secretsmanager put-secret-value \
   --secret-string '{"apiKey":"your-gemini-api-key","model":"gemini-3.1-flash-image"}'
 ```
 
-CDK creates the secret as a placeholder. IAM: `OutfitRenderFn` may `secretsmanager:GetSecretValue` on this secret only. `OutfitsFn` may `sqs:SendMessage` on the try-on queue. The worker may consume the queue, `GetItem` / `Query` / `UpdateItem` on the table, and S3 read + put (no delete). No extra IAM console steps if you deploy via CDK.
+CDK creates the secret as a placeholder. IAM: `OutfitRenderFn` may `secretsmanager:GetSecretValue` on this secret only. `OutfitsFn` may `sqs:SendMessage` on the try-on queue and `s3:DeleteObject` for `DELETE .../renders` (WARDROBE-149). The worker may consume the queue, `GetItem` / `Query` / `UpdateItem` on the table, and S3 read + put (no delete). No extra IAM console steps if you deploy via CDK.
 3. Upload GENERIC_MODEL full-body photos if you have not already (WARDROBE-45 / WARDROBE-72 keys under `shared/ai-profiles/generic/{slug}/front.png`). A missing model photo marks the render `FAILED` with `Image not found: shared/ai-profiles/generic/...`.
 4. Confirm: `POST .../outfits/{outfitId}/render` with `{ "aiProfileId": "profile_generic_01" }`, then wait for `GET /me/events` (`jobType: RENDER_OUTFIT`) or poll `GET .../render` until `READY` or `FAILED`.
 5. If messages land on `wardrobe-outfit-render-dlq-{stage}`, check CloudWatch alarm `wardrobe-outfit-render-dlq-{stage}` and the worker logs. After filling the secret, redrive or have Flutter retry POST.

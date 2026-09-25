@@ -19,6 +19,10 @@ jest.mock('@aws-sdk/client-s3', () => ({
     _op: 'DeleteObjects',
     input,
   })),
+  DeleteObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'DeleteObject',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
@@ -32,11 +36,15 @@ import {
   bucketName,
   createPresignedGetUrl,
   createPresignedPutUrl,
+  deleteObjectBestEffort,
   deleteObjectsUnderUserPrefix,
   extensionForContentType,
   getObjectBytes,
+  itemRenderObjectKey,
+  itemRenderPrefix,
   MAX_UPLOAD_BYTES,
   outfitRenderObjectKey,
+  outfitRenderPrefix,
   PRESIGNED_URL_EXPIRES_IN,
   processedImageObjectKey,
   putObjectBytes,
@@ -183,6 +191,67 @@ describe('s3 helpers (WARDROBE-8)', () => {
       expect(processedImageObjectKey('uid-1', 'item_abc')).toBe(
         'users/uid-1/items/item_abc/processed.png',
       );
+    });
+  });
+
+  describe('itemRenderObjectKey', () => {
+    it('uses users/{userId}/items/{itemId}/render.png', () => {
+      expect(itemRenderObjectKey('uid-1', 'item_abc')).toBe(
+        'users/uid-1/items/item_abc/render.png',
+      );
+    });
+
+    it('uses a unique renders/{renderId}.png key when a renderId is given', () => {
+      expect(itemRenderObjectKey('uid-1', 'item_abc', 'rend_new1abcd')).toBe(
+        'users/uid-1/items/item_abc/renders/rend_new1abcd.png',
+      );
+    });
+
+    it('does not collide with processed.png', () => {
+      expect(itemRenderObjectKey('uid-1', 'item_abc', 'rend_new1abcd')).not.toBe(
+        processedImageObjectKey('uid-1', 'item_abc'),
+      );
+    });
+  });
+
+  describe('itemRenderPrefix', () => {
+    it('builds users/{uid}/items/{itemId}/renders/', () => {
+      expect(itemRenderPrefix('uid-1', 'item_abc')).toBe(
+        'users/uid-1/items/item_abc/renders/',
+      );
+    });
+  });
+
+  describe('outfitRenderPrefix', () => {
+    it('builds users/{uid}/outfits/{outfitId}/', () => {
+      expect(outfitRenderPrefix('uid-1', 'outfit_abc')).toBe(
+        'users/uid-1/outfits/outfit_abc/',
+      );
+    });
+
+    it('rejects path-like ids', () => {
+      expect(() => outfitRenderPrefix('uid-1', '../secret')).toThrow(AppError);
+    });
+  });
+
+  describe('deleteObjectBestEffort', () => {
+    it('deletes a single object and does not throw when S3 fails', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await deleteObjectBestEffort('users/uid-1/outfits/outfit_abc/render.png');
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'DeleteObject',
+          input: {
+            Bucket: 'wardrobe-media-test',
+            Key: 'users/uid-1/outfits/outfit_abc/render.png',
+          },
+        }),
+      );
+
+      mockSend.mockRejectedValueOnce(new Error('S3 unavailable'));
+      await expect(
+        deleteObjectBestEffort('users/uid-1/outfits/outfit_abc/render.png'),
+      ).resolves.toBeUndefined();
     });
   });
 

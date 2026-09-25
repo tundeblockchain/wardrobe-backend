@@ -493,7 +493,9 @@ export class WardrobeStack extends cdk.Stack {
     backgroundRemovalSecret.grantRead(processingFn);
     // Presigned GET for ClothingItem.originalImageUrl / processedImageUrl
     // (WARDROBE-54). Same helper and TTL as outfit render.imageUrl.
+    // DeleteObject for DELETE .../items/{itemId}/renders (WARDROBE-149).
     mediaBucket.grantRead(itemsFn);
+    mediaBucket.grantDelete(itemsFn);
     processingQueue.grantSendMessages(itemsFn);
     processingQueue.grantConsumeMessages(processingFn);
     // Try-on: outfits enqueue RENDER_OUTFIT; worker consumes + reads Gemini secret.
@@ -514,7 +516,9 @@ export class WardrobeStack extends cdk.Stack {
     mediaBucket.grantRead(outfitRenderFn);
     mediaBucket.grantPut(outfitRenderFn);
     // Presigned GET for render.imageUrl on GET outfit / GET render.
+    // DeleteObject for DELETE .../renders (WARDROBE-149) — one try-on photo.
     mediaBucket.grantRead(outfitsFn);
+    mediaBucket.grantDelete(outfitsFn);
     // Public share preview imageUrl (WARDROBE-126). Same short-lived GetObject
     // helper as item / render URLs. Bucket stays private — no public ACL.
     mediaBucket.grantRead(sharesFn);
@@ -795,6 +799,13 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/items/{itemId}/renders',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: itemsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/items/{itemId}/move',
       methods: [apigwv2.HttpMethod.POST],
       integration: itemsIntegration,
@@ -836,6 +847,13 @@ export class WardrobeStack extends cdk.Stack {
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/outfits/{outfitId}/render',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: outfitsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wardrobes/{wardrobeId}/outfits/{outfitId}/renders',
+      methods: [apigwv2.HttpMethod.DELETE],
       integration: outfitsIntegration,
       authorizer: firebaseAuthorizer,
     });

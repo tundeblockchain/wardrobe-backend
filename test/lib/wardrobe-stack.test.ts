@@ -520,7 +520,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       );
 
     expect(s3.some((action) => action.startsWith('s3:Get'))).toBe(true);
-    expect(s3).not.toContain('s3:DeleteObject');
+    expect(
+      s3.some(
+        (action) => action === 's3:DeleteObject' || action === 's3:DeleteObject*',
+      ),
+    ).toBe(true);
     expect(s3).not.toContain('s3:PutObject');
     expect(s3).not.toContain('s3:CopyObject');
     expect(s3).not.toContain('s3:*');
@@ -1226,6 +1230,69 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
   });
 
+  test('item delete-render route is owner-auth on ItemsFn (WARDROBE-149)', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+
+    const route = routes.find(
+      (candidate) =>
+        candidate.Properties.RouteKey ===
+        'DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders',
+    );
+    expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+  });
+
+  test('delete-render route is owner-auth on OutfitsFn (WARDROBE-149)', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{
+      Properties: { RouteKey: string; AuthorizationType?: string };
+    }>;
+
+    const route = routes.find(
+      (candidate) =>
+        candidate.Properties.RouteKey ===
+        'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders',
+    );
+    expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+  });
+
+  test('OutfitsFn can delete Virtual Try On render objects (WARDROBE-149)', () => {
+    type PolicyResource = {
+      Properties: {
+        PolicyDocument: {
+          Statement: Array<{
+            Action?: string | string[];
+          }>;
+        };
+      };
+    };
+
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    const s3 = policies
+      .filter((policy) => JSON.stringify(policy).includes('OutfitsFn'))
+      .flatMap((policy) =>
+        policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+          const actions = statement.Action;
+          const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+          return list.filter((action) => action.startsWith('s3:'));
+        }),
+      );
+
+    expect(s3.some((action) => action.startsWith('s3:Get'))).toBe(true);
+    expect(
+      s3.some(
+        (action) => action === 's3:DeleteObject' || action === 's3:DeleteObject*',
+      ),
+    ).toBe(true);
+    expect(s3).not.toContain('s3:*');
+  });
+
   test('worn-on routes are owner-auth on OutfitsFn (WARDROBE-120)', () => {
     const routes = Object.values(
       template.findResources('AWS::ApiGatewayV2::Route'),
@@ -1279,6 +1346,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'PATCH /wardrobes/{wardrobeId}/items/{itemId}',
       'DELETE /wardrobes/{wardrobeId}/items/{itemId}',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess',
+      'DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/move',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/copy',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/share',
@@ -1289,6 +1357,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}',
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
       'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/render',
+      'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders',
       'GET /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
       'POST /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on',
       'DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/worn-on/{date}',
