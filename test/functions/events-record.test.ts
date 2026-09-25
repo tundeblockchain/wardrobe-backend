@@ -98,6 +98,44 @@ describe('recordJobDone (WARDROBE-114)', () => {
     })).toBe('evt_render_rend_1_FAILED');
   });
 
+  it('writes a RENDER_ITEM event keyed by renderId', async () => {
+    mockDynamoSend.mockResolvedValue({});
+
+    const created = await recordJobDone({
+      userId: 'uid-1',
+      jobType: 'RENDER_ITEM',
+      status: 'READY',
+      wardrobeId: 'wd_1',
+      itemId: 'item_1',
+      renderId: 'rend_item1',
+      aiProfileId: 'profile_1',
+    });
+
+    expect(created).toBe(true);
+    const put = mockDynamoSend.mock.calls[0][0] as {
+      input: { Item: DynamoItem };
+    };
+    expect(put.input.Item).toMatchObject({
+      eventId: 'evt_render_rend_item1_READY',
+      jobType: 'RENDER_ITEM',
+      itemId: 'item_1',
+      renderId: 'rend_item1',
+    });
+  });
+
+  it('skips RENDER_ITEM when itemId is missing', async () => {
+    const created = await recordJobDone({
+      userId: 'uid-1',
+      jobType: 'RENDER_ITEM',
+      status: 'READY',
+      wardrobeId: 'wd_1',
+      renderId: 'rend_item1',
+    });
+
+    expect(created).toBe(false);
+    expect(mockDynamoSend).not.toHaveBeenCalled();
+  });
+
   it('swallows Dynamo write failures so workers do not 5xx', async () => {
     mockDynamoSend.mockRejectedValue(new Error('Throughput exceeds the current capacity'));
 

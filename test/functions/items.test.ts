@@ -342,12 +342,15 @@ function mockReprocessReads(
 
 const PROCESSING_QUEUE_URL =
   'https://sqs.eu-west-1.amazonaws.com/123456789012/wardrobe-item-processing-test';
+const TRY_ON_QUEUE_URL =
+  'https://sqs.eu-west-1.amazonaws.com/123456789012/wardrobe-outfit-render-test';
 
 describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
     process.env.PROCESSING_QUEUE_URL = PROCESSING_QUEUE_URL;
+    process.env.TRY_ON_QUEUE_URL = TRY_ON_QUEUE_URL;
     process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
     mockSqsSend.mockResolvedValue({ MessageId: 'msg-1' });
     mockGetSignedUrl.mockImplementation(
@@ -363,6 +366,7 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
   afterEach(() => {
     delete process.env.TABLE_NAME;
     delete process.env.PROCESSING_QUEUE_URL;
+    delete process.env.TRY_ON_QUEUE_URL;
     delete process.env.MEDIA_BUCKET_NAME;
   });
 
@@ -2279,6 +2283,483 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
           message: 'At least one field is required.',
         },
       });
+    });
+  });
+
+  describe('POST /wardrobes/{wardrobeId}/items/{itemId}/render (WARDROBE-150)', () => {
+    const PROFILE_ID = 'profile_generic_01';
+    const PERSONAL_PROFILE_ID = 'profile_personal01';
+
+    function dynamoGenericProfile(): DynamoItem {
+      return {
+        PK: 'AIPROFILE#GENERIC_MODEL',
+        SK: `AIPROFILE#${PROFILE_ID}`,
+        entityType: 'AIPROFILE',
+        userId: 'SYSTEM',
+        aiProfileId: PROFILE_ID,
+        type: 'GENERIC_MODEL',
+        referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
+        status: 'READY',
+        createdAt: '2026-09-06T00:00:00.000Z',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+      };
+    }
+
+    function dynamoPersonalProfile(
+      userId = OWNER_ID,
+      overrides: Partial<DynamoItem> = {},
+    ): DynamoItem {
+      return {
+        PK: `USER#${userId}`,
+        SK: `AIPROFILE#${PERSONAL_PROFILE_ID}`,
+        entityType: 'AIPROFILE',
+        userId,
+        aiProfileId: PERSONAL_PROFILE_ID,
+        type: 'PERSONAL',
+        referenceImages: [
+          `users/${userId}/ai-profiles/${PERSONAL_PROFILE_ID}/front.jpg`,
+        ],
+        status: 'READY',
+        createdAt: '2026-09-06T08:00:00.000Z',
+        updatedAt: '2026-09-06T08:00:00.000Z',
+        ...overrides,
+      };
+    }
+
+    function mockRenderLookups(options?: {
+      item?: DynamoItem;
+      profile?: DynamoItem | undefined;
+      personal?: DynamoItem | undefined;
+      tier?: 'FREE' | 'BASIC' | 'PREMIUM';
+    }) {
+      const tier = options?.tier ?? 'PREMIUM';
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return tier === 'FREE' ? {} : { Item: dynamoEntitlement(OWNER_ID, tier) };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: options?.item ?? dynamoItem() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('AIPROFILE#')) {
+          if (command.input.Key.PK === `USER#${OWNER_ID}`) {
+            return { Item: options?.personal };
+          }
+          if (command.input.Key.PK === 'AIPROFILE#GENERIC_MODEL') {
+            if (command.input.Key.SK !== `AIPROFILE#${PROFILE_ID}`) {
+              return {};
+            }
+            return { Item: options?.profile ?? dynamoGenericProfile() };
+          }
+          return {};
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoItem(OWNER_ID, {
+              render: {
+                status: 'PENDING',
+                aiProfileId:
+                  (command.input.ExpressionAttributeValues?.[':render'] as {
+                    aiProfileId?: string;
+                  })?.aiProfileId ?? PROFILE_ID,
+              },
+              renderHistory:
+                command.input.ExpressionAttributeValues?.[':renderHistory'],
+              updatedAt: '2026-09-25T19:00:00.000Z',
+            }),
+          };
+        }
+        return {};
+      });
+    }
+
+    it('rejects try-on on Basic with ENTITLEMENT_AI_REQUIRED', async () => {
+      mockRenderLookups({ tier: 'BASIC' });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual Try On and other AI features require Premium.',
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects try-on on Free with ENTITLEMENT_AI_REQUIRED', async () => {
+      mockRenderLookups({ tier: 'FREE' });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('sets PENDING, enqueues RENDER_ITEM, and returns 202 with the item', async () => {
+      mockRenderLookups();
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: { aiProfileId: PROFILE_ID, userId: OTHER_ID },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(202);
+      const body = bodyOf(result) as ClothingItem;
+      expect(body.render).toEqual({
+        status: 'PENDING',
+        aiProfileId: PROFILE_ID,
+      });
+      expect(body.render).not.toHaveProperty('renderId');
+      const sent = JSON.parse(
+        (SendMessageCommand as unknown as jest.Mock).mock.calls[0][0]
+          .MessageBody as string,
+      );
+      expect(sent).toEqual({
+        jobType: 'RENDER_ITEM',
+        userId: OWNER_ID,
+        wardrobeId: WARDROBE_ID,
+        itemId: ITEM_ID,
+        aiProfileId: PROFILE_ID,
+        renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
+      });
+      expect(
+        (SendMessageCommand as unknown as jest.Mock).mock.calls[0][0].QueueUrl,
+      ).toBe(TRY_ON_QUEUE_URL);
+    });
+
+    it('rejects a profile that is not READY', async () => {
+      mockRenderLookups({
+        personal: dynamoPersonalProfile(OWNER_ID, { status: 'PENDING' }),
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: { aiProfileId: PERSONAL_PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual Profile must be READY before requesting a try-on (current status: PENDING).',
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects a profile with no reference images', async () => {
+      mockRenderLookups({
+        personal: dynamoPersonalProfile(OWNER_ID, { referenceImages: [] }),
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: { aiProfileId: PERSONAL_PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        'Virtual Profile has no reference images.',
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects an item with no image', async () => {
+      mockRenderLookups({
+        item: dynamoItem(OWNER_ID, { originalKey: undefined, processedKey: undefined }),
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
+        `Clothing item ${ITEM_ID} has no image to render.`,
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when aiProfileId is missing', async () => {
+      mockRenderLookups();
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: {},
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('persists previous READY into renderHistory when a new try-on is posted', async () => {
+      const oldKey = `users/${OWNER_ID}/items/${ITEM_ID}/renders/rend_old1abcd.png`;
+      mockRenderLookups({
+        item: dynamoItem(OWNER_ID, {
+          render: {
+            status: 'READY',
+            aiProfileId: PROFILE_ID,
+            imageKey: oldKey,
+          },
+        }),
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            itemId: ITEM_ID,
+            suffix: 'render',
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      const update = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Update',
+      )?.[0] as Command;
+
+      expect(result.statusCode).toBe(202);
+      expect(update.input.ExpressionAttributeValues?.[':renderHistory']).toEqual([
+        {
+          imageKey: oldKey,
+          createdAt: '2026-09-03T18:45:00.000Z',
+          aiProfileId: PROFILE_ID,
+        },
+      ]);
+    });
+  });
+
+  describe('GET /wardrobes/{wardrobeId}/items/{itemId}/render (WARDROBE-150)', () => {
+    const PROFILE_ID = 'profile_generic_01';
+    const RENDER_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/renders/rend_new1abcd.png`;
+
+    it('returns the render record with a presigned imageUrl when READY', async () => {
+      mockGetSignedUrl.mockImplementation(
+        async (_client: unknown, command: { input?: { Key?: string } }) =>
+          `https://signed.example/${command.input?.Key ?? 'missing'}`,
+      );
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return {
+            Item: dynamoItem(OWNER_ID, {
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: RENDER_KEY,
+              },
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID, suffix: 'render' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        status: 'READY',
+        aiProfileId: PROFILE_ID,
+        imageKey: RENDER_KEY,
+        imageUrl: `https://signed.example/${RENDER_KEY}`,
+      });
+    });
+
+    it('does not require Premium on GET', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          throw new Error('GET render must not load entitlements');
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return {
+            Item: dynamoItem(OWNER_ID, {
+              render: { status: 'PENDING', aiProfileId: PROFILE_ID },
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID, suffix: 'render' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        status: 'PENDING',
+        aiProfileId: PROFILE_ID,
+      });
+    });
+
+    it('returns 404 RENDER_NOT_FOUND when no render was requested', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID, suffix: 'render' })),
+      );
+
+      expectEnvelope(result, 404, 'RENDER_NOT_FOUND');
+    });
+  });
+
+  describe('item render history on GET item / list (WARDROBE-150)', () => {
+    const PROFILE_ID = 'profile_generic_01';
+    const OLD_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/renders/rend_old1abcd.png`;
+    const NEW_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/renders/rend_new1abcd.png`;
+
+    function historyItem(): DynamoItem {
+      return dynamoItem(OWNER_ID, {
+        render: {
+          status: 'READY',
+          aiProfileId: PROFILE_ID,
+          imageKey: NEW_KEY,
+        },
+        renderHistory: [
+          {
+            imageKey: OLD_KEY,
+            createdAt: '2026-09-10T08:00:00.000Z',
+            aiProfileId: PROFILE_ID,
+          },
+          {
+            imageKey: NEW_KEY,
+            createdAt: '2026-09-11T08:00:00.000Z',
+            aiProfileId: PROFILE_ID,
+          },
+        ],
+      });
+    }
+
+    function signedUrl(key: string): string {
+      return `https://signed.example/${key}`;
+    }
+
+    beforeEach(() => {
+      mockGetSignedUrl.mockImplementation(
+        async (_client: unknown, command: { input?: { Key?: string } }) =>
+          signedUrl(command.input?.Key ?? 'missing'),
+      );
+    });
+
+    it('returns newest-first URLs on GET item, with latest on render.imageUrl', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: historyItem() };
+        }
+        return {};
+      });
+
+      const result = asResult(await handler(event({ method: 'GET', itemId: ITEM_ID })));
+      const body = bodyOf(result) as ClothingItem;
+
+      expect(result.statusCode).toBe(200);
+      expect(body.render).toEqual({
+        status: 'READY',
+        aiProfileId: PROFILE_ID,
+        imageKey: NEW_KEY,
+        imageUrl: signedUrl(NEW_KEY),
+      });
+      expect(body.renderImageUrls).toEqual([signedUrl(NEW_KEY), signedUrl(OLD_KEY)]);
+      expect(body.renderHistory?.[0]).toMatchObject({
+        imageKey: NEW_KEY,
+        imageUrl: signedUrl(NEW_KEY),
+      });
+      expect(body.renderHistory?.[1]).toMatchObject({
+        imageKey: OLD_KEY,
+        imageUrl: signedUrl(OLD_KEY),
+      });
+    });
+
+    it('returns the same ordered URLs on list items', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return { Items: [historyItem()] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+      const body = bodyOf(result) as { items: ClothingItem[] };
+
+      expect(result.statusCode).toBe(200);
+      expect(body.items).toHaveLength(1);
+      expect(body.items[0].renderImageUrls).toEqual([
+        signedUrl(NEW_KEY),
+        signedUrl(OLD_KEY),
+      ]);
+      expect(body.items[0].render?.imageUrl).toBe(signedUrl(NEW_KEY));
+    });
+
+    it('soft-omits renderHistory and renderImageUrls when empty', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        return {};
+      });
+
+      const result = asResult(await handler(event({ method: 'GET', itemId: ITEM_ID })));
+      const body = bodyOf(result) as ClothingItem;
+
+      expect(result.statusCode).toBe(200);
+      expect(body).not.toHaveProperty('render');
+      expect(body).not.toHaveProperty('renderHistory');
+      expect(body).not.toHaveProperty('renderImageUrls');
     });
   });
 

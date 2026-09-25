@@ -30,6 +30,10 @@ export async function recordJobDone(input: JobDoneInput): Promise<boolean> {
     logger.warn('Skipping try-on job-done event: missing outfitId');
     return false;
   }
+  if (input.jobType === 'RENDER_ITEM' && !input.itemId) {
+    logger.warn('Skipping item try-on job-done event: missing itemId');
+    return false;
+  }
 
   let created = false;
   try {

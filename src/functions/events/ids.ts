@@ -31,9 +31,12 @@ export function jobEventId(input: {
   if (renderId) {
     return renderJobEventId(renderId, input.status);
   }
-  const outfitId = String(input.outfitId ?? '').trim() || 'unknown';
+  const subjectId =
+    String(input.outfitId ?? '').trim() ||
+    String(input.itemId ?? '').trim() ||
+    'unknown';
   const profileId = String(input.aiProfileId ?? '').trim() || 'unknown';
-  return renderJobEventId(`${outfitId}_${profileId}`, input.status);
+  return renderJobEventId(`${subjectId}_${profileId}`, input.status);
 }
 
 /** Stable device id when Flutter omits `deviceId` — same token maps to one row. */

@@ -72,6 +72,11 @@ export function jobDoneNotificationCopy(input: JobDoneInput): {
       ? { title: 'Item ready', body: 'Your clothing item has finished processing.' }
       : { title: 'Item processing failed', body: 'We could not finish processing this item.' };
   }
+  if (input.jobType === 'RENDER_ITEM') {
+    return input.status === 'READY'
+      ? { title: 'Try-on ready', body: 'Your Virtual Try On is ready to view.' }
+      : { title: 'Try-on failed', body: 'We could not finish this try-on.' };
+  }
   return input.status === 'READY'
     ? { title: 'Try-on ready', body: 'Your outfit try-on is ready to view.' }
     : { title: 'Try-on failed', body: 'We could not finish this try-on.' };

@@ -1,5 +1,9 @@
 import { AppError } from '../../src/shared/errors';
-import { PROCESS_WARDROBE_ITEM_JOB, RENDER_OUTFIT_JOB } from '../../src/shared/types';
+import {
+  PROCESS_WARDROBE_ITEM_JOB,
+  RENDER_ITEM_JOB,
+  RENDER_OUTFIT_JOB,
+} from '../../src/shared/types';
 
 const mockSqsSend = jest.fn();
 
@@ -14,8 +18,10 @@ jest.mock('@aws-sdk/client-sqs', () => ({
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import {
   enqueueProcessWardrobeItem,
+  enqueueRenderItem,
   enqueueRenderOutfit,
   parseProcessWardrobeItemJob,
+  parseRenderItemJob,
   parseRenderOutfitJob,
   processingQueueUrl,
   tryOnQueueUrl,
@@ -220,6 +226,78 @@ describe('sqs helpers (WARDROBE-16)', () => {
       ).rejects.toMatchObject({
         code: 'INTERNAL_ERROR',
         message: 'Failed to enqueue outfit render job.',
+      });
+    });
+  });
+
+  describe('parseRenderItemJob', () => {
+    const valid = {
+      jobType: RENDER_ITEM_JOB,
+      userId: 'firebase-uid-123',
+      wardrobeId: 'wd_abc123xyz0',
+      itemId: 'item_xyz123abcd',
+      aiProfileId: 'profile_generic_01',
+    };
+
+    it('parses the RENDER_ITEM payload', () => {
+      expect(parseRenderItemJob(JSON.stringify(valid))).toEqual(valid);
+    });
+
+    it('keeps an optional renderId for append-only try-on history', () => {
+      expect(
+        parseRenderItemJob(
+          JSON.stringify({ ...valid, renderId: 'rend_abc123xyz0' }),
+        ),
+      ).toEqual({ ...valid, renderId: 'rend_abc123xyz0' });
+    });
+
+    it('returns undefined for invalid JSON, wrong job type, or missing fields', () => {
+      expect(parseRenderItemJob('not-json')).toBeUndefined();
+      expect(
+        parseRenderItemJob(JSON.stringify({ ...valid, jobType: 'RENDER_OUTFIT' })),
+      ).toBeUndefined();
+      expect(
+        parseRenderItemJob(JSON.stringify({ ...valid, itemId: '   ' })),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('enqueueRenderItem', () => {
+    it('sends RENDER_ITEM with the architecture payload', async () => {
+      await enqueueRenderItem({
+        userId: 'firebase-uid-123',
+        wardrobeId: 'wd_abc123xyz0',
+        itemId: 'item_xyz123abcd',
+        aiProfileId: 'profile_generic_01',
+        renderId: 'rend_abc123xyz0',
+      });
+
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: TRY_ON_QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: RENDER_ITEM_JOB,
+          userId: 'firebase-uid-123',
+          wardrobeId: 'wd_abc123xyz0',
+          itemId: 'item_xyz123abcd',
+          aiProfileId: 'profile_generic_01',
+          renderId: 'rend_abc123xyz0',
+        }),
+      });
+    });
+
+    it('wraps SQS failures as INTERNAL_ERROR', async () => {
+      mockSqsSend.mockRejectedValue(new Error('sqs unavailable'));
+
+      await expect(
+        enqueueRenderItem({
+          userId: 'firebase-uid-123',
+          wardrobeId: 'wd_abc123xyz0',
+          itemId: 'item_xyz123abcd',
+          aiProfileId: 'profile_generic_01',
+        }),
+      ).rejects.toMatchObject({
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to enqueue item render job.',
       });
     });
   });

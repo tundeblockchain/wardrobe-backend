@@ -4,7 +4,9 @@ import { logger } from './logger';
 import {
   PROCESS_WARDROBE_ITEM_JOB,
   ProcessWardrobeItemJob,
+  RENDER_ITEM_JOB,
   RENDER_OUTFIT_JOB,
+  RenderItemJob,
   RenderOutfitJob,
 } from './types';
 
@@ -184,5 +186,83 @@ export async function enqueueRenderOutfit(job: {
       aiProfileId: job.aiProfileId,
     });
     throw Errors.internal('Failed to enqueue outfit render job.');
+  }
+}
+
+/**
+ * Parse an SQS body as RENDER_ITEM. Returns undefined for poison
+ * payloads (invalid JSON, wrong job type, missing fields).
+ */
+export function parseRenderItemJob(body: string): RenderItemJob | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const raw = parsed as Record<string, unknown>;
+  if (raw.jobType !== RENDER_ITEM_JOB) {
+    return undefined;
+  }
+
+  const userId = requiredJobField(raw.userId);
+  const wardrobeId = requiredJobField(raw.wardrobeId);
+  const itemId = requiredJobField(raw.itemId);
+  const aiProfileId = requiredJobField(raw.aiProfileId);
+  const renderId = requiredJobField(raw.renderId);
+
+  if (!userId || !wardrobeId || !itemId || !aiProfileId) {
+    return undefined;
+  }
+
+  return {
+    jobType: RENDER_ITEM_JOB,
+    userId,
+    wardrobeId,
+    itemId,
+    aiProfileId,
+    ...(renderId ? { renderId } : {}),
+  };
+}
+
+export async function enqueueRenderItem(job: {
+  userId: string;
+  wardrobeId: string;
+  itemId: string;
+  aiProfileId: string;
+  renderId?: string;
+}): Promise<void> {
+  const message: RenderItemJob = {
+    jobType: RENDER_ITEM_JOB,
+    userId: job.userId,
+    wardrobeId: job.wardrobeId,
+    itemId: job.itemId,
+    aiProfileId: job.aiProfileId,
+    ...(job.renderId ? { renderId: job.renderId } : {}),
+  };
+
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: tryOnQueueUrl(),
+        MessageBody: JSON.stringify(message),
+      }),
+    );
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    logger.error('Failed to enqueue item render job', {
+      itemId: job.itemId,
+      wardrobeId: job.wardrobeId,
+      aiProfileId: job.aiProfileId,
+    });
+    throw Errors.internal('Failed to enqueue item render job.');
   }
 }

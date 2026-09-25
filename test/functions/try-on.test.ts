@@ -5,6 +5,7 @@ import {
   geminiGenerateContentUrl,
   loadTryOnConfig,
   parseTryOnSecret,
+  runItemTryOn,
   runOutfitTryOn,
 } from '../../src/functions/processing/try-on';
 
@@ -180,7 +181,47 @@ describe('runOutfitTryOn', () => {
     expect(puts).toEqual([uniqueKey]);
     expect(imageKey).not.toBe(RENDER_KEY);
   });
+});
 
+describe('runItemTryOn', () => {
+  const ITEM_ID = 'item_top123abcd';
+
+  it('writes users/{uid}/items/{itemId}/renders/{renderId}.png', async () => {
+    const puts: string[] = [];
+    const renderId = 'rend_item01abcd';
+    const uniqueKey = `users/${USER_ID}/items/${ITEM_ID}/renders/${renderId}.png`;
+
+    const imageKey = await runItemTryOn(
+      {
+        userId: USER_ID,
+        itemId: ITEM_ID,
+        profileImageKeys: [PROFILE_KEY],
+        garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY }],
+        renderId,
+      },
+      {
+        store: {
+          async getObject() {
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject(objectKey) {
+            puts.push(objectKey);
+          },
+        },
+        client: {
+          async render() {
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(imageKey).toBe(uniqueKey);
+    expect(puts).toEqual([uniqueKey]);
+  });
+});
+
+describe('runOutfitTryOn (Gemini output)', () => {
   it('accepts a JPEG from Gemini 3.1 flash-image and stores it as image/jpeg', async () => {
     const puts: Array<{ key: string; type: string }> = [];
 

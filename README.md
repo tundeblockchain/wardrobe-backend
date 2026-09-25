@@ -33,7 +33,7 @@ Working in this first cut:
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
 - AI Profile CRUD plus PERSONAL reference-image presign/attach, seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73)
-- Outfit try-on worker (Gemini `generateContent` image; writes a unique `users/{uid}/outfits/{outfitId}/renders/{renderId}.png` and appends it to outfit history)
+- Outfit and item try-on worker (Gemini `generateContent` image; writes unique `renders/{renderId}.png` keys and appends them to outfit / item history)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 - Job-done inbox (`GET /me/events` + ack) so Flutter can stop blind-polling when item processing or try-on finishes (WARDROBE-114 / Flutter WARDROBE-115). Optional FCM push when `wardrobe/{stage}/firebase-fcm` is a real service-account JSON.
 
@@ -377,7 +377,7 @@ Authorization: Bearer <firebase-id-token>
 | `tier` | `FREE` \| `BASIC` \| `PREMIUM` | Missing row, unknown product, or past `expiresAt` → `FREE` |
 | `status` | `NONE` \| `ACTIVE` \| `CANCELED` \| `BILLING_ISSUE` \| `PAUSED` \| `EXPIRED` | `CANCELED` still has access until `expiresAt` |
 | `features.unlimitedCatalog` | boolean | `true` on Basic and Premium |
-| `features.aiTryOn` | boolean | Premium only — POST outfit `/render` |
+| `features.aiTryOn` | boolean | Premium only — POST outfit or item `/render` |
 | `features.otherAi` | boolean | Premium only — recommendations + item-processing enqueue / retry (classify / colour / bg-removal) |
 | `limits` | object or `null` | Free caps. `null` = unlimited |
 | `usage` | object | Current owned counts (all wardrobes) |
@@ -513,6 +513,8 @@ GET    /wardrobes/{wardrobeId}/items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
+POST   /wardrobes/{wardrobeId}/items/{itemId}/render
+GET    /wardrobes/{wardrobeId}/items/{itemId}/render
 DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders
 POST   /wardrobes/{wardrobeId}/items/{itemId}/move
 POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
@@ -591,6 +593,7 @@ The media bucket stays private. Create / list / get / PATCH return short-lived *
 | `image.processedKey` | After background removal writes `processed.png` (typically `READY`). Omitted when `BACKGROUND_REMOVAL_ENABLED` is off (WARDROBE-62 default) — Flutter still has `originalKey` / `originalImageUrl` |
 | `processedImageUrl` | Whenever `processedKey` exists — same 900s presigned GET. Both URLs are returned when both keys exist so Flutter can prefer processed |
 | `processingError` | `FAILED` only — short worker reason (`originalImageKey` mismatch, permanent Gemini / image error, or exhausted retries). Omitted on PENDING / PROCESSING / READY |
+| `render` / `renderHistory` / `renderImageUrls` | After a Virtual Try On is requested (WARDROBE-150). Same fields and soft-omit rules as outfit try-on. See **Item Virtual Try On / render**. |
 
 URLs are never written to Dynamo. A presign failure is logged and the URL is omitted; the rest of the item still returns `200` / `201`. Same TTL as `POST /uploads` (`expiresIn: 900`) and outfit `render.imageUrl`.
 
@@ -841,6 +844,7 @@ This is **not** a new AI feature. Only the existing SQS jobs emit events:
 | --- | --- | --- | --- |
 | `PROCESS_WARDROBE_ITEM` | `ProcessingFn` | `wardrobeId`, `itemId` | `READY` / `FAILED` |
 | `RENDER_OUTFIT` | `OutfitRenderFn` | `wardrobeId`, `outfitId`, `renderId?`, `aiProfileId` | `READY` / `FAILED` |
+| `RENDER_ITEM` | `OutfitRenderFn` | `wardrobeId`, `itemId`, `renderId?`, `aiProfileId` | `READY` / `FAILED` |
 
 `PROCESS_AI_PROFILE` is not enqueued today and does **not** emit events. Free / Basic item create writes `READY` in-request (no SQS) and does **not** write an inbox event.
 
@@ -895,13 +899,13 @@ Query:
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `eventId` | string | Yes | Deterministic. Item: `evt_item_{itemId}_{READY\|FAILED}`. Try-on: `evt_render_{renderId}_{READY\|FAILED}` (legacy jobs without `renderId` use `evt_render_{outfitId}_{aiProfileId}_{status}`). |
-| `jobType` | `PROCESS_WARDROBE_ITEM` \| `RENDER_OUTFIT` | Yes | Same values as SQS `jobType`. |
+| `jobType` | `PROCESS_WARDROBE_ITEM` \| `RENDER_OUTFIT` \| `RENDER_ITEM` | Yes | Same values as SQS `jobType`. |
 | `status` | `READY` \| `FAILED` | Yes | Terminal only. Never `PENDING` / `PROCESSING`. |
 | `wardrobeId` | string | Yes | Always present for deep-link. |
-| `itemId` | string | Item jobs | Soft-omitted on try-on events. |
-| `outfitId` | string | Try-on jobs | Soft-omitted on item events. |
-| `renderId` | string | Try-on when known | Soft-omitted on legacy jobs and item events. |
-| `aiProfileId` | string | Try-on | Soft-omitted on item events. |
+| `itemId` | string | Item processing and item try-on | Soft-omitted on outfit try-on events. |
+| `outfitId` | string | Outfit try-on | Soft-omitted on item events. |
+| `renderId` | string | Try-on when known | Soft-omitted on legacy jobs and processing events. |
+| `aiProfileId` | string | Try-on | Soft-omitted on processing events. |
 | `error` | string | `FAILED` when the worker had a reason | Soft-omitted on `READY`. Same short reason as `processingError` / `render.error`. |
 | `createdAt` | ISO 8601 | Yes | When the inbox row was first written. |
 | `acknowledgedAt` | ISO 8601 | After ack | Soft-omitted while unread. |
@@ -978,6 +982,8 @@ Notification copy (also sent):
 | `PROCESS_WARDROBE_ITEM` | `FAILED` | Item processing failed | We could not finish processing this item. |
 | `RENDER_OUTFIT` | `READY` | Try-on ready | Your outfit try-on is ready to view. |
 | `RENDER_OUTFIT` | `FAILED` | Try-on failed | We could not finish this try-on. |
+| `RENDER_ITEM` | `READY` | Try-on ready | Your Virtual Try On is ready to view. |
+| `RENDER_ITEM` | `FAILED` | Try-on failed | We could not finish this try-on. |
 
 Missing tokens, missing / placeholder `firebase-fcm`, Google OAuth failures, and `UNREGISTERED` tokens are **soft-fail**: the inbox row still exists, the worker does not 5xx, and stale tokens are deleted. Flutter must not require push to mark a job done.
 
@@ -1000,7 +1006,7 @@ Inbox rows set `ttl` (unix seconds, 30 days). The table already has TTL on `ttl`
 
 1. After `POST` item (Premium) or `POST .../render`, keep a local PENDING row if you want an immediate tray.
 2. `GET /me/events?unreadOnly=true` (or handle FCM data) instead of tight-loop polling GET item / GET render.
-3. Deep-link: item → `GET /wardrobes/{wardrobeId}/items/{itemId}`; try-on → `GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render` (or the outfit).
+3. Deep-link: item → `GET /wardrobes/{wardrobeId}/items/{itemId}`; outfit try-on → `GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render` (or the outfit); item try-on → `GET /wardrobes/{wardrobeId}/items/{itemId}/render` (or the item).
 4. `POST .../ack` when the user opens or dismisses the row.
 5. Polling GET item / GET render remains the fallback if the inbox is empty (event write is best-effort relative to the status field).
 6. After `POST .../items/{itemId}/reprocess` (WARDROBE-123), wait for the next terminal event. `READY` is a new `eventId`. A second `FAILED` reuses `evt_item_{itemId}_FAILED` (idempotent — if that row was already acked, poll GET item).
@@ -1352,7 +1358,7 @@ Flutter WARDROBE-84 should:
 
 Remove **one** successful try-on photo from an **outfit or clothing item** the caller owns. Does **not** delete the outfit, item, wardrobe, or Virtual Profile / reference images. Not Premium-gated (generate still is). Identity is the Firebase UID only — body `userId` is ignored.
 
-Item **generate** is WARDROBE-150 (separate). Item delete still reads/writes the same `render` / `renderHistory` fields outfits use so generate can plug in.
+Item **generate** is `POST/GET .../items/{itemId}/render` (WARDROBE-150) — see **Item Virtual Try On / render**. Delete is not Premium-gated.
 
 ```http
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders
@@ -1411,6 +1417,54 @@ CDK creates the secret as a placeholder. IAM: `OutfitRenderFn` may `secretsmanag
 3. Upload GENERIC_MODEL full-body photos if you have not already (WARDROBE-45 / WARDROBE-72 keys under `shared/ai-profiles/generic/{slug}/front.png`). A missing model photo marks the render `FAILED` with `Image not found: shared/ai-profiles/generic/...`.
 4. Confirm: `POST .../outfits/{outfitId}/render` with `{ "aiProfileId": "profile_generic_01" }`, then wait for `GET /me/events` (`jobType: RENDER_OUTFIT`) or poll `GET .../render` until `READY` or `FAILED`.
 5. If messages land on `wardrobe-outfit-render-dlq-{stage}`, check CloudWatch alarm `wardrobe-outfit-render-dlq-{stage}` and the worker logs. After filling the secret, redrive or have Flutter retry POST.
+
+### Item Virtual Try On / render (WARDROBE-150)
+
+Same contract as outfit try-on, on the clothing item. Product copy is **Virtual Try On** / **Virtual Profile**. Identity is the Firebase UID — body `userId` is ignored.
+
+```http
+POST /wardrobes/{wardrobeId}/items/{itemId}/render
+GET  /wardrobes/{wardrobeId}/items/{itemId}/render
+```
+
+Request body (`aiProfileId` required):
+
+```json
+{
+  "aiProfileId": "profile_generic_01"
+}
+```
+
+```text
+POST /render
+  → item.render.status = PENDING
+  → SQS RENDER_ITEM (same try-on queue as outfits)
+  → worker: PROCESSING → READY | FAILED
+GET /render  (Flutter poll)
+GET /wardrobes/{wardrobeId}/items/{itemId}  (same render object + history)
+GET /wardrobes/{wardrobeId}/items            (same fields, newest-first history)
+```
+
+POST returns `202` with the Flutter `ClothingItem` DTO including pending `render` (and history when earlier try-ons exist). GET `/render` returns the current `OutfitRender` poll record (same fields as outfits). GET item and list include `render`, `renderHistory`, and `renderImageUrls` — same field names and soft-omit rules as outfit try-on.
+
+S3 keys: `users/{uid}/items/{itemId}/renders/{renderId}.png`. History entries store `{ imageKey, createdAt, aiProfileId }` so WARDROBE-149 `DELETE .../items/{itemId}/renders` with `{ "imageKey" }` can address them. `renderId` is internal (worker / idempotency) and is never on the Flutter DTO.
+
+Premium is enforced on **POST generate only** (`assertPremiumAi` → `403 ENTITLEMENT_AI_REQUIRED`). GET `/render`, GET item, list, and future delete are not gated.
+
+Validation (POST):
+
+| Case | Response |
+| --- | --- |
+| Missing token | `401 UNAUTHENTICATED` |
+| Other-user / missing wardrobe | `404 WARDROBE_NOT_FOUND` |
+| Other-user / missing item | `404 ITEM_NOT_FOUND` |
+| Unknown / other-user PERSONAL profile | `404 AI_PROFILE_NOT_FOUND` |
+| Profile not `READY`, no reference images, item has no `originalKey` / `processedKey` | `400 VALIDATION_ERROR` |
+| GET `/render` before any POST | `404 RENDER_NOT_FOUND` |
+
+The item must have an image (`originalKey` preferred, else `processedKey`). The Virtual Profile must be `READY` with at least one reference image (same helper as outfits). Copy to another wardrobe does **not** copy `render` / `renderHistory` (those S3 keys include the source `itemId`). Move keeps the same `itemId` and therefore the same render keys.
+
+**Worker:** same `OutfitRenderFn` + `wardrobe-outfit-render-{stage}` queue. `RENDER_ITEM` reloads the item, the READY Virtual Profile (frontal reference + optional body context), and the single garment, then writes a new `renders/{renderId}.png` and appends `renderHistory`. Job-done inbox uses `jobType: RENDER_ITEM` with `itemId` + `renderId`.
 
 ### Outfit recommendations
 
@@ -2087,6 +2141,7 @@ Repeat for `02`–`04`. `referenceImages` is a Dynamo string set or list of stri
 | Ticket | Hook |
 | --- | --- |
 | WARDROBE-47 | Secret `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT` on the dedicated outfit-render queue. See **Outfit try-on / render** above. |
+| WARDROBE-150 | Same try-on queue / worker. Job type `RENDER_ITEM`. See **Item Virtual Try On / render**. |
 | WARDROBE-114 | Inbox `USER#{uid}` / `EVENT#{eventId}` + optional secret `wardrobe/{stage}/firebase-fcm`. See **AI job-done events**. |
 
 ## DynamoDB keys
@@ -2143,7 +2198,7 @@ src/functions/
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
-  items/
+  items/               CRUD + POST/GET render (WARDROBE-150) + append-only history
   outfits/             CRUD + POST/GET render (WARDROBE-47) + append-only history (WARDROBE-85)
   shares/              item/outfit share tokens + public preview (WARDROBE-126)
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
@@ -2151,7 +2206,7 @@ src/functions/
   uploads/
   ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45); body context (80)
   processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline
-  outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47)
+  outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47) + RENDER_ITEM (WARDROBE-150)
   support/             WARDROBE-38 outbound contact/bug + WARDROBE-143 public website contact + Resend client + Svix verify
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
 src/shared/

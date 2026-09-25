@@ -1346,6 +1346,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'PATCH /wardrobes/{wardrobeId}/items/{itemId}',
       'DELETE /wardrobes/{wardrobeId}/items/{itemId}',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/reprocess',
+      'GET /wardrobes/{wardrobeId}/items/{itemId}/render',
+      'POST /wardrobes/{wardrobeId}/items/{itemId}/render',
       'DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/move',
       'POST /wardrobes/{wardrobeId}/items/{itemId}/copy',
