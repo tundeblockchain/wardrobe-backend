@@ -52,6 +52,29 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     ).toBeUndefined();
   });
 
+  it('overwrites a stored Free row when the user subscribes', () => {
+    const subscribed = applySuperwallEvent({
+      existing: {
+        userId: 'uid',
+        tier: 'FREE',
+        status: 'NONE',
+        createdAt: '2026-09-01T00:00:00.000Z',
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      },
+      userId: 'uid',
+      eventName: 'initial_purchase',
+      productId: 'premium_monthly',
+      productTiers: {},
+      eventId: 'evt_sub',
+      nowIso: '2026-09-16T00:00:00.000Z',
+    }).stored;
+
+    expect(subscribed.tier).toBe('PREMIUM');
+    expect(subscribed.status).toBe('ACTIVE');
+    expect(subscribed.createdAt).toBe('2026-09-01T00:00:00.000Z');
+    expect(subscribed.updatedAt).toBe('2026-09-16T00:00:00.000Z');
+  });
+
   it('grants PREMIUM on initial_purchase and keeps access on cancellation until expiry', () => {
     const granted = applySuperwallEvent({
       userId: 'uid',
