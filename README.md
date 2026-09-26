@@ -343,6 +343,8 @@ App Store / Play product IDs are **TBD**. Do not hardcode them in the app or thi
 
 Call on launch and after Superwall restore / purchase. Identity from the Firebase authorizer.
 
+The first `GET /me` for an account writes `USER#{firebaseUid} / ENTITLEMENT` with `tier: FREE` and `status: NONE` when that row is missing. A later Superwall grant overwrites the same row. The create does not replace an entitlement that already exists.
+
 ```http
 GET /me
 Authorization: Bearer <firebase-id-token>
@@ -374,7 +376,7 @@ Authorization: Bearer <firebase-id-token>
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `tier` | `FREE` \| `BASIC` \| `PREMIUM` | Missing row, unknown product, or past `expiresAt` → `FREE` |
+| `tier` | `FREE` \| `BASIC` \| `PREMIUM` | First `GET /me` stores `FREE` when no row exists. Unknown product or past `expiresAt` also resolve to `FREE` |
 | `status` | `NONE` \| `ACTIVE` \| `CANCELED` \| `BILLING_ISSUE` \| `PAUSED` \| `EXPIRED` | `CANCELED` still has access until `expiresAt` |
 | `features.unlimitedCatalog` | boolean | `true` on Basic and Premium |
 | `features.aiTryOn` | boolean | Premium only — POST outfit or item `/render` |
@@ -403,6 +405,11 @@ Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. PATCH
 #### Webhook / restore path
 
 ```text
+Flutter launch
+        │
+        v
+GET /me  →  DynamoDB USER#{uid} / ENTITLEMENT (FREE / NONE if missing)
+
 Flutter Superwall purchase or restore
         │  identify(firebaseUid)
         v
@@ -410,10 +417,10 @@ Superwall  →  POST /webhooks/superwall  (Svix-signed, no Firebase auth)
         │  verify svix-id / svix-timestamp / svix-signature
         │  map productId → BASIC | PREMIUM
         v
-DynamoDB USER#{uid} / ENTITLEMENT
+DynamoDB USER#{uid} / ENTITLEMENT   ← overwrites the Free row
         │
         v
-Flutter GET /me   ← refresh after restore / launch
+Flutter GET /me   ← refresh after restore / purchase
 ```
 
 Public webhook (configure this URL in the Superwall dashboard → Integrations → Webhooks):

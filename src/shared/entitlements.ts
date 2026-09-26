@@ -1,4 +1,4 @@
-import { getItem, keys, putItem, queryByPk } from './dynamodb';
+import { getItem, keys, putItem, putItemIfNotExists, queryByPk } from './dynamodb';
 import { Errors } from './errors';
 import { nowIso } from './ids';
 import {
@@ -66,6 +66,9 @@ export interface SuperwallWebhookEvent {
  * Resolve the caller's current tier. Missing row, expired `expiresAt`,
  * or unknown stored values all become FREE. Dynamo is the source of
  * truth — Firebase custom claims are not read in this MVP.
+ *
+ * Does not write. Catalog and AI gates use this so a user who has not
+ * called `GET /me` yet is still Free.
  */
 export async function resolveEntitlement(
   userId: string,
@@ -76,6 +79,31 @@ export async function resolveEntitlement(
     return freeEntitlement(userId);
   }
   return effectiveEntitlement(fromDynamo(row), nowMs);
+}
+
+/**
+ * First sight of an account (`GET /me` on launch). Persists
+ * `USER#{uid} / ENTITLEMENT` as FREE / NONE when no row exists.
+ * A later Superwall grant overwrites that row via `persistEntitlement`.
+ * The create is conditional so a subscription that lands first is kept.
+ */
+export async function ensureFreeEntitlement(
+  userId: string,
+  nowMs: number = Date.now(),
+): Promise<StoredEntitlement> {
+  const existing = await loadStoredEntitlement(userId);
+  if (existing) {
+    return effectiveEntitlement(existing, nowMs);
+  }
+
+  const created = freeEntitlement(userId);
+  const wrote = await putItemIfNotExists(entitlementItem(created));
+  if (wrote) {
+    return created;
+  }
+
+  const raced = await loadStoredEntitlement(userId);
+  return raced ? effectiveEntitlement(raced, nowMs) : created;
 }
 
 export function featuresForTier(tier: SubscriptionTier): EntitlementFeatures {
@@ -302,6 +330,10 @@ export function storedEntitlementFromRow(
 export async function persistEntitlement(
   stored: StoredEntitlement,
 ): Promise<void> {
+  await putItem(entitlementItem(stored));
+}
+
+function entitlementItem(stored: StoredEntitlement): DynamoItem {
   const item: DynamoItem = {
     PK: keys.userPk(stored.userId),
     SK: keys.entitlementSk,
@@ -333,7 +365,7 @@ export async function persistEntitlement(
   if (typeof stored.lastEventAt === 'number') {
     item.lastEventAt = stored.lastEventAt;
   }
-  await putItem(item);
+  return item;
 }
 
 export function resolveSuperwallUserId(

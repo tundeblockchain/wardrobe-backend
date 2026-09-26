@@ -69,6 +69,8 @@ interface DynamoCommand {
   input: {
     TableName?: string;
     Key?: { PK: string; SK: string };
+    Item?: DynamoItem;
+    ConditionExpression?: string;
     KeyConditionExpression?: string;
     ExpressionAttributeValues?: Record<string, unknown>;
     ExclusiveStartKey?: Record<string, unknown>;
@@ -926,9 +928,12 @@ describe('me handler (WARDROBE-36)', () => {
   });
 
   describe('GET /me (WARDROBE-91)', () => {
-    it('returns Free defaults when no entitlement row exists', async () => {
+    it('writes a Free entitlement when no row exists', async () => {
       mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
         if (command._op === 'Get') {
+          return {};
+        }
+        if (command._op === 'Put') {
           return {};
         }
         if (command._op === 'Query') {
@@ -955,7 +960,67 @@ describe('me handler (WARDROBE-36)', () => {
         usage: { wardrobes: 0, items: 0, outfits: 0 },
         updatedAt: expect.any(String),
       });
+      const puts = mockDynamoSend.mock.calls
+        .map((call) => call[0] as DynamoCommand)
+        .filter((command) => command._op === 'Put');
+      expect(puts).toHaveLength(1);
+      expect(puts[0].input.ConditionExpression).toBe('attribute_not_exists(PK)');
+      expect(puts[0].input.Item).toEqual(
+        expect.objectContaining({
+          PK: `USER#${OWNER_ID}`,
+          SK: 'ENTITLEMENT',
+          entityType: 'ENTITLEMENT',
+          userId: OWNER_ID,
+          tier: 'FREE',
+          status: 'NONE',
+        }),
+      );
       expect(mockS3Send).not.toHaveBeenCalled();
+    });
+
+    it('keeps a subscription that wins the create race', async () => {
+      let reads = 0;
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Get' && command.input.Key?.SK === 'ENTITLEMENT') {
+          reads += 1;
+          if (reads === 1) {
+            return {};
+          }
+          return {
+            Item: {
+              PK: `USER#${OWNER_ID}`,
+              SK: 'ENTITLEMENT',
+              entityType: 'ENTITLEMENT',
+              userId: OWNER_ID,
+              tier: 'PREMIUM',
+              status: 'ACTIVE',
+              createdAt: '2026-09-16T00:00:00.000Z',
+              updatedAt: '2026-09-16T12:00:00.000Z',
+            },
+          };
+        }
+        if (command._op === 'Put') {
+          const exists = new Error('The conditional request failed');
+          exists.name = 'ConditionalCheckFailedException';
+          throw exists;
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          tier: 'PREMIUM',
+          status: 'ACTIVE',
+        }),
+      );
     });
 
     it('returns Premium with usage and omits Dynamo keys', async () => {
@@ -1016,6 +1081,10 @@ describe('me handler (WARDROBE-36)', () => {
       });
       expect(bodyOf(result)).not.toHaveProperty('PK');
       expect(bodyOf(result)).not.toHaveProperty('lastEventId');
+      const puts = mockDynamoSend.mock.calls.filter(
+        (call) => (call[0] as DynamoCommand)._op === 'Put',
+      );
+      expect(puts).toHaveLength(0);
     });
 
     it('treats an expired Premium row as Free', async () => {

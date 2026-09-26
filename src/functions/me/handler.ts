@@ -10,8 +10,8 @@ import {
 } from '../../shared/dynamodb';
 import {
   countUsage,
+  ensureFreeEntitlement,
   loadStoredEntitlement,
-  resolveEntitlement,
   StoredEntitlement,
   toEntitlementDto,
 } from '../../shared/entitlements';
@@ -44,7 +44,9 @@ export interface MeHandlerDeps {
  * Owner-only account APIs.
  *
  * GET    /me         — current entitlement (WARDROBE-91). Flutter WARDROBE-90
- *                      reads this to soft-gate Superwall UX.
+ *                      reads this to soft-gate Superwall UX. The first call
+ *                      for an account writes FREE / NONE. Superwall overwrites
+ *                      that row when the user subscribes.
  * DELETE /me/content — wipe wardrobes, items, outfits, worn-on dates,
  *                      personal AI profiles, job-done events, device tokens,
  *                      share tokens, and S3 under users/{uid}/. Entitlement +
@@ -92,7 +94,7 @@ export async function handler(
 }
 
 async function getEntitlement(userId: string) {
-  const stored = await resolveEntitlement(userId);
+  const stored = await ensureFreeEntitlement(userId);
   const usage = await countUsage(userId);
   return toEntitlementDto(stored, usage);
 }
