@@ -722,6 +722,24 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       backgroundRemovalEnabled: 'true',
     });
     expect(processingEnv(enabled)?.BACKGROUND_REMOVAL_ENABLED).toBe('true');
+
+    const itemsEnv = (tmpl: Template) => {
+      const functions = Object.values(
+        tmpl.findResources('AWS::Lambda::Function'),
+      ) as Array<{
+        Properties: {
+          Environment?: { Variables?: Record<string, unknown> };
+        };
+      }>;
+      return functions.find(
+        (fn) =>
+          fn.Properties.Environment?.Variables?.PROCESSING_QUEUE_URL &&
+          fn.Properties.Environment?.Variables?.TRY_ON_QUEUE_URL &&
+          !fn.Properties.Environment?.Variables?.BACKGROUND_REMOVAL_SECRET_ARN,
+      )?.Properties.Environment?.Variables;
+    };
+    expect(itemsEnv(template)?.BACKGROUND_REMOVAL_ENABLED).toBe('false');
+    expect(itemsEnv(enabled)?.BACKGROUND_REMOVAL_ENABLED).toBe('true');
   });
 
   test('AI classifier credentials are a Secrets Manager placeholder granted to ProcessingFn', () => {

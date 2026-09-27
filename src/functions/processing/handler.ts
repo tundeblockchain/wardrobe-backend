@@ -18,7 +18,6 @@ import {
 import { runProcessingPipeline } from './pipeline';
 
 const EXHAUSTED_ERROR = 'Processing retries exhausted';
-const KEY_MISMATCH_ERROR = 'originalImageKey does not match stored item';
 const PROCESSING_ERROR_MAX_LENGTH = 240;
 
 /**
@@ -110,11 +109,12 @@ async function processRecord(record: SQSRecord): Promise<void> {
 
   const originalImageKey = itemOriginalKey(item);
   if (originalImageKey !== job.originalImageKey) {
-    logger.warn('originalImageKey does not match DynamoDB item', {
+    // Photo replace (WARDROBE-153) updates originalKey and may enqueue a
+    // newer job. A stale message must not mark the current item FAILED.
+    logger.warn('Dropping stale processing job; originalImageKey does not match DynamoDB item', {
       itemId: job.itemId,
       wardrobeId: job.wardrobeId,
     });
-    await markFailed(job, KEY_MISMATCH_ERROR);
     return;
   }
 
@@ -143,6 +143,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       itemId: String(item.itemId),
       originalImageKey,
       item,
+      ...(job.mode ? { mode: job.mode } : {}),
     });
   } catch (error) {
     if (error instanceof PermanentProcessingError) {

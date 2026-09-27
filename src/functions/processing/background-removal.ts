@@ -1,4 +1,8 @@
 import { keys, updateAttributes } from '../../shared/dynamodb';
+import {
+  BACKGROUND_REMOVAL_ENABLED_ENV,
+  isBackgroundRemovalEnabled,
+} from '../../shared/flags';
 import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import {
@@ -23,6 +27,8 @@ import {
   resolveGeminiImageMimeType,
 } from './gemini';
 
+export { BACKGROUND_REMOVAL_ENABLED_ENV, isBackgroundRemovalEnabled };
+
 export interface BackgroundRemovalContext {
   userId: string;
   wardrobeId: string;
@@ -36,9 +42,6 @@ const PROCESSED_CONTENT_TYPE = 'image/png';
 
 export const DEFAULT_GEMINI_MODEL = DEFAULT_GEMINI_IMAGE_MODEL;
 export { DEFAULT_GEMINI_API_BASE, geminiGenerateContentUrl };
-
-/** Processing Lambda env. Unset / false skips Gemini bg-removal (WARDROBE-62). */
-export const BACKGROUND_REMOVAL_ENABLED_ENV = 'BACKGROUND_REMOVAL_ENABLED';
 
 const BACKGROUND_REMOVAL_PROMPT =
   'Remove the background from this clothing item. Return a PNG image with a fully transparent background. Keep the garment shape, colour, texture, and details unchanged. Do not add, restyle, crop, or replace the clothing.';
@@ -79,19 +82,6 @@ export interface BackgroundRemovalDeps {
   client?: BackgroundRemovalClient;
   loadConfig?: () => Promise<GeminiBackgroundRemovalConfig>;
   fetchImpl?: typeof fetch;
-}
-
-/**
- * WARDROBE-62: Gemini background removal is opt-in.
- * Only `true` / `1` / `yes` / `on` (case-insensitive) enable the call.
- * Unset, empty, `false`, and any other value skip it so add-item is not
- * blocked when Gemini returns no image.
- */
-export function isBackgroundRemovalEnabled(
-  value: string | undefined = process.env[BACKGROUND_REMOVAL_ENABLED_ENV],
-): boolean {
-  const raw = value?.trim().toLowerCase();
-  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
 }
 
 export function parseBackgroundRemovalSecret(

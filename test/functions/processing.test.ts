@@ -272,15 +272,27 @@ describe('processing worker (WARDROBE-17 / WARDROBE-59)', () => {
     expect(statusUpdates()).toEqual([]);
   });
 
-  it('sets FAILED and acks when originalImageKey does not match DynamoDB', async () => {
+  it('acks a stale originalImageKey without failing the current item (WARDROBE-153)', async () => {
     const result = await handler(
       eventFor(job({ originalImageKey: `users/${OWNER_ID}/uploads/other.jpg` })),
     );
 
     expect(result).toEqual({ batchItemFailures: [] });
-    expect(statusUpdates()).toEqual(['FAILED']);
-    expect(processingErrors()).toEqual(['originalImageKey does not match stored item']);
+    expect(statusUpdates()).toEqual([]);
     expect(mockRunPipeline).not.toHaveBeenCalled();
+    expect(mockRecordJobDone).not.toHaveBeenCalled();
+  });
+
+  it('passes BACKGROUND_REMOVAL_ONLY through to the pipeline', async () => {
+    await handler(eventFor(job({ mode: 'BACKGROUND_REMOVAL_ONLY' })));
+
+    expect(mockRunPipeline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        itemId: ITEM_ID,
+        originalImageKey: ORIGINAL_KEY,
+        mode: 'BACKGROUND_REMOVAL_ONLY',
+      }),
+    );
   });
 
   it('skips the pipeline when the item is already READY', async () => {

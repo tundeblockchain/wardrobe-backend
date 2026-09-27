@@ -374,6 +374,8 @@ POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 
 Same-user move / copy (WARDROBE-118). See README “Move / copy across wardrobes (WARDROBE-118)” for the Flutter WARDROBE-119 contract. Move re-keys the Dynamo row from `WARDROBE#{source}` to `WARDROBE#{target}` (same `itemId`; S3 keys are user-scoped and stay attached). Copy writes a new `itemId` and **shares** the source image keys. `POST .../reprocess` retries a `FAILED` item (WARDROBE-123).
 
+WARDROBE-153 replaces a clothing-item photo on the existing `PATCH /wardrobes/{wardrobeId}/items/{itemId}` body field `imageKey` (same owned-key rules as create). A new key updates `originalKey`, removes `processedKey` / `ai.processedImageKey` / `ai.backgroundRemoved`, and leaves other metadata, membership, and try-on renders untouched. The previous original and processed S3 objects are deleted best-effort after the write succeeds. The same key is a no-op `200`. Classify / colour are never re-run. When the caller is Premium and `BACKGROUND_REMOVAL_ENABLED` is on, a `PROCESS_WARDROBE_ITEM` job with `mode: "BACKGROUND_REMOVAL_ONLY"` is enqueued (`PENDING`, rolled back on enqueue failure). Outfit and share records resolve the live item image; they do not copy clothing-item photo keys. See README “Replace a clothing-item photo (WARDROBE-153)”.
+
 Filtering can later be supported through query parameters.
 
 Examples:
@@ -468,12 +470,11 @@ Response:
 
 Flutter then uploads the image directly to S3.
 
-After the upload completes, Flutter creates the clothing item.
-
-Example:
+After the upload completes, Flutter creates the clothing item **or** replaces the photo on an existing item with the same `imageKey` field:
 
 ```http
 POST /wardrobes/{wardrobeId}/items
+PATCH /wardrobes/{wardrobeId}/items/{itemId}
 ```
 
 ```json
@@ -483,6 +484,8 @@ POST /wardrobes/{wardrobeId}/items
   "imageKey": "users/uid/uploads/uuid.jpg"
 }
 ```
+
+`PATCH` may send `{ "imageKey": "users/uid/uploads/uuid.jpg" }` alone. See README “Replace a clothing-item photo (WARDROBE-153)”.
 
 ---
 

@@ -87,6 +87,20 @@ describe('sqs helpers (WARDROBE-16)', () => {
       expect(parseProcessWardrobeItemJob(JSON.stringify(valid))).toEqual(valid);
     });
 
+    it('keeps BACKGROUND_REMOVAL_ONLY on photo-replace jobs', () => {
+      expect(
+        parseProcessWardrobeItemJob(
+          JSON.stringify({ ...valid, mode: 'BACKGROUND_REMOVAL_ONLY' }),
+        ),
+      ).toEqual({ ...valid, mode: 'BACKGROUND_REMOVAL_ONLY' });
+    });
+
+    it('ignores unknown mode values so create jobs stay full-pipeline', () => {
+      expect(
+        parseProcessWardrobeItemJob(JSON.stringify({ ...valid, mode: 'CLASSIFY_ONLY' })),
+      ).toEqual(valid);
+    });
+
     it('returns undefined for invalid JSON, wrong job type, or missing fields', () => {
       expect(parseProcessWardrobeItemJob('not-json')).toBeUndefined();
       expect(parseProcessWardrobeItemJob(JSON.stringify([]))).toBeUndefined();
@@ -127,6 +141,28 @@ describe('sqs helpers (WARDROBE-16)', () => {
         }),
       });
       expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('includes BACKGROUND_REMOVAL_ONLY when enqueueing a photo-replace job', async () => {
+      await enqueueProcessWardrobeItem({
+        userId: 'firebase-uid-123',
+        wardrobeId: 'wd_abc123xyz0',
+        itemId: 'item_xyz123abcd',
+        originalImageKey: 'users/firebase-uid-123/uploads/photo.jpg',
+        mode: 'BACKGROUND_REMOVAL_ONLY',
+      });
+
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: PROCESS_WARDROBE_ITEM_JOB,
+          userId: 'firebase-uid-123',
+          wardrobeId: 'wd_abc123xyz0',
+          itemId: 'item_xyz123abcd',
+          originalImageKey: 'users/firebase-uid-123/uploads/photo.jpg',
+          mode: 'BACKGROUND_REMOVAL_ONLY',
+        }),
+      });
     });
 
     it('wraps SQS failures as INTERNAL_ERROR', async () => {

@@ -108,12 +108,29 @@ export const ITEM_PROCESSING_MAX_RECEIVE_COUNT = 3;
 
 export const PROCESS_WARDROBE_ITEM_JOB = 'PROCESS_WARDROBE_ITEM' as const;
 
+/** Full classify / colour / bg-removal pipeline (create + reprocess). */
+export const PROCESS_WARDROBE_ITEM_FULL = 'FULL' as const;
+/** Photo replace (WARDROBE-153) — background removal only, never classify/colour. */
+export const PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY =
+  'BACKGROUND_REMOVAL_ONLY' as const;
+export const PROCESS_WARDROBE_ITEM_MODES = [
+  PROCESS_WARDROBE_ITEM_FULL,
+  PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY,
+] as const;
+export type ProcessWardrobeItemMode = (typeof PROCESS_WARDROBE_ITEM_MODES)[number];
+
 export interface ProcessWardrobeItemJob {
   jobType: typeof PROCESS_WARDROBE_ITEM_JOB;
   userId: string;
   wardrobeId: string;
   itemId: string;
   originalImageKey: string;
+  /**
+   * Optional pipeline subset. Omitted / `FULL` runs bg-removal + classify +
+   * colour. `BACKGROUND_REMOVAL_ONLY` is used when replacing an item photo
+   * so existing name / category / colour metadata is left alone.
+   */
+  mode?: ProcessWardrobeItemMode;
 }
 
 /** Phase-3 AI profile types (WARDROBE-43). Flutter try-on picker uses these. */
