@@ -4,6 +4,7 @@ import { ClothingItem, DynamoItem } from '../../src/shared/types';
 const mockSend = jest.fn();
 const mockSqsSend = jest.fn();
 const mockGetSignedUrl = jest.fn();
+const mockDeleteObjectBestEffort = jest.fn();
 
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({})),
@@ -50,6 +51,14 @@ jest.mock('@aws-sdk/client-sqs', () => ({
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
 }));
+
+jest.mock('../../src/shared/s3', () => {
+  const actual = jest.requireActual('../../src/shared/s3') as typeof import('../../src/shared/s3');
+  return {
+    ...actual,
+    deleteObjectBestEffort: (...args: unknown[]) => mockDeleteObjectBestEffort(...args),
+  };
+});
 
 jest.mock('@aws-sdk/client-s3', () => ({
   S3Client: jest.fn(() => ({})),
@@ -353,6 +362,7 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
     process.env.TRY_ON_QUEUE_URL = TRY_ON_QUEUE_URL;
     process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
     mockSqsSend.mockResolvedValue({ MessageId: 'msg-1' });
+    mockDeleteObjectBestEffort.mockResolvedValue(undefined);
     mockGetSignedUrl.mockImplementation(
       async (_client: unknown, command: { input?: { Key?: string } }) => {
         const key = command.input?.Key ?? '';
@@ -368,6 +378,7 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
     delete process.env.PROCESSING_QUEUE_URL;
     delete process.env.TRY_ON_QUEUE_URL;
     delete process.env.MEDIA_BUCKET_NAME;
+    delete process.env.BACKGROUND_REMOVAL_ENABLED;
   });
 
   describe('POST /wardrobes/{wardrobeId}/items', () => {
@@ -1807,6 +1818,400 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       expect(
         mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
       ).toBe(false);
+    });
+
+    describe('imageKey replace (WARDROBE-153)', () => {
+      const NEW_IMAGE_KEY = `users/${OWNER_ID}/uploads/replacement.jpg`;
+      const OLD_ORIGINAL_KEY = OWNER_IMAGE_KEY;
+      const OLD_PROCESSED_KEY = OWNER_PROCESSED_KEY;
+
+      function itemWithProcessedPhoto(
+        overrides: Partial<DynamoItem> = {},
+      ): DynamoItem {
+        return dynamoItem(OWNER_ID, {
+          processedKey: OLD_PROCESSED_KEY,
+          tags: ['summer', 'casual'],
+          acquiredAt: '2024-06-15',
+          render: {
+            status: 'READY',
+            aiProfileId: 'profile_generic_01',
+            imageKey: `users/${OWNER_ID}/items/${ITEM_ID}/renders/rend_keep1.png`,
+          },
+          ai: {
+            detectedCategory: 'TOP',
+            detectedSubcategory: 'TSHIRT',
+            detectedColours: ['BLACK'],
+            processedImageKey: OLD_PROCESSED_KEY,
+            backgroundRemoved: true,
+          },
+          ...overrides,
+        });
+      }
+
+      function mockReplaceImage(
+        existing: DynamoItem,
+        options: {
+          tier?: 'FREE' | 'BASIC' | 'PREMIUM';
+          onUpdate?: (command: Command) => DynamoItem;
+        } = {},
+      ): void {
+        const tier = options.tier ?? 'PREMIUM';
+        mockSend.mockImplementation(async (command: Command) => {
+          if (isEntitlementGet(command)) {
+            return tier === 'FREE' ? {} : { Item: dynamoEntitlement(OWNER_ID, tier) };
+          }
+          if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+            return { Item: dynamoWardrobe() };
+          }
+          if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+            return { Item: existing };
+          }
+          if (command._op === 'Update') {
+            if (options.onUpdate) {
+              return { Attributes: options.onUpdate(command) };
+            }
+            const values = command.input.ExpressionAttributeValues ?? {};
+            const names = command.input.ExpressionAttributeNames ?? {};
+            const expression = command.input.UpdateExpression ?? '';
+            const next: DynamoItem = { ...existing };
+            for (const [placeholder, attr] of Object.entries(names)) {
+              const valueKey = `:${placeholder.slice(1)}`;
+              if (expression.includes(`${placeholder} = ${valueKey}`)) {
+                (next as Record<string, unknown>)[attr] = values[valueKey];
+              }
+            }
+            if (expression.includes('REMOVE')) {
+              for (const [placeholder, attr] of Object.entries(names)) {
+                if (new RegExp(`REMOVE[\\s\\S]*${placeholder}\\b`).test(expression)) {
+                  delete (next as Record<string, unknown>)[attr];
+                }
+              }
+            }
+            return { Attributes: next };
+          }
+          throw new Error(`unexpected op ${command._op}`);
+        });
+      }
+
+      it('returns 404 when patching another user item', async () => {
+        mockSend.mockResolvedValue({});
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: NEW_IMAGE_KEY },
+              sub: OTHER_ID,
+            }),
+          ),
+        );
+
+        expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
+        expect(
+          mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
+        ).toBe(false);
+        expect(mockSqsSend).not.toHaveBeenCalled();
+        expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
+      });
+
+      it('returns 400 VALIDATION_ERROR for a foreign imageKey', async () => {
+        mockOwnedItemThenUpdate(dynamoItem());
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: `users/${OTHER_ID}/uploads/stolen.jpg` },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(400);
+        expect(bodyOf(result)).toEqual({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'imageKey must belong to the authenticated user.',
+          },
+        });
+        expect(
+          mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
+        ).toBe(false);
+        expect(mockSqsSend).not.toHaveBeenCalled();
+        expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
+      });
+
+      it('returns 400 VALIDATION_ERROR for an invalid imageKey', async () => {
+        mockOwnedItemThenUpdate(dynamoItem());
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: `users/${OWNER_ID}/uploads/../secret.jpg` },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(400);
+        expect(bodyOf(result)).toEqual({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'imageKey is not a valid object key.',
+          },
+        });
+        expect(
+          mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
+        ).toBe(false);
+        expect(mockSqsSend).not.toHaveBeenCalled();
+      });
+
+      it('returns 200 with the item unchanged when imageKey equals originalKey', async () => {
+        const existing = itemWithProcessedPhoto();
+        mockSend.mockImplementation(async (command: Command) => {
+          if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+            return { Item: dynamoWardrobe() };
+          }
+          if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+            return { Item: existing };
+          }
+          throw new Error(`unexpected op ${command._op}`);
+        });
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: OLD_ORIGINAL_KEY },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        const body = bodyOf(result) as ClothingItem;
+        expect(body.image).toEqual({
+          originalKey: OLD_ORIGINAL_KEY,
+          processedKey: OLD_PROCESSED_KEY,
+        });
+        expect(body.processingStatus).toBe('READY');
+        expect(body.updatedAt).toBe(existing.updatedAt);
+        expect(
+          mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Update'),
+        ).toBe(false);
+        expect(mockSqsSend).not.toHaveBeenCalled();
+        expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
+      });
+
+      it('clears processedKey and processed AI fields while preserving metadata', async () => {
+        const existing = itemWithProcessedPhoto();
+        mockReplaceImage(existing);
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: NEW_IMAGE_KEY },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        const body = bodyOf(result) as ClothingItem;
+        expect(body.name).toBe('Black T-Shirt');
+        expect(body.category).toBe('TOP');
+        expect(body.subcategory).toBe('TSHIRT');
+        expect(body.colours).toEqual(['BLACK']);
+        expect(body.brand).toBe('Nike');
+        expect(body.acquiredAt).toBe('2024-06-15');
+        expect(body.image).toEqual({ originalKey: NEW_IMAGE_KEY });
+        expect(body.image).not.toHaveProperty('processedKey');
+        expect(body).not.toHaveProperty('processedImageUrl');
+        expect(body.render).toEqual(
+          expect.objectContaining({
+            status: 'READY',
+            aiProfileId: 'profile_generic_01',
+          }),
+        );
+
+        const update = patchUpdateCommand();
+        expect(update.input.ExpressionAttributeValues).toEqual(
+          expect.objectContaining({
+            ':originalKey': NEW_IMAGE_KEY,
+            ':processingStatus': 'READY',
+            ':ai': {
+              detectedCategory: 'TOP',
+              detectedSubcategory: 'TSHIRT',
+              detectedColours: ['BLACK'],
+            },
+          }),
+        );
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(':name');
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(':category');
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(':colours');
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(':brand');
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(':tags');
+        expect(update.input.ExpressionAttributeValues).not.toHaveProperty(':render');
+        expect(update.input.UpdateExpression).toContain('REMOVE');
+        expect(update.input.ExpressionAttributeNames).toEqual(
+          expect.objectContaining({
+            '#processedKey': 'processedKey',
+          }),
+        );
+        expect(mockSqsSend).not.toHaveBeenCalled();
+      });
+
+      it('best-effort deletes the old original and processed objects, never the new key', async () => {
+        mockReplaceImage(itemWithProcessedPhoto());
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: NEW_IMAGE_KEY },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        expect(mockDeleteObjectBestEffort).toHaveBeenCalledTimes(2);
+        expect(mockDeleteObjectBestEffort).toHaveBeenCalledWith(OLD_ORIGINAL_KEY);
+        expect(mockDeleteObjectBestEffort).toHaveBeenCalledWith(OLD_PROCESSED_KEY);
+        expect(mockDeleteObjectBestEffort).not.toHaveBeenCalledWith(NEW_IMAGE_KEY);
+      });
+
+      it('does not enqueue classify / colour when background removal is disabled', async () => {
+        delete process.env.BACKGROUND_REMOVAL_ENABLED;
+        mockReplaceImage(itemWithProcessedPhoto());
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: NEW_IMAGE_KEY },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        expect((bodyOf(result) as ClothingItem).processingStatus).toBe('READY');
+        expect(mockSqsSend).not.toHaveBeenCalled();
+        expect(
+          mockSend.mock.calls.some((call) => isEntitlementGet(call[0] as Command)),
+        ).toBe(false);
+      });
+
+      it('enqueues a background-removal-only job when enabled and the user is Premium', async () => {
+        process.env.BACKGROUND_REMOVAL_ENABLED = 'true';
+        mockReplaceImage(itemWithProcessedPhoto());
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: NEW_IMAGE_KEY },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        expect((bodyOf(result) as ClothingItem).processingStatus).toBe('PENDING');
+        expect(SendMessageCommand).toHaveBeenCalledWith({
+          QueueUrl: PROCESSING_QUEUE_URL,
+          MessageBody: JSON.stringify({
+            jobType: 'PROCESS_WARDROBE_ITEM',
+            userId: OWNER_ID,
+            wardrobeId: WARDROBE_ID,
+            itemId: ITEM_ID,
+            originalImageKey: NEW_IMAGE_KEY,
+            mode: 'BACKGROUND_REMOVAL_ONLY',
+          }),
+        });
+        expect(mockSqsSend).toHaveBeenCalledTimes(1);
+
+        const update = patchUpdateCommand();
+        expect(update.input.ExpressionAttributeValues).toEqual(
+          expect.objectContaining({
+            ':originalKey': NEW_IMAGE_KEY,
+            ':processingStatus': 'PENDING',
+          }),
+        );
+        const updateOrder = mockSend.mock.invocationCallOrder.find((_, index) => {
+          return (mockSend.mock.calls[index][0] as Command)._op === 'Update';
+        });
+        expect(updateOrder).toBeDefined();
+        expect(mockSqsSend.mock.invocationCallOrder[0]).toBeGreaterThan(
+          updateOrder as number,
+        );
+        expect(mockDeleteObjectBestEffort.mock.invocationCallOrder[0]).toBeGreaterThan(
+          mockSqsSend.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('does not enqueue when background removal is enabled but the user is not Premium', async () => {
+        process.env.BACKGROUND_REMOVAL_ENABLED = 'true';
+        mockReplaceImage(itemWithProcessedPhoto(), { tier: 'FREE' });
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: NEW_IMAGE_KEY },
+            }),
+          ),
+        );
+
+        expect(result.statusCode).toBe(200);
+        expect((bodyOf(result) as ClothingItem).processingStatus).toBe('READY');
+        expect(mockSqsSend).not.toHaveBeenCalled();
+      });
+
+      it('rolls back the Dynamo write and keeps old objects when enqueue fails', async () => {
+        process.env.BACKGROUND_REMOVAL_ENABLED = 'true';
+        mockSqsSend.mockRejectedValue(new Error('sqs unavailable'));
+        const existing = itemWithProcessedPhoto({
+          processingStatus: 'READY',
+        });
+        mockReplaceImage(existing);
+
+        const result = asResult(
+          await handler(
+            event({
+              method: 'PATCH',
+              itemId: ITEM_ID,
+              body: { imageKey: NEW_IMAGE_KEY },
+            }),
+          ),
+        );
+
+        expectEnvelope(result, 500, 'INTERNAL_ERROR');
+        const updates = mockSend.mock.calls
+          .map((call) => call[0] as Command)
+          .filter((command) => command._op === 'Update');
+        expect(updates).toHaveLength(2);
+        expect(updates[0].input.ExpressionAttributeValues).toEqual(
+          expect.objectContaining({
+            ':originalKey': NEW_IMAGE_KEY,
+            ':processingStatus': 'PENDING',
+          }),
+        );
+        expect(updates[1].input.ExpressionAttributeValues).toEqual(
+          expect.objectContaining({
+            ':originalKey': OLD_ORIGINAL_KEY,
+            ':processedKey': OLD_PROCESSED_KEY,
+            ':processingStatus': 'READY',
+            ':ai': existing.ai,
+          }),
+        );
+        expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
+      });
     });
   });
 

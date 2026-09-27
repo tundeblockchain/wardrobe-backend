@@ -14,7 +14,9 @@ import {
   assertCanCreateCatalog,
   assertPremiumAi,
   isPremium,
+  resolveEntitlement,
 } from '../../shared/entitlements';
+import { isBackgroundRemovalEnabled } from '../../shared/flags';
 import { Errors } from '../../shared/errors';
 import {
   accepted,
@@ -38,6 +40,7 @@ import {
   ClothingItemList,
   DynamoItem,
   OutfitRender,
+  PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY,
   ProcessingStatus,
 } from '../../shared/types';
 import {
@@ -586,7 +589,7 @@ async function updateItem(
   itemId: string,
   body: UpdateItemBody,
 ): Promise<ClothingItem> {
-  await getOwnedItem(userId, wardrobeId, itemId);
+  const existing = await getOwnedItem(userId, wardrobeId, itemId);
 
   const updates: Record<string, unknown> = {};
   const remove: string[] = [];
@@ -633,8 +636,20 @@ async function updateItem(
       updates.acquiredAt = acquiredAt;
     }
   }
+
+  let imageReplacement: ImageReplacementPlan | undefined;
   if (body.imageKey !== undefined) {
-    updates.originalKey = requireOwnedImageKey(body.imageKey, userId);
+    const imageKey = requireOwnedImageKey(body.imageKey, userId);
+    const currentOriginal = itemOriginalKey(existing);
+    if (imageKey === currentOriginal) {
+      if (Object.keys(updates).length === 0 && remove.length === 0) {
+        return toClothingItem(existing);
+      }
+    } else {
+      imageReplacement = await planImageReplacement(userId, existing, imageKey);
+      Object.assign(updates, imageReplacement.updates);
+      remove.push(...imageReplacement.remove);
+    }
   }
 
   if (Object.keys(updates).length === 0 && remove.length === 0) {
@@ -645,10 +660,190 @@ async function updateItem(
     keys.wardrobePk(wardrobeId),
     keys.itemSk(itemId),
     { ...updates, updatedAt: nowIso() },
-    remove.length > 0 ? { remove } : undefined,
+    remove.length > 0 ? { remove: uniqueStrings(remove) } : undefined,
   );
 
+  if (imageReplacement) {
+    if (imageReplacement.enqueue) {
+      try {
+        await enqueueProcessWardrobeItem(imageReplacement.enqueue);
+      } catch (error) {
+        await rollbackImageReplacement(existing, imageReplacement);
+        throw error;
+      }
+    }
+    await deleteStaleImageObjects(imageReplacement.staleKeys);
+  }
+
   return toClothingItem(updated);
+}
+
+interface ImageReplacementPlan {
+  updates: Record<string, unknown>;
+  remove: string[];
+  staleKeys: string[];
+  enqueue?: {
+    userId: string;
+    wardrobeId: string;
+    itemId: string;
+    originalImageKey: string;
+    mode: typeof PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY;
+  };
+}
+
+/**
+ * WARDROBE-153: replace the stored original photo, drop stale processed
+ * cutout metadata, and optionally enqueue background-removal only.
+ * Name / category / colours / brand / other `ai` fields / membership /
+ * renders are left untouched.
+ */
+async function planImageReplacement(
+  userId: string,
+  existing: DynamoItem,
+  imageKey: string,
+): Promise<ImageReplacementPlan> {
+  const enqueueBackgroundRemoval = await shouldEnqueueBackgroundRemovalOnly(
+    userId,
+  );
+  const updates: Record<string, unknown> = {
+    originalKey: imageKey,
+    processingStatus: enqueueBackgroundRemoval ? 'PENDING' : 'READY',
+  };
+  const remove = ['processedKey', 'processingError'];
+  const cleanedAi = aiWithoutProcessedImage(existing.ai);
+  if (cleanedAi.removeAi) {
+    remove.push('ai');
+  } else if (cleanedAi.next) {
+    updates.ai = cleanedAi.next;
+  }
+
+  return {
+    updates,
+    remove,
+    staleKeys: staleImageKeys(existing, imageKey),
+    ...(enqueueBackgroundRemoval
+      ? {
+          enqueue: {
+            userId,
+            wardrobeId: String(existing.wardrobeId),
+            itemId: String(existing.itemId),
+            originalImageKey: imageKey,
+            mode: PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY,
+          },
+        }
+      : {}),
+  };
+}
+
+async function shouldEnqueueBackgroundRemovalOnly(
+  userId: string,
+): Promise<boolean> {
+  // Same Premium gate as createItem; BR-only jobs are pointless when the
+  // worker flag is off, so skip the queue entirely in that case.
+  if (!isBackgroundRemovalEnabled()) {
+    return false;
+  }
+  const entitlement = await resolveEntitlement(userId);
+  return isPremium(entitlement);
+}
+
+function aiWithoutProcessedImage(ai: unknown): {
+  next?: Record<string, unknown>;
+  removeAi: boolean;
+} {
+  if (!ai || typeof ai !== 'object' || Array.isArray(ai)) {
+    return { removeAi: false };
+  }
+  const next = { ...(ai as Record<string, unknown>) };
+  delete next.processedImageKey;
+  delete next.backgroundRemoved;
+  if (Object.keys(next).length === 0) {
+    return { removeAi: true };
+  }
+  return { next, removeAi: false };
+}
+
+function staleImageKeys(existing: DynamoItem, newKey: string): string[] {
+  const keysToDelete = new Set<string>();
+  const oldOriginal = itemOriginalKey(existing);
+  if (oldOriginal && oldOriginal !== newKey) {
+    keysToDelete.add(oldOriginal);
+  }
+  if (typeof existing.processedKey === 'string') {
+    const oldProcessed = existing.processedKey.trim();
+    if (oldProcessed && oldProcessed !== newKey) {
+      keysToDelete.add(oldProcessed);
+    }
+  }
+  return [...keysToDelete];
+}
+
+async function deleteStaleImageObjects(objectKeys: string[]): Promise<void> {
+  await Promise.all(objectKeys.map((objectKey) => deleteObjectBestEffort(objectKey)));
+}
+
+async function rollbackImageReplacement(
+  existing: DynamoItem,
+  plan: ImageReplacementPlan,
+): Promise<void> {
+  const wardrobeId = String(existing.wardrobeId);
+  const itemId = String(existing.itemId);
+  try {
+    const restore: Record<string, unknown> = {
+      processingStatus:
+        (existing.processingStatus as ProcessingStatus | undefined) ?? 'READY',
+      updatedAt: nowIso(),
+    };
+    const remove: string[] = [];
+
+    const previousOriginal = itemOriginalKey(existing);
+    if (previousOriginal) {
+      restore.originalKey = previousOriginal;
+    } else {
+      remove.push('originalKey');
+    }
+
+    if (typeof existing.processedKey === 'string' && existing.processedKey.trim()) {
+      restore.processedKey = existing.processedKey;
+    } else {
+      remove.push('processedKey');
+    }
+
+    if (existing.ai && typeof existing.ai === 'object' && !Array.isArray(existing.ai)) {
+      restore.ai = existing.ai;
+    } else if (plan.updates.ai !== undefined || plan.remove.includes('ai')) {
+      remove.push('ai');
+    }
+
+    if (
+      typeof existing.processingError === 'string' &&
+      existing.processingError.trim()
+    ) {
+      restore.processingError = existing.processingError;
+    } else {
+      remove.push('processingError');
+    }
+
+    await updateAttributes(
+      keys.wardrobePk(wardrobeId),
+      keys.itemSk(itemId),
+      restore,
+      remove.length > 0 ? { remove: uniqueStrings(remove) } : undefined,
+    );
+  } catch (compensateError) {
+    logger.error('Failed to roll back item image after enqueue failure', {
+      itemId,
+      wardrobeId,
+      error:
+        compensateError instanceof Error
+          ? compensateError.message
+          : 'unknown',
+    });
+  }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 async function removeItem(

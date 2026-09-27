@@ -334,6 +334,9 @@ export class WardrobeStack extends cdk.Stack {
         ...commonLambdaProps.environment,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
         TRY_ON_QUEUE_URL: tryOnQueue.queueUrl,
+        // Same flag as ProcessingFn so PATCH imageKey can skip the queue
+        // when background removal is off (WARDROBE-153).
+        BACKGROUND_REMOVAL_ENABLED: backgroundRemovalEnabled ? 'true' : 'false',
       },
     });
     const outfitsFn = this.lambda('OutfitsFn', 'outfits', {
@@ -494,7 +497,9 @@ export class WardrobeStack extends cdk.Stack {
     backgroundRemovalSecret.grantRead(processingFn);
     // Presigned GET for ClothingItem.originalImageUrl / processedImageUrl
     // (WARDROBE-54). Same helper and TTL as outfit render.imageUrl.
-    // DeleteObject for DELETE .../items/{itemId}/renders (WARDROBE-149).
+    // DeleteObject for DELETE .../items/{itemId}/renders (WARDROBE-149)
+    // and best-effort cleanup of the previous original / processed photo
+    // after PATCH imageKey (WARDROBE-153).
     mediaBucket.grantRead(itemsFn);
     mediaBucket.grantDelete(itemsFn);
     processingQueue.grantSendMessages(itemsFn);

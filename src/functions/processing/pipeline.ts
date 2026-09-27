@@ -1,4 +1,8 @@
-import { DynamoItem } from '../../shared/types';
+import {
+  PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY,
+  ProcessWardrobeItemMode,
+  DynamoItem,
+} from '../../shared/types';
 import {
   isBackgroundRemovalEnabled,
   runBackgroundRemoval,
@@ -27,6 +31,8 @@ export interface ProcessingContext {
   itemId: string;
   originalImageKey: string;
   item: DynamoItem;
+  /** Omitted / FULL runs every stage. BACKGROUND_REMOVAL_ONLY skips classify + colour. */
+  mode?: ProcessWardrobeItemMode;
 }
 
 export type ProcessingPipelineDeps = ClassifyGarmentDeps &
@@ -49,6 +55,9 @@ export async function runProcessingPipeline(
   deps?: ProcessingPipelineDeps,
 ): Promise<void> {
   await runStage('bg-removal', context, () => removeBackground(context));
+  if (context.mode === PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY) {
+    return;
+  }
   await runStage('classify', context, () => classifyGarment(context, deps));
   await runStage('colour', context, () =>
     detectColourAndCategory(context, deps),

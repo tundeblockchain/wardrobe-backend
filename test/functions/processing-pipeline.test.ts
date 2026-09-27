@@ -200,6 +200,28 @@ describe('processing pipeline hooks (WARDROBE-18/26 + WARDROBE-19/27 + WARDROBE-
     expect(persistAi).toHaveBeenCalledTimes(2);
   });
 
+  it('runs background removal only when mode is BACKGROUND_REMOVAL_ONLY', async () => {
+    const classify = jest.fn();
+    const detect = jest.fn();
+    const persistAi = jest.fn();
+    const ctx = {
+      ...context(),
+      mode: 'BACKGROUND_REMOVAL_ONLY' as const,
+    };
+
+    await runProcessingPipeline(ctx, {
+      classifier: { classify },
+      detector: { detect },
+      persistAi,
+    });
+
+    expect(mockRunBackgroundRemoval).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
+    expect(detect).not.toHaveBeenCalled();
+    expect(persistAi).not.toHaveBeenCalled();
+    expect(ctx.item.processedKey).toBe(PROCESSED_KEY);
+  });
+
   it('does not call Gemini bg-removal from removeBackground when the flag is false', async () => {
     process.env.BACKGROUND_REMOVAL_ENABLED = 'false';
     const ctx = context();

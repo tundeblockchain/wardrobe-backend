@@ -2,8 +2,11 @@ import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { AppError, Errors } from './errors';
 import { logger } from './logger';
 import {
+  PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY,
+  PROCESS_WARDROBE_ITEM_FULL,
   PROCESS_WARDROBE_ITEM_JOB,
   ProcessWardrobeItemJob,
+  ProcessWardrobeItemMode,
   RENDER_ITEM_JOB,
   RENDER_OUTFIT_JOB,
   RenderItemJob,
@@ -50,13 +53,28 @@ export function parseProcessWardrobeItemJob(
     return undefined;
   }
 
+  const mode = parseProcessWardrobeItemMode(raw.mode);
+
   return {
     jobType: PROCESS_WARDROBE_ITEM_JOB,
     userId,
     wardrobeId,
     itemId,
     originalImageKey,
+    ...(mode ? { mode } : {}),
   };
+}
+
+function parseProcessWardrobeItemMode(
+  value: unknown,
+): ProcessWardrobeItemMode | undefined {
+  if (value === PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY) {
+    return PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY;
+  }
+  if (value === PROCESS_WARDROBE_ITEM_FULL) {
+    return PROCESS_WARDROBE_ITEM_FULL;
+  }
+  return undefined;
 }
 
 const sqs = new SQSClient({});
@@ -74,6 +92,7 @@ export async function enqueueProcessWardrobeItem(job: {
   wardrobeId: string;
   itemId: string;
   originalImageKey: string;
+  mode?: ProcessWardrobeItemMode;
 }): Promise<void> {
   const message: ProcessWardrobeItemJob = {
     jobType: PROCESS_WARDROBE_ITEM_JOB,
@@ -81,6 +100,7 @@ export async function enqueueProcessWardrobeItem(job: {
     wardrobeId: job.wardrobeId,
     itemId: job.itemId,
     originalImageKey: job.originalImageKey,
+    ...(job.mode ? { mode: job.mode } : {}),
   };
 
   try {

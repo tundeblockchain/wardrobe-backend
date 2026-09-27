@@ -565,7 +565,37 @@ Create body (`name`, `category`, and `imageKey` required):
 
 Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand` / `acquiredAt`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). Empty `subcategory` is soft-omitted on create (`null` / `""` are not stored). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Same-user move / copy of a terminal item (`READY` / `FAILED`) is WARDROBE-118 — see **Move / copy across wardrobes** below.
 
-PATCH may include `name`, `category`, `subcategory`, `colours`, `brand`, `acquiredAt`, and `imageKey`. Omitted fields are left unchanged. For `subcategory` (WARDROBE-87): `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `subcategory`). A non-empty string sets it (trimmed; not restricted to the list-filter enum). Clearing `subcategory` alone is a soft success. `acquiredAt` uses the same omit / clear pattern (WARDROBE-92).
+PATCH may include `name`, `category`, `subcategory`, `colours`, `brand`, `acquiredAt`, and `imageKey`. Omitted fields are left unchanged. For `subcategory` (WARDROBE-87): `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `subcategory`). A non-empty string sets it (trimmed; not restricted to the list-filter enum). Clearing `subcategory` alone is a soft success. `acquiredAt` uses the same omit / clear pattern (WARDROBE-92). Replacing `imageKey` is WARDROBE-153 — see **Replace a clothing-item photo** below.
+
+#### Replace a clothing-item photo (WARDROBE-153)
+
+Use the existing upload presign + `PATCH` contract. Do **not** add a new route. Flutter uploads the replacement photo with `POST /uploads` (`purpose: "WARDROBE_ITEM"`), then patches the item.
+
+```http
+PATCH /wardrobes/{wardrobeId}/items/{itemId}
+```
+
+```json
+{ "imageKey": "users/{uid}/uploads/replacement.jpg" }
+```
+
+| Case | Result |
+| --- | --- |
+| New owned `imageKey` | `200` Flutter `ClothingItem`. `image.originalKey` is the new key. `image.processedKey`, `processedImageUrl`, `ai.processedImageKey`, and `ai.backgroundRemoved` are removed. Name, category, subcategory, colours, brand, acquired date, other `ai` fields, wardrobe / outfit membership, and Virtual Try On renders are unchanged. |
+| `imageKey` equals the current `originalKey` | `200` with the item unchanged (no Dynamo write, no S3 delete, no queue message) |
+| Other-user / missing wardrobe | `404 WARDROBE_NOT_FOUND` |
+| Other-user / missing item | `404 ITEM_NOT_FOUND` |
+| Missing / blank / non-string `imageKey` | `400 VALIDATION_ERROR` |
+| Foreign or path-traversal `imageKey` | `400 VALIDATION_ERROR` |
+| Enqueue fails after the write | `500 INTERNAL_ERROR` and the previous image metadata is restored |
+
+**Cleanup:** after a successful Dynamo write (and a successful enqueue when one is required), the previous original and previous processed S3 objects are deleted best-effort. The new key is never deleted.
+
+**Background removal:** when the caller is Premium **and** `BACKGROUND_REMOVAL_ENABLED` is on (same Premium gate as create-item; the worker flag is also required because this path never runs classify / colour), `processingStatus` is set to `PENDING` and `PROCESS_WARDROBE_ITEM` is enqueued with `{ jobType, userId, wardrobeId, itemId, originalImageKey, mode: "BACKGROUND_REMOVAL_ONLY" }`. The worker honours `mode` and must not run classify or colour detection. If the flag is off or the caller is not Premium, no job is enqueued and `processingStatus` is `READY` so lists show the new original immediately. A stale in-flight job whose `originalImageKey` no longer matches Dynamo is acked and does not mark the item `FAILED`.
+
+Outfit and share previews resolve live from the item (`processedKey` then `originalKey`). They do not store a copy of the clothing-item photo key, so they pick up the replacement on the next read. Existing Virtual Try On render keys are left alone.
+
+#### Clothing-item image URLs (WARDROBE-54)
 
 #### Clothing-item image URLs (WARDROBE-54)
 
