@@ -2,9 +2,9 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
 import {
   deleteItem,
-  deleteMany,
-  getItem,
+  deleteManyBatched,
   keys,
+  putItem,
   queryByGsi1,
   queryByPk,
 } from '../../shared/dynamodb';
@@ -15,8 +15,10 @@ import {
   StoredEntitlement,
   toEntitlementDto,
 } from '../../shared/entitlements';
-import { Errors } from '../../shared/errors';
+import { AppError, Errors } from '../../shared/errors';
+import { deleteFirebaseAuthUser } from '../../shared/firebase-admin-auth';
 import { errorResponse, ok, routeKey } from '../../shared/http';
+import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import { deleteObjectsUnderUserPrefix } from '../../shared/s3';
 import {
@@ -38,6 +40,7 @@ export interface MeHandlerDeps {
     input: CancelSubscriptionInput,
   ) => Promise<SubscriptionCancelResult>;
   cancelDeps?: SubscriptionCancelDeps;
+  deleteAuthUser?: (uid: string) => Promise<void>;
 }
 
 /**
@@ -52,11 +55,11 @@ export interface MeHandlerDeps {
  *                      share tokens, and S3 under users/{uid}/. Entitlement +
  *                      Firebase Auth stay. No subscription cancel (WARDROBE-103).
  * DELETE /me         — cancel store subscription when possible, revoke
- *                      ENTITLEMENT, then the same Dynamo + S3 wipe (plus
- *                      PROFILE). Returns WARDROBE-102 outcome so Flutter can
- *                      delete the Firebase Auth user client-side. This backend
- *                      does not call Firebase Admin. Seeded GENERIC_MODEL
- *                      catalog rows are never deleted.
+ *                      ENTITLEMENT, wipe Dynamo + S3 (plus PROFILE), then
+ *                      delete the Firebase Auth user with Admin SDK
+ *                      (WARDROBE-154). Data first, Auth last, so a retry can
+ *                      still authenticate. Seeded GENERIC_MODEL catalog rows
+ *                      are never deleted.
  *
  * Identity always comes from the Firebase authorizer (`getUserId`).
  */
@@ -105,27 +108,49 @@ async function deleteAccount(
 ): Promise<AccountDeleteResult> {
   const loadStored = deps.loadStoredEntitlement ?? loadStoredEntitlement;
   const entitlement = await loadStored(userId);
-  const subscription = await attemptCancel(userId, entitlement, deps);
+  await attemptCancel(userId, entitlement, deps);
 
-  await deleteItem(keys.userPk(userId), keys.entitlementSk);
+  try {
+    await wipeUser(userId, {
+      keepAccount: false,
+      includeEntitlement: true,
+      requireS3Success: true,
+    });
+    await writeDeletionMarker(userId);
+  } catch (error) {
+    if (isAppErrorCode(error, 'ACCOUNT_DELETION_FAILED')) {
+      throw error;
+    }
+    logger.error('Account data deletion failed', {
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+      reason: error instanceof Error ? error.message : 'unknown',
+    });
+    throw Errors.accountDeletionFailed();
+  }
 
-  const wipe = await wipeUser(userId, {
-    keepAccount: false,
-    includeEntitlement: false,
-  });
+  try {
+    const deleteAuth = deps.deleteAuthUser ?? deleteFirebaseAuthUser;
+    await deleteAuth(userId);
+  } catch (error) {
+    if (isAppErrorCode(error, 'AUTH_DELETION_FAILED')) {
+      throw error;
+    }
+    logger.warn('Firebase Auth user delete failed', {
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+      reason: error instanceof Error ? error.message : 'unknown',
+    });
+    throw Errors.authDeletionFailed();
+  }
 
-  return {
-    deleted: true,
-    keepAccount: false,
-    entitlementRevoked: true,
-    subscription: subscriptionDto(subscription),
-    deletedWardrobes: wipe.deletedWardrobes,
-    deletedItems: wipe.deletedItems,
-    deletedOutfits: wipe.deletedOutfits,
-    deletedAiProfiles: wipe.deletedAiProfiles,
-    deletedS3Objects: wipe.deletedS3Objects,
-    s3Failures: wipe.s3Failures,
-  };
+  try {
+    await deleteItem(keys.userPk(userId), keys.deletionSk);
+  } catch (error) {
+    logger.warn('Account deletion marker cleanup failed', {
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+      reason: error instanceof Error ? error.message : 'unknown',
+    });
+  }
+  return { deleted: true };
 }
 
 async function attemptCancel(
@@ -159,25 +184,6 @@ async function attemptCancel(
   }
 }
 
-function subscriptionDto(
-  outcome: SubscriptionCancelResult,
-): SubscriptionCancelResult {
-  const dto: SubscriptionCancelResult = { status: outcome.status };
-  if (outcome.cancelMode) {
-    dto.cancelMode = outcome.cancelMode;
-  }
-  if (outcome.store) {
-    dto.store = outcome.store;
-  }
-  if (outcome.expiresAt) {
-    dto.expiresAt = outcome.expiresAt;
-  }
-  if (outcome.retryInStore === true) {
-    dto.retryInStore = true;
-  }
-  return dto;
-}
-
 function isContentRoute(key: string, rawPath: string): boolean {
   return key.includes('/me/content') || rawPath.endsWith('/me/content');
 }
@@ -193,7 +199,11 @@ function isAccountRoute(key: string, rawPath: string): boolean {
 
 async function wipeUser(
   userId: string,
-  options: { keepAccount: boolean; includeEntitlement?: boolean },
+  options: {
+    keepAccount: boolean;
+    includeEntitlement?: boolean;
+    requireS3Success?: boolean;
+  },
 ): Promise<UserWipeResult> {
   const includeEntitlement =
     options.includeEntitlement ?? !options.keepAccount;
@@ -203,9 +213,14 @@ async function wipeUser(
     includeEntitlement,
   });
 
-  await deleteMany(rows.map(({ pk, sk }) => ({ pk, sk })));
+  await deleteManyBatched(rows.map(({ pk, sk }) => ({ pk, sk })));
 
   const s3 = await deleteObjectsUnderUserPrefix(userId);
+  if (options.requireS3Success && s3.failed > 0) {
+    throw Errors.accountDeletionFailed(
+      'Account media could not be deleted. Please try again.',
+    );
+  }
 
   return {
     keepAccount: options.keepAccount,
@@ -240,36 +255,18 @@ async function collectOwnedRows(
     rows.push({ pk, sk, entityType });
   };
 
-  const personalProfiles = (
-    await queryByPk(keys.userPk(userId), 'AIPROFILE#')
-  ).filter(
-    (item) => item.entityType === 'AIPROFILE' && item.userId === userId,
-  );
-  for (const profile of personalProfiles) {
-    add(profile.PK, profile.SK, 'AIPROFILE');
-  }
-
-  const shoppingCaches = (
-    await queryByPk(keys.userPk(userId), keys.shoppingCacheSkPrefix)
-  ).filter(
-    (item) => item.entityType === 'SHOPPING_CACHE' && item.userId === userId,
-  );
-  for (const cache of shoppingCaches) {
-    add(cache.PK, cache.SK, 'SHOPPING_CACHE');
-  }
-
-  const jobEvents = (
-    await queryByPk(keys.userPk(userId), keys.eventSkPrefix)
-  ).filter((item) => item.entityType === 'JOB_EVENT' && item.userId === userId);
-  for (const jobEvent of jobEvents) {
-    add(jobEvent.PK, jobEvent.SK, 'JOB_EVENT');
-  }
-
-  const devices = (
-    await queryByPk(keys.userPk(userId), keys.deviceSkPrefix)
-  ).filter((item) => item.entityType === 'DEVICE' && item.userId === userId);
-  for (const device of devices) {
-    add(device.PK, device.SK, 'DEVICE');
+  const userRows = await queryByPk(keys.userPk(userId));
+  for (const item of userRows) {
+    if (!ownedUserPartitionRow(item, userId)) {
+      continue;
+    }
+    if (!options.includeProfile && isProfileRow(item)) {
+      continue;
+    }
+    if (!options.includeEntitlement && isEntitlementRow(item)) {
+      continue;
+    }
+    add(item.PK, item.SK, item.entityType);
   }
 
   const shares = (
@@ -281,7 +278,7 @@ async function collectOwnedRows(
     add(share.PK, share.SK, 'SHARE');
   }
 
-  const wardrobes = (await queryByPk(keys.userPk(userId), 'WARDROBE#')).filter(
+  const wardrobes = userRows.filter(
     (item) => item.entityType === 'WARDROBE' && item.userId === userId,
   );
 
@@ -292,42 +289,28 @@ async function collectOwnedRows(
       if (child.userId !== userId) {
         continue;
       }
-      if (
-        child.entityType === 'ITEM' ||
-        child.entityType === 'OUTFIT' ||
-        child.entityType === 'WORN_ON'
-      ) {
-        add(child.PK, child.SK, child.entityType);
-      }
-    }
-    add(wardrobe.PK, wardrobe.SK, 'WARDROBE');
-  }
-
-  if (options.includeProfile) {
-    const profile = await getItem(keys.userPk(userId), keys.profileSk);
-    if (ownedProfile(profile, userId)) {
-      add(keys.userPk(userId), keys.profileSk, 'PROFILE');
-    }
-  }
-
-  if (options.includeEntitlement) {
-    const entitlement = await getItem(keys.userPk(userId), keys.entitlementSk);
-    if (ownedEntitlement(entitlement, userId)) {
-      add(keys.userPk(userId), keys.entitlementSk, 'ENTITLEMENT');
+      add(child.PK, child.SK, child.entityType);
     }
   }
 
   return rows;
 }
 
-function ownedEntitlement(
-  item: DynamoItem | undefined,
-  userId: string,
-): item is DynamoItem {
-  if (!item) {
-    return false;
-  }
-  if (item.entityType && item.entityType !== 'ENTITLEMENT') {
+async function writeDeletionMarker(userId: string): Promise<void> {
+  const now = nowIso();
+  await putItem({
+    PK: keys.userPk(userId),
+    SK: keys.deletionSk,
+    entityType: 'ACCOUNT_DELETION',
+    userId,
+    status: 'DATA_DELETED',
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function ownedUserPartitionRow(item: DynamoItem, userId: string): boolean {
+  if (item.PK !== keys.userPk(userId)) {
     return false;
   }
   if (typeof item.userId === 'string' && item.userId !== userId) {
@@ -336,20 +319,16 @@ function ownedEntitlement(
   return true;
 }
 
-function ownedProfile(
-  profile: DynamoItem | undefined,
-  userId: string,
-): profile is DynamoItem {
-  if (!profile) {
-    return false;
-  }
-  if (profile.entityType && profile.entityType !== 'PROFILE') {
-    return false;
-  }
-  if (typeof profile.userId === 'string' && profile.userId !== userId) {
-    return false;
-  }
-  return true;
+function isEntitlementRow(item: DynamoItem): boolean {
+  return item.entityType === 'ENTITLEMENT' || item.SK === keys.entitlementSk;
+}
+
+function isProfileRow(item: DynamoItem): boolean {
+  return item.entityType === 'PROFILE' || item.SK === keys.profileSk;
+}
+
+function isAppErrorCode(error: unknown, code: AppError['code']): boolean {
+  return error instanceof AppError && error.code === code;
 }
 
 function countEntity(rows: RowKey[], entityType: EntityType): number {

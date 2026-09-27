@@ -647,6 +647,13 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'wardrobe/dev/firebase-project-id',
     });
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/firebase-admin',
+    });
+    template.hasOutput('FirebaseAdminSecretName', {
+      Description:
+        'Secrets Manager secret for Firebase Admin SDK service-account JSON (WARDROBE-154). DELETE /me reads this at runtime to delete the Auth user. Replace the generated placeholder after deploy.',
+    });
 
     const synthesized = JSON.stringify(template.toJSON());
     expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{35}/);
@@ -1161,6 +1168,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
         'dynamodb:GetItem',
         'dynamodb:Query',
         'dynamodb:DeleteItem',
+        'dynamodb:BatchWriteItem',
       ]),
     );
     expect(dynamo).not.toContain('dynamodb:*');
@@ -1179,6 +1187,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     ) as Array<{
       Properties: {
         Timeout?: number;
+        MemorySize?: number;
         Environment?: { Variables?: Record<string, unknown> };
       };
     }>;
@@ -1193,8 +1202,10 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
         TABLE_NAME: expect.anything(),
         MEDIA_BUCKET_NAME: expect.anything(),
         SUPERWALL_SECRET_ARN: expect.anything(),
+        FIREBASE_ADMIN_SECRET_ARN: expect.anything(),
       }),
     );
+    expect(meFn?.Properties.MemorySize).toBe(512);
     expect(meFn?.Properties.Environment?.Variables).not.toHaveProperty(
       'SUPERWALL_WEBHOOK_SECRET',
     );

@@ -182,6 +182,15 @@ export class WardrobeStack extends cdk.Stack {
         'Optional Firebase service-account JSON for FCM HTTP v1 job-done push. Store { "project_id", "client_email", "private_key" }. Leave the placeholder to disable push. Never commit the real key.',
       removalPolicy,
     });
+    // Firebase Admin SDK (WARDROBE-154). MeFn deletes the Auth user on DELETE /me.
+    // Replace the generated placeholder with a Firebase service-account JSON.
+    // Never commit the real key.
+    const firebaseAdminSecret = new secretsmanager.Secret(this, 'FirebaseAdminSecret', {
+      secretName: `wardrobe/${stage}/firebase-admin`,
+      description:
+        'Firebase Admin SDK service-account JSON for server-side Auth user deletion (WARDROBE-154). Store the standard Google JSON { "type", "project_id", "private_key", "client_email", ... }. Never commit the real key.',
+      removalPolicy,
+    });
     const backgroundRemovalSecret = new secretsmanager.Secret(
       this,
       'BackgroundRemovalSecret',
@@ -322,7 +331,17 @@ export class WardrobeStack extends cdk.Stack {
     const meFn = this.lambda('MeFn', 'me', {
       ...commonLambdaProps,
       // Wipe can list/delete many Dynamo rows and S3 objects under users/{uid}/.
+      // firebase-admin is copied into the bundle (esbuild cannot tree-shake it).
       timeout: cdk.Duration.seconds(29),
+      memorySize: 512,
+      bundling: {
+        ...commonLambdaProps.bundling,
+        nodeModules: ['firebase-admin'],
+      },
+      environment: {
+        ...commonLambdaProps.environment,
+        FIREBASE_ADMIN_SECRET_ARN: firebaseAdminSecret.secretArn,
+      },
     });
     // WARDROBE-114 job-done inbox + FCM device registration. Workers write
     // events; this Lambda only lists / acks / registers tokens.
@@ -457,6 +476,7 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     table.grantReadWriteData(meFn);
+    firebaseAdminSecret.grantRead(meFn);
     table.grantReadWriteData(eventsFn);
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
@@ -1049,6 +1069,12 @@ export class WardrobeStack extends cdk.Stack {
       value: firebaseFcmSecret.secretName,
       description:
         'Optional Secrets Manager secret for Firebase FCM service-account JSON (WARDROBE-114). Inbox works if left as the generated placeholder.',
+    });
+
+    new cdk.CfnOutput(this, 'FirebaseAdminSecretName', {
+      value: firebaseAdminSecret.secretName,
+      description:
+        'Secrets Manager secret for Firebase Admin SDK service-account JSON (WARDROBE-154). DELETE /me reads this at runtime to delete the Auth user. Replace the generated placeholder after deploy.',
     });
 
     new cdk.CfnOutput(this, 'BackgroundRemovalSecretName', {

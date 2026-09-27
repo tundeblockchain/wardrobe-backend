@@ -32,6 +32,10 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
     _op: 'Delete',
     input,
   })),
+  BatchWriteCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'BatchWrite',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/client-s3', () => ({
@@ -65,7 +69,7 @@ const WORN_ON = '2026-09-18';
 const SHARE_TOKEN = 'shr_V1StGXR8_Z5jdHi6B-myT';
 
 interface DynamoCommand {
-  _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
+  _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete' | 'BatchWrite';
   input: {
     TableName?: string;
     Key?: { PK: string; SK: string };
@@ -75,6 +79,10 @@ interface DynamoCommand {
     ExpressionAttributeValues?: Record<string, unknown>;
     ExclusiveStartKey?: Record<string, unknown>;
     IndexName?: string;
+    RequestItems?: Record<
+      string,
+      Array<{ DeleteRequest?: { Key?: { PK: string; SK: string } } }>
+    >;
   };
 }
 
@@ -104,14 +112,39 @@ function expectEnvelope(
   result: APIGatewayProxyStructuredResultV2,
   statusCode: number,
   code: string,
+  retryable?: boolean,
 ): void {
   expect(result.statusCode).toBe(statusCode);
   expect(bodyOf(result)).toEqual({
     error: {
       code,
       message: expect.any(String),
+      ...(retryable === undefined ? {} : { retryable }),
     },
   });
+}
+
+function userPartitionExtras(): DynamoItem[] {
+  return [
+    {
+      PK: `USER#${OWNER_ID}`,
+      SK: `EVENT#evt_item_${ITEM_ID}_READY`,
+      entityType: 'JOB_EVENT',
+      userId: OWNER_ID,
+      eventId: `evt_item_${ITEM_ID}_READY`,
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z',
+    },
+    {
+      PK: `USER#${OWNER_ID}`,
+      SK: 'DEVICE#phone-1',
+      entityType: 'DEVICE',
+      userId: OWNER_ID,
+      deviceId: 'phone-1',
+      createdAt: '2026-09-19T00:00:00.000Z',
+      updatedAt: '2026-09-19T00:00:00.000Z',
+    },
+  ];
 }
 
 function dynamoWardrobe(userId = OWNER_ID): DynamoItem {
@@ -256,7 +289,7 @@ function mockEmptyWipe() {
     if (command._op === 'Get') {
       return {};
     }
-    if (command._op === 'Delete') {
+    if (command._op === 'Delete' || command._op === 'BatchWrite' || command._op === 'Put') {
       return {};
     }
     throw new Error(`unexpected Dynamo op ${command._op}`);
@@ -283,35 +316,30 @@ function mockPopulatedWipe(
       ) {
         return { Items: [dynamoShare()] };
       }
+      if (pk === `USER#${OWNER_ID}` && !sk) {
+        const items: DynamoItem[] = [dynamoWardrobe(), ...userPartitionExtras()];
+        if (options.includeProfile) {
+          items.push(dynamoProfile());
+        }
+        if (options.includeEntitlement) {
+          items.push({
+            PK: `USER#${OWNER_ID}`,
+            SK: 'ENTITLEMENT',
+            entityType: 'ENTITLEMENT',
+            userId: OWNER_ID,
+            tier: 'PREMIUM',
+            status: 'ACTIVE',
+            createdAt: '2026-09-16T00:00:00.000Z',
+            updatedAt: '2026-09-16T00:00:00.000Z',
+          });
+        }
+        return { Items: items };
+      }
       if (pk === `USER#${OWNER_ID}` && sk === 'EVENT#') {
-        return {
-          Items: [
-            {
-              PK: `USER#${OWNER_ID}`,
-              SK: `EVENT#evt_item_${ITEM_ID}_READY`,
-              entityType: 'JOB_EVENT',
-              userId: OWNER_ID,
-              eventId: `evt_item_${ITEM_ID}_READY`,
-              createdAt: '2026-09-19T00:00:00.000Z',
-              updatedAt: '2026-09-19T00:00:00.000Z',
-            },
-          ],
-        };
+        return { Items: [userPartitionExtras()[0]] };
       }
       if (pk === `USER#${OWNER_ID}` && sk === 'DEVICE#') {
-        return {
-          Items: [
-            {
-              PK: `USER#${OWNER_ID}`,
-              SK: 'DEVICE#phone-1',
-              entityType: 'DEVICE',
-              userId: OWNER_ID,
-              deviceId: 'phone-1',
-              createdAt: '2026-09-19T00:00:00.000Z',
-              updatedAt: '2026-09-19T00:00:00.000Z',
-            },
-          ],
-        };
+        return { Items: [userPartitionExtras()[1]] };
       }
       if (pk === `USER#${OWNER_ID}` && sk === 'WARDROBE#') {
         return { Items: [dynamoWardrobe()] };
@@ -349,7 +377,7 @@ function mockPopulatedWipe(
       }
       return {};
     }
-    if (command._op === 'Delete') {
+    if (command._op === 'Delete' || command._op === 'BatchWrite' || command._op === 'Put') {
       return {};
     }
     throw new Error(`unexpected Dynamo op ${command._op}`);
@@ -376,10 +404,34 @@ function mockPopulatedWipe(
 }
 
 function deletedKeys(): Array<{ PK: string; SK: string }> {
-  return mockDynamoSend.mock.calls
-    .map((call) => call[0] as DynamoCommand)
-    .filter((command) => command._op === 'Delete')
-    .map((command) => command.input.Key as { PK: string; SK: string });
+  const keys: Array<{ PK: string; SK: string }> = [];
+  for (const call of mockDynamoSend.mock.calls) {
+    const command = call[0] as DynamoCommand;
+    if (command._op === 'Delete' && command.input.Key) {
+      keys.push(command.input.Key);
+    }
+    if (command._op === 'BatchWrite') {
+      for (const requests of Object.values(command.input.RequestItems ?? {})) {
+        for (const request of requests) {
+          const key = request.DeleteRequest?.Key;
+          if (key) {
+            keys.push(key);
+          }
+        }
+      }
+    }
+  }
+  return keys;
+}
+
+function deleteMe(
+  extraDeps: Parameters<typeof handler>[1] = {},
+  path: '/me' | '/me/content' = '/me',
+) {
+  return handler(event({ path }), {
+    deleteAuthUser: jest.fn().mockResolvedValue(undefined),
+    ...extraDeps,
+  });
 }
 
 describe('me handler (WARDROBE-36)', () => {
@@ -551,7 +603,7 @@ describe('me handler (WARDROBE-36)', () => {
           }
           return { Items: [] };
         }
-        if (command._op === 'Delete') {
+        if (command._op === 'Delete' || command._op === 'BatchWrite') {
           return {};
         }
         return {};
@@ -573,66 +625,22 @@ describe('me handler (WARDROBE-36)', () => {
     });
   });
 
-  describe('DELETE /me (WARDROBE-103)', () => {
-    it('returns NONE, revokes nothing extra, and still wipes when there is no entitlement', async () => {
-      mockEmptyWipe();
-      const cancelSubscription = jest.fn().mockResolvedValue({ status: 'NONE' });
-
-      const result = asResult(
-        await handler(event({ path: '/me' }), { cancelSubscription }),
-      );
-
-      expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual({
-        deleted: true,
-        keepAccount: false,
-        entitlementRevoked: true,
-        subscription: { status: 'NONE' },
-        deletedWardrobes: 0,
-        deletedItems: 0,
-        deletedOutfits: 0,
-        deletedAiProfiles: 0,
-        deletedS3Objects: 0,
-        s3Failures: 0,
-      });
-      expect(cancelSubscription).toHaveBeenCalledWith({
-        userId: OWNER_ID,
-        entitlement: undefined,
-      });
-      expect(JSON.stringify(bodyOf(result))).not.toContain('null');
-    });
-
-    it('cancels immediately then wipes PROFILE and ENTITLEMENT', async () => {
+  describe('DELETE /me (WARDROBE-154)', () => {
+    it('wipes data, deletes Firebase Auth, and returns { deleted: true }', async () => {
       mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
       const cancelSubscription = jest.fn().mockResolvedValue({
         status: 'CANCELED',
         cancelMode: 'IMMEDIATE',
-        store: 'APP_STORE',
-        expiresAt: '2026-10-01T00:00:00.000Z',
+        store: 'STRIPE',
       });
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
 
       const result = asResult(
-        await handler(event({ path: '/me' }), { cancelSubscription }),
+        await deleteMe({ cancelSubscription, deleteAuthUser }),
       );
 
       expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual<AccountDeleteResult>({
-        deleted: true,
-        keepAccount: false,
-        entitlementRevoked: true,
-        subscription: {
-          status: 'CANCELED',
-          cancelMode: 'IMMEDIATE',
-          store: 'APP_STORE',
-          expiresAt: '2026-10-01T00:00:00.000Z',
-        },
-        deletedWardrobes: 1,
-        deletedItems: 1,
-        deletedOutfits: 1,
-        deletedAiProfiles: 0,
-        deletedS3Objects: 2,
-        s3Failures: 0,
-      });
+      expect(bodyOf(result)).toEqual<AccountDeleteResult>({ deleted: true });
       expect(cancelSubscription).toHaveBeenCalledWith({
         userId: OWNER_ID,
         entitlement: expect.objectContaining({
@@ -641,6 +649,7 @@ describe('me handler (WARDROBE-36)', () => {
           status: 'ACTIVE',
         }),
       });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
       expect(deletedKeys()).toEqual(
         expect.arrayContaining([
           { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
@@ -653,146 +662,165 @@ describe('me handler (WARDROBE-36)', () => {
           { PK: `USER#${OWNER_ID}`, SK: 'PROFILE' },
           { PK: `USER#${OWNER_ID}`, SK: 'ENTITLEMENT' },
           { PK: `SHARE#${SHARE_TOKEN}`, SK: 'SHARE' },
+          { PK: `USER#${OWNER_ID}`, SK: 'DELETION' },
         ]),
       );
-      expect(JSON.stringify(bodyOf(result))).not.toContain('null');
+      const puts = mockDynamoSend.mock.calls
+        .map((call) => call[0] as DynamoCommand)
+        .filter((command) => command._op === 'Put');
+      expect(puts.some((command) => command.input.Item?.SK === 'DELETION')).toBe(
+        true,
+      );
     });
 
-    it('returns CANCEL_AT_PERIOD_END, still revokes entitlement, and deletes AWS data', async () => {
-      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
-      const cancelSubscription = jest.fn().mockResolvedValue({
-        status: 'CANCEL_AT_PERIOD_END',
-        cancelMode: 'PERIOD_END',
-        store: 'PLAY_STORE',
-        expiresAt: '2026-10-01T00:00:00.000Z',
-      });
+    it('is idempotent when the account is already empty and Auth is gone', async () => {
+      mockEmptyWipe();
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
 
-      const result = asResult(
-        await handler(event({ path: '/me' }), { cancelSubscription }),
-      );
+      const first = asResult(await deleteMe({ deleteAuthUser }));
+      const second = asResult(await deleteMe({ deleteAuthUser }));
+
+      expect(bodyOf(first)).toEqual({ deleted: true });
+      expect(bodyOf(second)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries after a data-step failure and then finishes', async () => {
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        if (command._op === 'Get') {
+          return {};
+        }
+        if (command._op === 'Delete' || command._op === 'BatchWrite' || command._op === 'Put') {
+          return {};
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+      mockS3Send
+        .mockRejectedValueOnce(new Error('S3 unavailable'))
+        .mockResolvedValue({ Contents: [], IsTruncated: false });
+
+      const failed = asResult(await deleteMe({ deleteAuthUser }));
+      expectEnvelope(failed, 500, 'ACCOUNT_DELETION_FAILED', true);
+      expect(deleteAuthUser).not.toHaveBeenCalled();
+
+      const retried = asResult(await deleteMe({ deleteAuthUser }));
+      expect(retried.statusCode).toBe(200);
+      expect(bodyOf(retried)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('treats Firebase auth/user-not-found as success', async () => {
+      mockEmptyWipe();
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+
+      const result = asResult(await deleteMe({ deleteAuthUser }));
 
       expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual(
-        expect.objectContaining({
-          deleted: true,
-          keepAccount: false,
-          entitlementRevoked: true,
-          subscription: {
-            status: 'CANCEL_AT_PERIOD_END',
-            cancelMode: 'PERIOD_END',
-            store: 'PLAY_STORE',
-            expiresAt: '2026-10-01T00:00:00.000Z',
-          },
-        }),
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('surfaces S3 failure as ACCOUNT_DELETION_FAILED and does not delete Auth', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        if (
+          command._op === 'Get' ||
+          command._op === 'Delete' ||
+          command._op === 'BatchWrite' ||
+          command._op === 'Put'
+        ) {
+          return {};
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+      mockS3Send.mockImplementation(async (command: S3Command) => {
+        if (command._op === 'ListObjectsV2') {
+          return {
+            Contents: [{ Key: `users/${OWNER_ID}/uploads/stuck.jpg` }],
+            IsTruncated: false,
+          };
+        }
+        if (command._op === 'DeleteObjects') {
+          return {
+            Deleted: [],
+            Errors: [
+              {
+                Key: `users/${OWNER_ID}/uploads/stuck.jpg`,
+                Code: 'InternalError',
+                Message: 'temporary',
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected S3 op ${command._op}`);
+      });
+      const deleteAuthUser = jest.fn();
+
+      const result = asResult(await deleteMe({ deleteAuthUser }));
+
+      expectEnvelope(result, 500, 'ACCOUNT_DELETION_FAILED', true);
+      expect(deleteAuthUser).not.toHaveBeenCalled();
+    });
+
+    it('surfaces Auth delete failure as AUTH_DELETION_FAILED after data is gone', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const deleteAuthUser = jest.fn().mockRejectedValue(new Error('admin down'));
+
+      const result = asResult(await deleteMe({ deleteAuthUser }));
+
+      expectEnvelope(result, 502, 'AUTH_DELETION_FAILED', true);
+      expect(deletedKeys()).toEqual(
+        expect.arrayContaining([
+          { PK: `USER#${OWNER_ID}`, SK: 'ENTITLEMENT' },
+          { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
+        ]),
       );
-      expect(deletedKeys()).toContainEqual({
+      expect(deletedKeys()).not.toContainEqual({
         PK: `USER#${OWNER_ID}`,
-        SK: 'ENTITLEMENT',
+        SK: 'DELETION',
       });
     });
 
-    it('still deletes account data and revokes entitlement when cancel fails', async () => {
+    it('still deletes AWS data when store cancel fails (App Store has no server cancel)', async () => {
       mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
       const cancelSubscription = jest.fn().mockResolvedValue({
         status: 'CANCEL_FAILED',
         store: 'APP_STORE',
         retryInStore: true,
       });
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
 
       const result = asResult(
-        await handler(event({ path: '/me' }), { cancelSubscription }),
+        await deleteMe({ cancelSubscription, deleteAuthUser }),
       );
 
       expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual(
-        expect.objectContaining({
-          deleted: true,
-          keepAccount: false,
-          entitlementRevoked: true,
-          subscription: {
-            status: 'CANCEL_FAILED',
-            store: 'APP_STORE',
-            retryInStore: true,
-          },
-          deletedWardrobes: 1,
-          deletedItems: 1,
-          deletedOutfits: 1,
-        }),
-      );
+      expect(bodyOf(result)).toEqual({ deleted: true });
       expect(deletedKeys()).toContainEqual({
         PK: `USER#${OWNER_ID}`,
         SK: 'ENTITLEMENT',
       });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
     });
 
     it('still deletes when the cancel client throws', async () => {
       mockPopulatedWipe({ includeEntitlement: true });
       const cancelSubscription = jest.fn().mockRejectedValue(new Error('stripe down'));
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
 
       const result = asResult(
-        await handler(event({ path: '/me' }), { cancelSubscription }),
+        await deleteMe({ cancelSubscription, deleteAuthUser }),
       );
 
       expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual(
-        expect.objectContaining({
-          deleted: true,
-          entitlementRevoked: true,
-          subscription: {
-            status: 'CANCEL_FAILED',
-            retryInStore: true,
-          },
-        }),
-      );
-      expect(deletedKeys()).toContainEqual({
-        PK: `USER#${OWNER_ID}`,
-        SK: 'ENTITLEMENT',
-      });
-    });
-
-    it('succeeds when already empty so Flutter can still delete Auth', async () => {
-      mockEmptyWipe();
-      const cancelSubscription = jest.fn().mockResolvedValue({ status: 'NONE' });
-
-      const result = asResult(
-        await handler(event({ path: '/me' }), { cancelSubscription }),
-      );
-
-      expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual({
-        deleted: true,
-        keepAccount: false,
-        entitlementRevoked: true,
-        subscription: { status: 'NONE' },
-        deletedWardrobes: 0,
-        deletedItems: 0,
-        deletedOutfits: 0,
-        deletedAiProfiles: 0,
-        deletedS3Objects: 0,
-        s3Failures: 0,
-      });
-    });
-
-    it('omits JSON null on optional subscription fields', async () => {
-      mockEmptyWipe();
-      const cancelSubscription = jest.fn().mockResolvedValue({
-        status: 'CANCELED',
-        cancelMode: undefined,
-        store: undefined,
-        expiresAt: undefined,
-        retryInStore: false,
-      });
-
-      const result = asResult(
-        await handler(event({ path: '/me' }), { cancelSubscription }),
-      );
-
-      expect(bodyOf(result)).toEqual(
-        expect.objectContaining({
-          subscription: { status: 'CANCELED' },
-        }),
-      );
-      expect(JSON.stringify(bodyOf(result))).not.toContain('null');
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
     });
 
     it('wipes owned PERSONAL AI profiles and leaves GENERIC_MODEL catalog rows', async () => {
@@ -813,12 +841,17 @@ describe('me handler (WARDROBE-36)', () => {
         if (command._op === 'Query') {
           const pk = command.input.ExpressionAttributeValues?.[':pk'];
           const sk = command.input.ExpressionAttributeValues?.[':sk'];
-          if (pk === `USER#${OWNER_ID}` && sk === 'AIPROFILE#') {
+          if (pk === `USER#${OWNER_ID}` && (!sk || sk === 'AIPROFILE#')) {
             return { Items: [personal] };
           }
           return { Items: [] };
         }
-        if (command._op === 'Get' || command._op === 'Delete') {
+        if (
+          command._op === 'Get' ||
+          command._op === 'Delete' ||
+          command._op === 'BatchWrite' ||
+          command._op === 'Put'
+        ) {
           return {};
         }
         throw new Error(`unexpected Dynamo op ${command._op}`);
@@ -860,12 +893,17 @@ describe('me handler (WARDROBE-36)', () => {
         if (command._op === 'Query') {
           const pk = command.input.ExpressionAttributeValues?.[':pk'];
           const sk = command.input.ExpressionAttributeValues?.[':sk'];
-          if (pk === `USER#${OWNER_ID}` && sk === 'SHOPPING#') {
+          if (pk === `USER#${OWNER_ID}` && (!sk || sk === 'SHOPPING#')) {
             return { Items: [cache] };
           }
           return { Items: [] };
         }
-        if (command._op === 'Get' || command._op === 'Delete') {
+        if (
+          command._op === 'Get' ||
+          command._op === 'Delete' ||
+          command._op === 'BatchWrite' ||
+          command._op === 'Put'
+        ) {
           return {};
         }
         throw new Error(`unexpected Dynamo op ${command._op}`);
@@ -900,22 +938,26 @@ describe('me handler (WARDROBE-36)', () => {
           }
           return { Items: [] };
         }
-        if (command._op === 'Get' || command._op === 'Delete') {
+        if (
+          command._op === 'Get' ||
+          command._op === 'Delete' ||
+          command._op === 'BatchWrite' ||
+          command._op === 'Put'
+        ) {
           return {};
         }
         throw new Error(`unexpected Dynamo op ${command._op}`);
       });
       mockS3Send.mockResolvedValue({ Contents: [], IsTruncated: false });
 
-      const result = asResult(await handler(event({ path: '/me' })));
+      const result = asResult(await deleteMe());
 
       expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual(
-        expect.objectContaining({
-          deletedItems: 1,
-          deletedOutfits: 0,
-        }),
-      );
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(deletedKeys()).toContainEqual({
+        PK: `WARDROBE#${WARDROBE_ID}`,
+        SK: `ITEM#${ITEM_ID}`,
+      });
       expect(deletedKeys()).not.toContainEqual({
         PK: `WARDROBE#${WARDROBE_ID}`,
         SK: `OUTFIT#${OUTFIT_ID}`,

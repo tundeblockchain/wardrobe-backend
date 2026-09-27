@@ -41,6 +41,7 @@
     "@aws-sdk/s3-request-presigner": "^3.714.0",
     "aws-cdk-lib": "^2.170.0",
     "constructs": "^10.4.2",
+    "firebase-admin": "^13.10.0",
     "jose": "^5.10.0",
     "nanoid": "^3.3.8",
     "source-map-support": "^0.5.21"

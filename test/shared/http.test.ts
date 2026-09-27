@@ -270,4 +270,31 @@ describe('shared error envelope', () => {
       },
     });
   });
+
+  it('maps ACCOUNT_DELETION_FAILED to a 500 envelope with retryable', () => {
+    const result = asResult(errorResponse(Errors.accountDeletionFailed()));
+
+    expect(result.statusCode).toBe(500);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ACCOUNT_DELETION_FAILED',
+        message: 'Account data could not be deleted. Please try again.',
+        retryable: true,
+      },
+    });
+  });
+
+  it('maps AUTH_DELETION_FAILED to a 502 envelope with retryable', () => {
+    const result = asResult(errorResponse(Errors.authDeletionFailed()));
+
+    expect(result.statusCode).toBe(502);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'AUTH_DELETION_FAILED',
+        message:
+          'Account data was removed but the auth user could not be deleted. Please try again.',
+        retryable: true,
+      },
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
+  BatchWriteCommand,
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
@@ -44,6 +45,11 @@ export const keys = {
   profileSk: 'PROFILE',
   /** WARDROBE-91 Superwall-verified subscription row. */
   entitlementSk: 'ENTITLEMENT',
+  /**
+   * Transient DELETE /me marker (WARDROBE-154). Written after AWS data is
+   * gone and removed after Firebase Auth delete succeeds.
+   */
+  deletionSk: 'DELETION',
   /**
    * WARDROBE-96 related-shopping cache (24h Dynamo TTL on `ttl`).
    * One row per owned item; fingerprint mismatch or expiry is a miss.
@@ -200,6 +206,67 @@ export async function deleteMany(
   for (const { pk, sk } of pairs) {
     await deleteItem(pk, sk);
   }
+}
+
+/** DynamoDB BatchWriteItem limit. */
+export const DYNAMO_BATCH_WRITE_LIMIT = 25;
+
+const BATCH_WRITE_MAX_ATTEMPTS = 5;
+
+/**
+ * Chunked BatchWriteItem deletes with UnprocessedItems retry.
+ * Used by account wipe so large catalogs stay within Lambda time.
+ */
+export async function deleteManyBatched(
+  pairs: Array<{ pk: string; sk: string }>,
+): Promise<void> {
+  for (let i = 0; i < pairs.length; i += DYNAMO_BATCH_WRITE_LIMIT) {
+    await deleteBatchWithRetry(pairs.slice(i, i + DYNAMO_BATCH_WRITE_LIMIT));
+  }
+}
+
+async function deleteBatchWithRetry(
+  pairs: Array<{ pk: string; sk: string }>,
+): Promise<void> {
+  if (pairs.length === 0) {
+    return;
+  }
+
+  let pending = pairs;
+  for (let attempt = 1; attempt <= BATCH_WRITE_MAX_ATTEMPTS; attempt += 1) {
+    const result = await client.send(
+      new BatchWriteCommand({
+        RequestItems: {
+          [tableName()]: pending.map(({ pk, sk }) => ({
+            DeleteRequest: { Key: { PK: pk, SK: sk } },
+          })),
+        },
+      }),
+    );
+
+    const unprocessed =
+      result.UnprocessedItems?.[tableName()]?.flatMap((item) => {
+        const key = item.DeleteRequest?.Key;
+        if (
+          !key ||
+          typeof key.PK !== 'string' ||
+          typeof key.SK !== 'string'
+        ) {
+          return [];
+        }
+        return [{ pk: key.PK, sk: key.SK }];
+      }) ?? [];
+
+    if (unprocessed.length === 0) {
+      return;
+    }
+
+    pending = unprocessed;
+  }
+
+  throw Errors.internal(
+    `DynamoDB batch delete left ${pending.length} unprocessed item(s).`,
+  );
 }
 
 export function isConditionalCheckFailed(error: unknown): boolean {

@@ -10,8 +10,9 @@ import * as path from 'path';
 
 /**
  * Isolated WARDROBE-91 wiring (Superwall webhook → Dynamo entitlements).
- * GET /me stays on MeFn. DELETE /me (WARDROBE-103) also reads this secret
- * to attempt Stripe / Play cancel. This module owns the public webhook + secret.
+ * GET /me stays on MeFn. DELETE /me (WARDROBE-103 / WARDROBE-154) also reads
+ * this secret to attempt Stripe / Play cancel. This module owns the public
+ * webhook + secret. Firebase Admin credentials are a separate secret.
  */
 export interface EntitlementsProps {
   stage: string;

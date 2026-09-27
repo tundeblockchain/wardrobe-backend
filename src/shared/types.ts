@@ -548,11 +548,11 @@ export const DEFAULT_SHOPPING_LINKS_PER_ITEM = 8;
 export const MAX_SHOPPING_LINKS_PER_ITEM = 12;
 
 /**
- * Result of DELETE /me/content (WARDROBE-36). DELETE /me (WARDROBE-103)
- * returns {@link AccountDeleteResult} instead.
+ * Result of DELETE /me/content (WARDROBE-36). DELETE /me (WARDROBE-154)
+ * returns {@link AccountDeleteResult} instead and deletes the Firebase Auth
+ * user server-side after this wipe succeeds.
  *
- * Firebase Auth is never deleted here. Flutter may keep the session after a
- * content wipe, or delete the Auth user client-side after DELETE /me.
+ * Firebase Auth is never deleted on content wipe. Flutter may keep the session.
  */
 export interface UserWipeResult {
   keepAccount: boolean;
@@ -590,14 +590,11 @@ export interface SubscriptionCancelResult {
 }
 
 /**
- * Result of DELETE /me (WARDROBE-103). Wipe counts stay for WARDROBE-36
- * clients; Flutter WARDROBE-102 may ignore them.
+ * Result of DELETE /me (WARDROBE-154). Returned only after AWS data,
+ * server entitlement, and the Firebase Auth user are gone.
  */
-export interface AccountDeleteResult extends UserWipeResult {
+export interface AccountDeleteResult {
   deleted: true;
-  keepAccount: false;
-  entitlementRevoked: true;
-  subscription: SubscriptionCancelResult;
 }
 
 /**
@@ -738,7 +735,8 @@ export type EntityType =
   | 'JOB_EVENT'
   | 'DEVICE'
   | 'SHARE'
-  | 'RATE_LIMIT';
+  | 'RATE_LIMIT'
+  | 'ACCOUNT_DELETION';
 
 export interface DynamoItem {
   PK: string;
