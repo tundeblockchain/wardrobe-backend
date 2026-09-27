@@ -23,4 +23,13 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(Errors.aiProfileNotFound('custom').code).toBe('AI_PROFILE_NOT_FOUND');
     expect(Errors.aiRequired('custom').code).toBe('ENTITLEMENT_AI_REQUIRED');
   });
+
+  it('marks account and auth deletion failures as retryable', () => {
+    expect(Errors.accountDeletionFailed().code).toBe('ACCOUNT_DELETION_FAILED');
+    expect(Errors.accountDeletionFailed().statusCode).toBe(500);
+    expect(Errors.accountDeletionFailed().retryable).toBe(true);
+    expect(Errors.authDeletionFailed().code).toBe('AUTH_DELETION_FAILED');
+    expect(Errors.authDeletionFailed().statusCode).toBe(502);
+    expect(Errors.authDeletionFailed().retryable).toBe(true);
+  });
 });

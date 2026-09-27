@@ -21,24 +21,31 @@ export type ErrorCode =
   | 'ENTITLEMENT_OUTFIT_LIMIT'
   | 'ENTITLEMENT_AI_REQUIRED'
   | 'NOT_IMPLEMENTED'
-  | 'INTERNAL_ERROR';
+  | 'INTERNAL_ERROR'
+  | 'ACCOUNT_DELETION_FAILED'
+  | 'AUTH_DELETION_FAILED';
 
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly statusCode: number;
   readonly headers?: Record<string, string>;
+  readonly retryable?: boolean;
 
   constructor(
     code: ErrorCode,
     message: string,
     statusCode: number,
     headers?: Record<string, string>,
+    retryable?: boolean,
   ) {
     super(message);
     this.name = 'AppError';
     this.code = code;
     this.statusCode = statusCode;
     this.headers = headers;
+    if (retryable !== undefined) {
+      this.retryable = retryable;
+    }
   }
 }
 
@@ -130,4 +137,20 @@ export const Errors = {
 
   internal: (message = 'An unexpected error occurred.') =>
     new AppError('INTERNAL_ERROR', message, 500),
+
+  /**
+   * Dynamo / S3 (or other AWS data) step failed on DELETE /me.
+   * Safe to retry — Auth user is not deleted until data is gone.
+   */
+  accountDeletionFailed: (
+    message = 'Account data could not be deleted. Please try again.',
+  ) => new AppError('ACCOUNT_DELETION_FAILED', message, 500, undefined, true),
+
+  /**
+   * AWS data is gone but Firebase Auth user delete failed.
+   * Safe to retry — the next call skips empty data and retries Auth.
+   */
+  authDeletionFailed: (
+    message = 'Account data was removed but the auth user could not be deleted. Please try again.',
+  ) => new AppError('AUTH_DELETION_FAILED', message, 502, undefined, true),
 };

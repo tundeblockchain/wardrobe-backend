@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { AppError, Errors } from './errors';
+import { AppError, ErrorCode, Errors } from './errors';
 import { logger } from './logger';
 
 const CORS_HEADERS = {
@@ -46,13 +46,21 @@ export function noContent(): APIGatewayProxyResultV2 {
 
 export function errorResponse(error: unknown): APIGatewayProxyResultV2 {
   if (error instanceof AppError) {
+    const errorBody: {
+      code: ErrorCode;
+      message: string;
+      retryable?: boolean;
+    } = {
+      code: error.code,
+      message: error.message,
+    };
+    if (error.retryable !== undefined) {
+      errorBody.retryable = error.retryable;
+    }
     return json(
       error.statusCode,
       {
-        error: {
-          code: error.code,
-          message: error.message,
-        },
+        error: errorBody,
       },
       error.headers,
     );
