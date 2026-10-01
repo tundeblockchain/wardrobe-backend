@@ -183,10 +183,13 @@ export interface AiProfileBodyContext {
 }
 
 /**
- * Flutter `AiProfile` DTO. Never expose Dynamo `PK` / `SK` / `GSI1*`.
+ * Flutter Virtual Profile DTO. Never expose Dynamo `PK` / `SK` / `GSI1*`.
  *
  * `referenceImages` may be empty on create; WARDROBE-44 attaches uploads.
- * `label` is set on seeded GENERIC_MODEL rows (WARDROBE-45) for the picker.
+ * `label` is the optional display name. Seeded GENERIC_MODEL rows set it
+ * for the picker (WARDROBE-45). PERSONAL create/PATCH persist it
+ * (WARDROBE-158). Soft-omitted when empty.
+ * `notes` is PERSONAL-only free-text (WARDROBE-158). Soft-omitted when empty.
  * `frontImageUrl` / `referenceImageUrls` are short-lived presigned GETs
  * (WARDROBE-73 / WARDROBE-79) — never persisted in Dynamo. Flutter
  * WARDROBE-71 reads `frontImageUrl`. PERSONAL rows coerce Dynamo Set /
@@ -207,7 +210,10 @@ export interface AiProfile extends AiProfileBodyContext {
   status: AiProfileStatus;
   createdAt: string;
   updatedAt: string;
+  /** Optional display name. Soft-omitted when empty. */
   label?: string;
+  /** Optional PERSONAL free-text. Soft-omitted when empty. */
+  notes?: string;
   /**
    * Explicit main reference object key (PERSONAL). Soft-omitted when empty.
    * Always one of `referenceImages` when present.

@@ -415,6 +415,55 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       );
     });
 
+    it('persists optional label and notes on create', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            body: { label: '  Home look  ', notes: '  prefer natural light  ' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(201);
+      const body = bodyOf(result) as AiProfile;
+      expect(body.label).toBe('Home look');
+      expect(body.notes).toBe('prefer natural light');
+      expectFlutterDto(body);
+
+      const command = mockSend.mock.calls[0][0] as Command;
+      expect(command.input.Item).toEqual(
+        expect.objectContaining({
+          label: 'Home look',
+          notes: 'prefer natural light',
+        }),
+      );
+    });
+
+    it('soft-omits empty label and notes on create', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            body: { label: null, notes: '' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(201);
+      const body = bodyOf(result) as AiProfile;
+      expect(body).not.toHaveProperty('label');
+      expect(body).not.toHaveProperty('notes');
+
+      const command = mockSend.mock.calls[0][0] as Command;
+      expect(command.input.Item).not.toHaveProperty('label');
+      expect(command.input.Item).not.toHaveProperty('notes');
+    });
+
     it('soft-omits empty body context so create still succeeds', async () => {
       mockSend.mockResolvedValue({});
 
@@ -502,6 +551,35 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(listed.braSize).toBe('32C');
       expect(listed).not.toHaveProperty('weightKg');
       expect(listed).not.toHaveProperty('gender');
+    });
+
+    it('returns stored label and notes and soft-omits empties', async () => {
+      mockSend.mockResolvedValue({
+        Items: [
+          dynamoPersonal(OWNER_ID, {
+            label: 'Home look',
+            notes: 'prefer natural light',
+          }),
+          dynamoPersonal(OWNER_ID, {
+            aiProfileId: 'profile_emptydisp',
+            label: '   ',
+            notes: '',
+          }),
+        ],
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+
+      expect(result.statusCode).toBe(200);
+      const listed = (bodyOf(result) as { aiProfiles: AiProfile[] }).aiProfiles;
+      expect(listed[0]).toEqual(
+        personalDto({
+          label: 'Home look',
+          notes: 'prefer natural light',
+        }),
+      );
+      expect(listed[1]).not.toHaveProperty('label');
+      expect(listed[1]).not.toHaveProperty('notes');
     });
 
     it('lists only the caller PERSONAL profiles', async () => {
@@ -1036,6 +1114,159 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(update.input.UpdateExpression).toContain('REMOVE');
     });
 
+    it('updates label and notes without a body context field', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get') {
+          return { Item: dynamoPersonal(OWNER_ID, { heightCm: 160 }) };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoPersonal(OWNER_ID, {
+              heightCm: 160,
+              label: String(
+                command.input.ExpressionAttributeValues?.[':label'] ?? '',
+              ),
+              notes: String(
+                command.input.ExpressionAttributeValues?.[':notes'] ?? '',
+              ),
+              updatedAt: String(
+                command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+              ),
+            }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: PROFILE_ID,
+            body: { label: 'Home look', notes: 'prefer natural light' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        personalDto({
+          heightCm: 160,
+          label: 'Home look',
+          notes: 'prefer natural light',
+          updatedAt: expect.stringMatching(ISO8601) as unknown as string,
+        }),
+      );
+
+      const update = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Update',
+      )?.[0] as Command;
+      expect(update.input.ExpressionAttributeValues).toEqual(
+        expect.objectContaining({
+          ':label': 'Home look',
+          ':notes': 'prefer natural light',
+        }),
+      );
+      expect(update.input.UpdateExpression).not.toContain('heightCm');
+    });
+
+    it('leaves omitted label and notes unchanged', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get') {
+          return {
+            Item: dynamoPersonal(OWNER_ID, {
+              label: 'Home look',
+              notes: 'prefer natural light',
+            }),
+          };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoPersonal(OWNER_ID, {
+              label: 'Home look',
+              notes: 'prefer natural light',
+              heightCm: command.input.ExpressionAttributeValues?.[':heightCm'],
+              updatedAt: String(
+                command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+              ),
+            }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: PROFILE_ID,
+            body: { heightCm: 172 },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as AiProfile;
+      expect(body.label).toBe('Home look');
+      expect(body.notes).toBe('prefer natural light');
+      expect(body.heightCm).toBe(172);
+
+      const update = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Update',
+      )?.[0] as Command;
+      expect(update.input.ExpressionAttributeValues).not.toHaveProperty(
+        ':label',
+      );
+      expect(update.input.ExpressionAttributeValues).not.toHaveProperty(
+        ':notes',
+      );
+    });
+
+    it('clears label and notes with null or blank', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get') {
+          return {
+            Item: dynamoPersonal(OWNER_ID, {
+              label: 'Home look',
+              notes: 'prefer natural light',
+            }),
+          };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoPersonal(OWNER_ID, {
+              updatedAt: String(
+                command.input.ExpressionAttributeValues?.[':updatedAt'] ?? '',
+              ),
+            }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: PROFILE_ID,
+            body: { label: null, notes: '' },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as AiProfile;
+      expect(body).not.toHaveProperty('label');
+      expect(body).not.toHaveProperty('notes');
+
+      const update = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Update',
+      )?.[0] as Command;
+      expect(update.input.UpdateExpression).toContain('REMOVE');
+      expect(update.input.UpdateExpression).toContain('#label');
+      expect(update.input.UpdateExpression).toContain('#notes');
+    });
+
     it('returns 403 when updating a GENERIC_MODEL profile', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
@@ -1063,7 +1294,34 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expectEnvelope(result, 403, 'UNAUTHORIZED');
     });
 
-    it('returns 400 when no body context field is sent', async () => {
+    it('returns 403 when PATCHing GENERIC_MODEL with only label or notes', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
+          return {};
+        }
+        if (
+          command._op === 'Get' &&
+          command.input.Key?.PK === 'AIPROFILE#GENERIC_MODEL'
+        ) {
+          return { Item: dynamoGeneric() };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            aiProfileId: GENERIC_ID,
+            body: { label: 'Alex', notes: 'catalog note' },
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 403, 'UNAUTHORIZED');
+    });
+
+    it('returns 400 when no writable field is sent', async () => {
       mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
@@ -1077,6 +1335,13 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       );
 
       expectEnvelope(result, 400, 'VALIDATION_ERROR');
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message:
+            'At least one body context, label, or notes field is required.',
+        },
+      });
     });
   });
 

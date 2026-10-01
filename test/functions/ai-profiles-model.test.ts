@@ -92,6 +92,40 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     });
     expect(dto).not.toHaveProperty('PK');
     expect(dto).not.toHaveProperty('userId');
+    expect(dto).not.toHaveProperty('label');
+    expect(dto).not.toHaveProperty('notes');
+  });
+
+  it('persists PERSONAL label and notes and soft-omits blanks from the DTO', () => {
+    const withDisplay = toAiProfile(
+      buildPersonalAiProfile({
+        userId: 'uid-1',
+        aiProfileId: 'profile_abc',
+        label: '  Home look  ',
+        notes: '  prefer natural light  ',
+        createdAt: '2026-09-06T08:00:00.000Z',
+        updatedAt: '2026-09-06T08:00:00.000Z',
+      }),
+    );
+    expect(withDisplay.label).toBe('Home look');
+    expect(withDisplay.notes).toBe('prefer natural light');
+
+    const omitted = toAiProfile({
+      PK: 'USER#uid-1',
+      SK: 'AIPROFILE#profile_abc',
+      entityType: 'AIPROFILE',
+      userId: 'uid-1',
+      aiProfileId: 'profile_abc',
+      type: 'PERSONAL',
+      referenceImages: [],
+      status: 'READY',
+      createdAt: '2026-09-06T08:00:00.000Z',
+      updatedAt: '2026-09-06T08:00:00.000Z',
+      label: '   ',
+      notes: '',
+    });
+    expect(omitted).not.toHaveProperty('label');
+    expect(omitted).not.toHaveProperty('notes');
   });
 
   it('documents the WARDROBE-47 try-on secret id and RENDER_OUTFIT job', () => {

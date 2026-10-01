@@ -137,6 +137,10 @@ export function toAiProfile(item: DynamoItem): AiProfile {
     typeof item.label === 'string' && item.label.trim()
       ? item.label.trim()
       : undefined;
+  const notes =
+    typeof item.notes === 'string' && item.notes.trim()
+      ? item.notes.trim()
+      : undefined;
 
   const body = pickAiProfileBodyContext(item);
   const mainImageKey =
@@ -152,6 +156,7 @@ export function toAiProfile(item: DynamoItem): AiProfile {
     createdAt: String(item.createdAt),
     updatedAt: String(item.updatedAt),
     ...(label ? { label } : {}),
+    ...(notes ? { notes } : {}),
     ...(mainImageKey ? { mainImageKey } : {}),
     ...body,
   };
@@ -257,6 +262,8 @@ export function buildPersonalAiProfile(input: {
   status?: AiProfileStatus;
   createdAt?: string;
   updatedAt?: string;
+  label?: string;
+  notes?: string;
   body?: AiProfileBodyContext;
 }): DynamoItem {
   const aiProfileId = input.aiProfileId ?? newAiProfileId();
@@ -266,6 +273,8 @@ export function buildPersonalAiProfile(input: {
     referenceImages,
     input.mainImageKey,
   );
+  const label = input.label?.trim();
+  const notes = input.notes?.trim();
 
   return applyAiProfileBodyContext(
     {
@@ -280,6 +289,8 @@ export function buildPersonalAiProfile(input: {
       createdAt: timestamp,
       updatedAt: input.updatedAt ?? timestamp,
       ...(mainImageKey ? { mainImageKey } : {}),
+      ...(label ? { label } : {}),
+      ...(notes ? { notes } : {}),
     },
     isEmptyAiProfileBodyContext(input.body) ? undefined : input.body,
   );

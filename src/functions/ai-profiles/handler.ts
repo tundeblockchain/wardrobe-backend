@@ -36,12 +36,14 @@ import {
 import { AiProfile, AiProfileList } from '../../shared/types';
 import {
   hasAiProfileBodyWrite,
+  hasAiProfileDisplayWrite,
   optionalAiProfileType,
   optionalBoolean,
   optionalInteger,
   optionalNonEmptyString,
   optionalReferenceImages,
   parseAiProfileBodyContext,
+  parseAiProfileDisplayFields,
   requireAttachReferenceImageKeys,
   requireCreatePersonalType,
   requireExistingReferenceImageKey,
@@ -67,6 +69,8 @@ interface CreateAiProfileBody {
   referenceImages?: unknown;
   userId?: unknown;
   status?: unknown;
+  label?: unknown;
+  notes?: unknown;
   heightCm?: unknown;
   weightKg?: unknown;
   bustCm?: unknown;
@@ -91,7 +95,8 @@ interface CreateReferenceUploadBody {
  * Authenticated Virtual Profile CRUD + PERSONAL reference-image upload
  * (WARDROBE-43/44) + frontal GET URLs on create/get/list (WARDROBE-73 /
  * WARDROBE-79) + optional body/context fields (WARDROBE-80 / WARDROBE-82)
- * + explicit main photo on PERSONAL galleries (WARDROBE-157).
+ * + explicit main photo on PERSONAL galleries (WARDROBE-157)
+ * + optional PERSONAL display name / notes (WARDROBE-158).
  *
  * Identity comes from the Firebase authorizer (`getUserId`). Body / query /
  * path `userId` is ignored.
@@ -290,6 +295,9 @@ async function createPersonalProfile(
   const { set: bodyContext } = parseAiProfileBodyContext(
     body as Record<string, unknown>,
   );
+  const { set: display } = parseAiProfileDisplayFields(
+    body as Record<string, unknown>,
+  );
   const timestamp = nowIso();
 
   const item = buildPersonalAiProfile({
@@ -297,6 +305,8 @@ async function createPersonalProfile(
     aiProfileId: newAiProfileId(),
     referenceImages,
     body: bodyContext,
+    label: display.label,
+    notes: display.notes,
     // Empty refs: nothing to process. Attach (WARDROBE-44) keeps READY.
     status: 'READY',
     createdAt: timestamp,
@@ -321,20 +331,30 @@ async function updatePersonalProfile(
   const write = parseAiProfileBodyContext(body as Record<string, unknown>, {
     allowClear: true,
   });
-  if (!hasAiProfileBodyWrite(write)) {
-    throw Errors.validation('At least one body context field is required.');
+  const display = parseAiProfileDisplayFields(body as Record<string, unknown>, {
+    allowClear: true,
+  });
+  if (!hasAiProfileBodyWrite(write) && !hasAiProfileDisplayWrite(display)) {
+    throw Errors.validation(
+      'At least one body context, label, or notes field is required.',
+    );
   }
 
   const mainAttributes = mainImageUpdate(
     profile.referenceImages,
     profile.mainImageKey,
   );
-  const remove = [...write.remove, ...mainAttributes.remove];
+  const remove = [...write.remove, ...display.remove, ...mainAttributes.remove];
 
   const updated = await updateAttributes(
     keys.userPk(userId),
     keys.aiProfileSk(aiProfileId),
-    { ...write.set, updatedAt: nowIso(), ...mainAttributes.set },
+    {
+      ...write.set,
+      ...display.set,
+      updatedAt: nowIso(),
+      ...mainAttributes.set,
+    },
     remove.length > 0 ? { remove } : undefined,
   );
 

@@ -615,6 +615,23 @@ export const AI_PROFILE_BUST_CM = { min: 40, max: 200 } as const;
 export const AI_PROFILE_HIPS_CM = { min: 40, max: 200 } as const;
 export const AI_PROFILE_AGE_YEARS = { min: 1, max: 120 } as const;
 
+/** Optional display name. Same default as other optional strings. */
+export const AI_PROFILE_LABEL_MAX = 100;
+/** Optional PERSONAL free-text. Same default as other optional strings. */
+export const AI_PROFILE_NOTES_MAX = 100;
+
+export type AiProfileDisplayFieldName = 'label' | 'notes';
+
+export interface AiProfileDisplayFields {
+  label?: string;
+  notes?: string;
+}
+
+export interface AiProfileDisplayWrite {
+  set: AiProfileDisplayFields;
+  remove: AiProfileDisplayFieldName[];
+}
+
 export interface AiProfileBodyContextWrite {
   set: AiProfileBodyContext;
   remove: AiProfileBodyFieldName[];
@@ -658,6 +675,48 @@ export function parseAiProfileBodyContext(
 }
 
 export function hasAiProfileBodyWrite(write: AiProfileBodyContextWrite): boolean {
+  return Object.keys(write.set).length > 0 || write.remove.length > 0;
+}
+
+/**
+ * Parse optional WARDROBE-158 display fields (`label`, `notes`).
+ *
+ * Missing / null / blank values are soft-omitted on create.
+ * On PATCH (`allowClear`), null / blank removes a previously stored field.
+ * Present but invalid values are `400 VALIDATION_ERROR`.
+ */
+export function parseAiProfileDisplayFields(
+  body: Record<string, unknown> | undefined,
+  options?: { allowClear?: boolean },
+): AiProfileDisplayWrite {
+  const source = body ?? {};
+  const set: AiProfileDisplayFields = {};
+  const remove: AiProfileDisplayFieldName[] = [];
+  const allowClear = options?.allowClear === true;
+
+  assignClearableString(
+    source,
+    'label',
+    AI_PROFILE_LABEL_MAX,
+    set,
+    remove,
+    allowClear,
+  );
+  assignClearableString(
+    source,
+    'notes',
+    AI_PROFILE_NOTES_MAX,
+    set,
+    remove,
+    allowClear,
+  );
+
+  return { set, remove };
+}
+
+export function hasAiProfileDisplayWrite(
+  write: AiProfileDisplayWrite,
+): boolean {
   return Object.keys(write.set).length > 0 || write.remove.length > 0;
 }
 
@@ -718,6 +777,30 @@ function assignOptionalString(
   maxLength: number,
   set: AiProfileBodyContext,
   remove: AiProfileBodyFieldName[],
+  allowClear: boolean,
+): void {
+  if (!(field in source)) {
+    return;
+  }
+  const value = source[field];
+  if (isClearValue(value)) {
+    if (allowClear) {
+      remove.push(field);
+    }
+    return;
+  }
+  const parsed = optionalNonEmptyString(value, field, maxLength);
+  if (parsed !== undefined) {
+    set[field] = parsed;
+  }
+}
+
+function assignClearableString<T extends string>(
+  source: Record<string, unknown>,
+  field: T,
+  maxLength: number,
+  set: Partial<Record<T, string>>,
+  remove: T[],
   allowClear: boolean,
 ): void {
   if (!(field in source)) {

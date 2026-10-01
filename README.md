@@ -32,7 +32,7 @@ Working in this first cut:
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
-- Virtual Profile CRUD plus PERSONAL reference-image presign/attach, explicit main photo (`mainImageKey`), seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73 / WARDROBE-157). API paths stay `/ai-profiles`.
+- Virtual Profile CRUD plus PERSONAL reference-image presign/attach, explicit main photo (`mainImageKey`), optional display `label` / `notes` (WARDROBE-158), seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73 / WARDROBE-157). API paths stay `/ai-profiles`.
 - Outfit and item try-on worker (Gemini `generateContent` image; writes unique `renders/{renderId}.png` keys and appends them to outfit / item history)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 - Job-done inbox (`GET /me/events` + ack) so Flutter can stop blind-polling when item processing or try-on finishes (WARDROBE-114 / Flutter WARDROBE-115). Optional FCM push when `wardrobe/{stage}/firebase-fcm` is a real service-account JSON.
@@ -1769,7 +1769,7 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
-## Virtual Profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80 / WARDROBE-82 / WARDROBE-157)
+## Virtual Profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80 / WARDROBE-82 / WARDROBE-157 / WARDROBE-158)
 
 Phase-3 foundation. Separate from wardrobe CRUD. Outfit Virtual Try On / render is WARDROBE-47. **Flutter-facing name is Virtual Profile** (API paths stay `/ai-profiles`).
 
@@ -1798,7 +1798,7 @@ DELETE /ai-profiles/{aiProfileId}/reference-images
 | `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). Includes `frontImageUrl` (signed GET of `mainImageKey` on PERSONAL, or the frontal key on GENERIC_MODEL). |
 | `GET /ai-profiles/models` | Virtual Try On picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). Same DTO, including `frontImageUrl`. GENERIC_MODEL does not expose `mainImageKey`. |
 | `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). Same `frontImageUrl` / `mainImageKey` contract as list. |
-| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only. Update optional body/context fields (WARDROBE-80 / WARDROBE-82). Also backfills `mainImageKey` when refs exist. `GENERIC_MODEL` is `403`. |
+| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only. Update optional body/context fields (WARDROBE-80 / WARDROBE-82) and/or display `label` / `notes` (WARDROBE-158). Also backfills `mainImageKey` when refs exist. `GENERIC_MODEL` is `403`. |
 | `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Best-effort delete of S3 objects under `users/{uid}/ai-profiles/{aiProfileId}/`. Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
 | `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. Unchanged. |
 | `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Attach confirmed `objectKey`(s) into `referenceImages[]`. Optional `setAsMain` / `replaceMain` (WARDROBE-157). |
@@ -1811,6 +1811,8 @@ Create body (all fields optional):
 {
   "type": "PERSONAL",
   "referenceImages": [],
+  "label": "Home look",
+  "notes": "prefer natural light",
   "heightCm": 170,
   "weightKg": 65,
   "bustCm": 90,
@@ -1825,6 +1827,7 @@ Create body (all fields optional):
 
 - `type` — omit or `PERSONAL`. `GENERIC_MODEL` is rejected (`400`); those rows are seeded (WARDROBE-45).
 - `referenceImages` — omit or `[]` on create. If sent, each key must be under `users/{uid}/`. Prefer the presign + attach flow below.
+- `label` / `notes` (WARDROBE-158) — optional PERSONAL display name and free-text. Omit, `null`, or `""` to skip. Max 100 characters each (same default as other optional strings).
 - Body/context fields (WARDROBE-80 / WARDROBE-82) — all optional; omit, `null`, or `""` to skip. See the Flutter contract below.
 - Body `userId` / `status` are ignored.
 
@@ -1843,7 +1846,7 @@ Flutter `AiProfile` DTO (`201` / `200`) — never includes Dynamo `PK` / `SK` / 
 
 `mainImageKey` is PERSONAL-only. Soft-omitted when empty. When set it is always a member of `referenceImages`. `frontImageUrl` is the signed GET of that key (compat with Flutter WARDROBE-71). GENERIC_MODEL rows omit `mainImageKey` and keep frontal seeding (`front.*` else first).
 
-Seeded generic models also include optional `label` (picker display name) plus seeded body/context defaults (WARDROBE-80). PERSONAL rows omit `label`. Empty body/context fields (including `braSize`) are **soft-omitted** from every response — they are never required and never sent as `null`.
+Seeded generic models include optional `label` (picker display name) plus seeded body/context defaults (WARDROBE-80). PERSONAL rows may also store `label` and `notes` (WARDROBE-158). Empty `label` / `notes` / body/context fields (including `braSize`) are **soft-omitted** from every response — they are never required and never sent as `null`.
 
 List / models (`200`):
 
@@ -1883,7 +1886,7 @@ Same camelCase names in the JSON DTO, Dynamo attributes, and the Gemini try-on p
 Soft-omit rules (must not break create / get / list / try-on):
 
 - **Create (`POST /ai-profiles`)** — omit a field, or send `null` / `""`, to skip it. Invalid types or out-of-range numbers are `400 VALIDATION_ERROR`.
-- **Update (`PATCH /ai-profiles/{aiProfileId}`)** — owner `PERSONAL` only. Send at least one body/context field. `null` or `""` **clears** that stored field. Omitted fields are left unchanged.
+- **Update (`PATCH /ai-profiles/{aiProfileId}`)** — owner `PERSONAL` only. Send at least one writable field (body/context **or** `label` **or** `notes`). `null` or `""` **clears** that stored field. Omitted fields are left unchanged.
 - **Responses** — a field is present only when a value is stored. Never `null`. List, get, create, update, attach, and `/models` all use this DTO.
 - **Try-on** — stored fields are copied into the Gemini prompt as `height: 175 cm`, `weight: 70 kg`, … Missing fields are not mentioned. Empty context does not fail render.
 - **Images** — `frontImageUrl` follows `mainImageKey` on PERSONAL (WARDROBE-157). `referenceImages` / `referenceImageUrls` are unchanged (WARDROBE-73 / WARDROBE-79). GENERIC_MODEL still uses the frontal filename rule.
@@ -1904,6 +1907,45 @@ PATCH /ai-profiles/{aiProfileId}
 ```
 
 `bustCm: null` removes a previously stored bust. GENERIC_MODEL rows cannot be patched (`403`).
+
+### Display name and notes (WARDROBE-158) — Flutter contract
+
+Optional PERSONAL display fields on the same Virtual Profile DTO. Same camelCase in JSON and Dynamo. These are **not** body/context and are **not** copied into the Virtual Try On prompt.
+
+| JSON / Dynamo field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `label` | string | no | Display name, max **100** characters (same default as other optional strings). Trimmed. Soft-omitted when empty. GENERIC_MODEL catalog rows already expose this for the picker. |
+| `notes` | string | no | PERSONAL free-text, max **100** characters (same default as other optional strings). Trimmed. Soft-omitted when empty. |
+
+Soft-omit rules (must not break create / get / list / try-on):
+
+- **Create (`POST /ai-profiles`)** — omit a field, or send `null` / `""`, to skip it. Non-string or over-limit values are `400 VALIDATION_ERROR`.
+- **Update (`PATCH /ai-profiles/{aiProfileId}`)** — owner `PERSONAL` only. Send at least one writable field (body/context **or** `label` **or** `notes`). `null` or `""` **clears** that stored attribute. Omitted fields are left unchanged.
+- **Responses** — a field is present only when a value is stored. Never `null`.
+- **Images** — no change. `referenceImages` / `mainImageKey` / `frontImageUrl` stay as WARDROBE-157.
+- **GENERIC_MODEL** — PATCH remains `403`. Catalog `label` is unchanged.
+
+PATCH example:
+
+```http
+PATCH /ai-profiles/{aiProfileId}
+```
+
+```json
+{
+  "label": "Home look",
+  "notes": "prefer natural light"
+}
+```
+
+```json
+{
+  "label": null,
+  "notes": ""
+}
+```
+
+`null` / `""` remove a previously stored display field.
 
 ### Bra size (WARDROBE-82) — Flutter WARDROBE-83 contract
 
@@ -2311,7 +2353,7 @@ src/functions/
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   shopping-links/      owner-only related shopping (WARDROBE-96); OpenAI keywords + Bright Data SERP
   uploads/
-  ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45); body context (80)
+  ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45); body context (80); label/notes (158)
   processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline
   outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47) + RENDER_ITEM (WARDROBE-150)
   support/             WARDROBE-38 outbound contact/bug + WARDROBE-143 public website contact + Resend client + Svix verify
