@@ -479,6 +479,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
         aiProfileId: PROFILE_ID,
         type: 'PERSONAL',
         referenceImages: [ownedKey],
+        mainImageKey: ownedKey,
         frontImageUrl: SIGNED_URL,
         status: 'READY',
         createdAt: '2026-09-06T08:00:00.000Z',
@@ -497,6 +498,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
         expect.objectContaining({
           ':referenceImages': [ownedKey],
           ':status': 'READY',
+          ':mainImageKey': ownedKey,
         }),
       );
     });

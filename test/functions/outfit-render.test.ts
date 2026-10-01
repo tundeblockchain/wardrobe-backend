@@ -229,6 +229,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
       userId: OWNER_ID,
       outfitId: OUTFIT_ID,
       profileImageKeys: ['shared/ai-profiles/generic/alex/front.png'],
+      mainImageKey: 'shared/ai-profiles/generic/alex/front.png',
       garmentImages: [
         {
           slot: 'TOP',
@@ -355,6 +356,7 @@ describe('outfit render worker (WARDROBE-47)', () => {
       userId: OWNER_ID,
       outfitId: OUTFIT_ID,
       profileImageKeys: ['shared/ai-profiles/generic/alex/front.png'],
+      mainImageKey: 'shared/ai-profiles/generic/alex/front.png',
       garmentImages: [
         {
           slot: 'DRESS',
@@ -772,6 +774,7 @@ describe('item render worker (WARDROBE-150)', () => {
       userId: OWNER_ID,
       itemId: TOP_ITEM_ID,
       profileImageKeys: ['shared/ai-profiles/generic/alex/front.png'],
+      mainImageKey: 'shared/ai-profiles/generic/alex/front.png',
       garmentImages: [
         {
           slot: 'TOP',

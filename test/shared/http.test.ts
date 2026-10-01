@@ -234,6 +234,18 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps MAIN_IMAGE_REQUIRED to a 400 envelope', () => {
+    const result = asResult(errorResponse(Errors.mainImageRequired()));
+
+    expect(result.statusCode).toBe(400);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'MAIN_IMAGE_REQUIRED',
+        message: expect.stringContaining('promoteObjectKey'),
+      },
+    });
+  });
+
   it('maps RATE_LIMITED to a 429 envelope with Retry-After', () => {
     const result = asResult(errorResponse(Errors.rateLimited(17)));
 

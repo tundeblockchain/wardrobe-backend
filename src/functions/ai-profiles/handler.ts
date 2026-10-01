@@ -28,6 +28,8 @@ import {
   aiProfileReferencePrefix,
   assertUploadContentLength,
   createPresignedPutUrl,
+  deleteObjectBestEffort,
+  deleteObjectsUnderAiProfilePrefix,
   extensionForContentType,
   normalizeContentType,
 } from '../../shared/s3';
@@ -35,13 +37,18 @@ import { AiProfile, AiProfileList } from '../../shared/types';
 import {
   hasAiProfileBodyWrite,
   optionalAiProfileType,
+  optionalBoolean,
   optionalInteger,
   optionalNonEmptyString,
   optionalReferenceImages,
   parseAiProfileBodyContext,
   requireAttachReferenceImageKeys,
   requireCreatePersonalType,
+  requireExistingReferenceImageKey,
   requireNonEmptyString,
+  type AttachReferenceImagesBody,
+  type DeleteReferenceImageBody,
+  type SetMainReferenceImageBody,
 } from '../../shared/validation';
 import {
   statusAfterReferenceImagesAttached,
@@ -49,6 +56,9 @@ import {
 import {
   buildPersonalAiProfile,
   mergeReferenceImages,
+  normalizeReferenceImageKeys,
+  personalMainImageWrite,
+  resolveMainImageKey,
   toAiProfileDto,
 } from './model';
 
@@ -77,16 +87,11 @@ interface CreateReferenceUploadBody {
   userId?: unknown;
 }
 
-interface AttachReferenceImagesBody {
-  objectKey?: unknown;
-  objectKeys?: unknown;
-  userId?: unknown;
-}
-
 /**
- * Authenticated AI Profile CRUD + PERSONAL reference-image upload (WARDROBE-43/44)
- * + frontal GET URLs on create/get/list (WARDROBE-73 / WARDROBE-79)
- * + optional body/context fields on create/update (WARDROBE-80 / WARDROBE-82).
+ * Authenticated Virtual Profile CRUD + PERSONAL reference-image upload
+ * (WARDROBE-43/44) + frontal GET URLs on create/get/list (WARDROBE-73 /
+ * WARDROBE-79) + optional body/context fields (WARDROBE-80 / WARDROBE-82)
+ * + explicit main photo on PERSONAL galleries (WARDROBE-157).
  *
  * Identity comes from the Firebase authorizer (`getUserId`). Body / query /
  * path `userId` is ignored.
@@ -122,16 +127,33 @@ export async function handler(
       );
     }
 
-    if (isReferenceImagesRoute(event)) {
-      if (method !== 'POST') {
+    if (isReferenceImagesMainRoute(event)) {
+      if (method !== 'PATCH') {
         throw Errors.validation(`Unsupported method: ${method}`);
       }
       if (!aiProfileId) {
         throw Errors.validation('aiProfileId is required.');
       }
       return ok(
-        await attachReferenceImages(userId, aiProfileId, parseJsonBody(event)),
+        await setMainReferenceImage(userId, aiProfileId, parseJsonBody(event)),
       );
+    }
+
+    if (isReferenceImagesRoute(event)) {
+      if (!aiProfileId) {
+        throw Errors.validation('aiProfileId is required.');
+      }
+      if (method === 'POST') {
+        return ok(
+          await attachReferenceImages(userId, aiProfileId, parseJsonBody(event)),
+        );
+      }
+      if (method === 'DELETE') {
+        return ok(
+          await deleteReferenceImage(userId, aiProfileId, parseJsonBody(event)),
+        );
+      }
+      throw Errors.validation(`Unsupported method: ${method}`);
     }
 
     if (!aiProfileId) {
@@ -190,6 +212,16 @@ function isUploadsRoute(event: APIGatewayProxyEventV2): boolean {
     key.includes('/ai-profiles/{aiProfileId}/uploads') ||
     (key.includes('/uploads') && key.includes('/ai-profiles/')) ||
     /\/ai-profiles\/[^/]+\/uploads\/?$/.test(path)
+  );
+}
+
+function isReferenceImagesMainRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return (
+    key.includes('/ai-profiles/{aiProfileId}/reference-images/main') ||
+    (key.includes('/reference-images/main') && key.includes('/ai-profiles/')) ||
+    /\/ai-profiles\/[^/]+\/reference-images\/main\/?$/.test(path)
   );
 }
 
@@ -280,7 +312,7 @@ async function updatePersonalProfile(
   aiProfileId: string,
   body: UpdateAiProfileBody,
 ): Promise<AiProfile> {
-  await requireOwnedPersonalForMutation(
+  const profile = await requireOwnedPersonalForMutation(
     userId,
     aiProfileId,
     'GENERIC_MODEL profiles cannot be updated.',
@@ -293,14 +325,34 @@ async function updatePersonalProfile(
     throw Errors.validation('At least one body context field is required.');
   }
 
+  const mainAttributes = mainImageUpdate(
+    profile.referenceImages,
+    profile.mainImageKey,
+  );
+  const remove = [...write.remove, ...mainAttributes.remove];
+
   const updated = await updateAttributes(
     keys.userPk(userId),
     keys.aiProfileSk(aiProfileId),
-    { ...write.set, updatedAt: nowIso() },
-    write.remove.length > 0 ? { remove: write.remove } : undefined,
+    { ...write.set, updatedAt: nowIso(), ...mainAttributes.set },
+    remove.length > 0 ? { remove } : undefined,
   );
 
   return toAiProfileDto(updated);
+}
+
+function mainImageUpdate(
+  referenceImages: unknown,
+  storedMain?: unknown,
+): { set: Record<string, string>; remove: string[] } {
+  const write = personalMainImageWrite(referenceImages, storedMain);
+  if (write.remove) {
+    return { set: {}, remove: ['mainImageKey'] };
+  }
+  return {
+    set: write.set ? { mainImageKey: write.set } : {},
+    remove: [],
+  };
 }
 
 async function deletePersonalProfile(
@@ -318,6 +370,7 @@ async function deletePersonalProfile(
   }
 
   await deleteItem(keys.userPk(userId), keys.aiProfileSk(aiProfileId));
+  await deleteObjectsUnderAiProfilePrefix(userId, aiProfileId);
 }
 
 async function requireOwnedPersonalForMutation(
@@ -388,10 +441,27 @@ async function attachReferenceImages(
   );
 
   const incoming = requireAttachReferenceImageKeys(body, userId, aiProfileId);
-  const referenceImages = mergeReferenceImages(
-    profile.referenceImages,
-    incoming,
-  );
+  const existing = normalizeReferenceImageKeys(profile.referenceImages);
+  const setAsMain =
+    optionalBoolean(body.setAsMain, 'setAsMain') ?? existing.length === 0;
+  const replaceMain = optionalBoolean(body.replaceMain, 'replaceMain') ?? false;
+
+  if (replaceMain && !setAsMain) {
+    throw Errors.validation('replaceMain requires setAsMain to be true.');
+  }
+
+  const previousMain = resolveMainImageKey(existing, profile.mainImageKey);
+  const replacingPreviousMain =
+    replaceMain &&
+    Boolean(previousMain) &&
+    previousMain !== undefined &&
+    !incoming.includes(previousMain);
+  const base = replacingPreviousMain
+    ? existing.filter((key) => key !== previousMain)
+    : existing;
+  const referenceImages = mergeReferenceImages(base, incoming);
+  const preferredMain = setAsMain ? incoming[0] : previousMain;
+  const mainAttributes = mainImageUpdate(referenceImages, preferredMain);
   const status = statusAfterReferenceImagesAttached();
   const updatedAt = nowIso();
 
@@ -402,8 +472,120 @@ async function attachReferenceImages(
       referenceImages,
       status,
       updatedAt,
+      ...mainAttributes.set,
     },
+    mainAttributes.remove.length > 0
+      ? { remove: mainAttributes.remove }
+      : undefined,
   );
 
+  const nextMain = resolveMainImageKey(
+    referenceImages,
+    updated.mainImageKey ?? preferredMain,
+  );
+  if (
+    replaceMain &&
+    previousMain &&
+    nextMain &&
+    previousMain !== nextMain
+  ) {
+    await deleteObjectBestEffort(previousMain);
+  }
+
+  return toAiProfileDto(updated);
+}
+
+async function setMainReferenceImage(
+  userId: string,
+  aiProfileId: string,
+  body: SetMainReferenceImageBody,
+): Promise<AiProfile> {
+  const profile = await requireOwnedPersonalForMutation(
+    userId,
+    aiProfileId,
+    'GENERIC_MODEL profiles do not accept reference image updates.',
+  );
+
+  const referenceImages = normalizeReferenceImageKeys(profile.referenceImages);
+  const objectKey = requireExistingReferenceImageKey(
+    body.objectKey,
+    referenceImages,
+  );
+  const mainAttributes = mainImageUpdate(referenceImages, objectKey);
+
+  const updated = await updateAttributes(
+    keys.userPk(userId),
+    keys.aiProfileSk(aiProfileId),
+    {
+      updatedAt: nowIso(),
+      ...mainAttributes.set,
+    },
+    mainAttributes.remove.length > 0
+      ? { remove: mainAttributes.remove }
+      : undefined,
+  );
+
+  return toAiProfileDto(updated);
+}
+
+async function deleteReferenceImage(
+  userId: string,
+  aiProfileId: string,
+  body: DeleteReferenceImageBody,
+): Promise<AiProfile> {
+  const profile = await requireOwnedPersonalForMutation(
+    userId,
+    aiProfileId,
+    'GENERIC_MODEL profiles do not accept reference image updates.',
+  );
+
+  const existing = normalizeReferenceImageKeys(profile.referenceImages);
+  const objectKey = requireExistingReferenceImageKey(
+    body.objectKey,
+    existing,
+  );
+  const remaining = existing.filter((key) => key !== objectKey);
+  const currentMain = resolveMainImageKey(existing, profile.mainImageKey);
+  const deletingMain = currentMain === objectKey;
+
+  let preferredMain: string | undefined;
+  if (!deletingMain) {
+    preferredMain = currentMain;
+  } else if (remaining.length === 0) {
+    preferredMain = undefined;
+  } else if (remaining.length === 1) {
+    preferredMain = remaining[0];
+  } else {
+    const promote = optionalNonEmptyString(
+      body.promoteObjectKey,
+      'promoteObjectKey',
+      1024,
+    );
+    if (!promote) {
+      throw Errors.mainImageRequired();
+    }
+    if (!remaining.includes(promote)) {
+      throw Errors.validation(
+        'promoteObjectKey must be another remaining reference image.',
+      );
+    }
+    preferredMain = promote;
+  }
+
+  const mainAttributes = mainImageUpdate(remaining, preferredMain);
+  const updated = await updateAttributes(
+    keys.userPk(userId),
+    keys.aiProfileSk(aiProfileId),
+    {
+      referenceImages: remaining,
+      updatedAt: nowIso(),
+      ...mainAttributes.set,
+    },
+    mainAttributes.remove.length > 0
+      ? { remove: mainAttributes.remove }
+      : undefined,
+  );
+
+  await deleteObjectBestEffort(objectKey);
   return toAiProfileDto(updated);
 }

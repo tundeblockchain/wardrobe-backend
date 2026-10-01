@@ -107,6 +107,20 @@ export function optionalQueryBoolean(
   throw Errors.validation(`${field} must be true or false.`);
 }
 
+/** JSON body boolean. Soft-omit null / blank. */
+export function optionalBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'boolean') {
+    throw Errors.validation(`${field} must be a boolean.`);
+  }
+  return value;
+}
+
 /** Calendar date stored and returned as `YYYY-MM-DD` (WARDROBE-92). */
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -445,6 +459,8 @@ export function requireOwnedAiProfileReferenceKey(
 export interface AttachReferenceImagesBody {
   objectKey?: unknown;
   objectKeys?: unknown;
+  setAsMain?: unknown;
+  replaceMain?: unknown;
   userId?: unknown;
 }
 
@@ -496,6 +512,33 @@ export function requireAttachReferenceImageKeys(
   }
 
   return unique;
+}
+
+export interface SetMainReferenceImageBody {
+  objectKey?: unknown;
+  userId?: unknown;
+}
+
+export interface DeleteReferenceImageBody {
+  objectKey?: unknown;
+  promoteObjectKey?: unknown;
+  userId?: unknown;
+}
+
+/**
+ * objectKey must already sit on the profile gallery. Used by set-main and
+ * delete-one (WARDROBE-157) — no re-upload, no prefix mutation.
+ */
+export function requireExistingReferenceImageKey(
+  value: unknown,
+  referenceImages: string[],
+  field = 'objectKey',
+): string {
+  const objectKey = requireNonEmptyString(value, field, 1024);
+  if (!referenceImages.includes(objectKey)) {
+    throw Errors.validation(`${field} must already be in referenceImages.`);
+  }
+  return objectKey;
 }
 
 export function optionalInteger(
