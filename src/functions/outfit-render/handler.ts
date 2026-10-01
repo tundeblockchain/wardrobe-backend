@@ -23,7 +23,7 @@ import {
   isEmptyAiProfileBodyContext,
   pickAiProfileBodyContext,
 } from '../ai-profiles/body-context';
-import { normalizeReferenceImageKeys } from '../ai-profiles/model';
+import { normalizeReferenceImageKeys, resolveMainImageKey } from '../ai-profiles/model';
 import { recordJobDone } from '../events/record';
 import {
   isRetryableProcessingFailure,
@@ -161,6 +161,7 @@ async function processOutfitJob(
       profileImageKeys: profile.referenceImages,
       garmentImages: garments,
       renderId,
+      ...(profile.mainImageKey ? { mainImageKey: profile.mainImageKey } : {}),
       ...(isEmptyAiProfileBodyContext(profile.body)
         ? {}
         : { profileBody: profile.body }),
@@ -271,6 +272,7 @@ async function processItemJob(
       profileImageKeys: profile.referenceImages,
       garmentImages: garments,
       renderId,
+      ...(profile.mainImageKey ? { mainImageKey: profile.mainImageKey } : {}),
       ...(isEmptyAiProfileBodyContext(profile.body)
         ? {}
         : { profileBody: profile.body }),
@@ -518,7 +520,11 @@ async function loadOutfitForJob(
 async function loadReadyProfile(
   userId: string,
   aiProfileId: string,
-): Promise<{ referenceImages: string[]; body: AiProfileBodyContext }> {
+): Promise<{
+  referenceImages: string[];
+  mainImageKey?: string;
+  body: AiProfileBodyContext;
+}> {
   let profile: DynamoItem;
   try {
     profile = await getReadableAiProfile(userId, aiProfileId);
@@ -550,7 +556,16 @@ async function loadReadyProfile(
     throw new PermanentProcessingError('Virtual Profile has no reference images.');
   }
 
-  return { referenceImages, body: pickAiProfileBodyContext(profile) };
+  const mainImageKey = resolveMainImageKey(
+    referenceImages,
+    profile.mainImageKey,
+  );
+
+  return {
+    referenceImages,
+    ...(mainImageKey ? { mainImageKey } : {}),
+    body: pickAiProfileBodyContext(profile),
+  };
 }
 
 async function loadGarmentImages(

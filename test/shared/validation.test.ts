@@ -1,5 +1,6 @@
 import {
   hasAiProfileBodyWrite,
+  optionalBoolean,
   optionalFiniteNumber,
   optionalInteger,
   optionalIntegerInRange,
@@ -15,6 +16,7 @@ import {
   requireCategory,
   requireColour,
   requireCreatePersonalType,
+  requireExistingReferenceImageKey,
   requireIsoDate,
   requireNonEmptyString,
   requireOutfitItems,
@@ -547,6 +549,15 @@ describe('validation', () => {
       expect(() =>
         requireAttachReferenceImageKeys({}, userId, 'profile_abc'),
       ).toThrow(AppError);
+    });
+
+    it('requires an existing gallery key for set-main / delete-one', () => {
+      const key = `users/${userId}/ai-profiles/profile_abc/a.jpg`;
+      expect(requireExistingReferenceImageKey(key, [key])).toBe(key);
+      expect(() => requireExistingReferenceImageKey(key, [])).toThrow(AppError);
+      expect(optionalBoolean(true, 'setAsMain')).toBe(true);
+      expect(optionalBoolean(undefined, 'setAsMain')).toBeUndefined();
+      expect(() => optionalBoolean('yes', 'setAsMain')).toThrow(AppError);
     });
   });
 

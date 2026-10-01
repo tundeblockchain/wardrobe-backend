@@ -32,7 +32,7 @@ Working in this first cut:
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
-- AI Profile CRUD plus PERSONAL reference-image presign/attach, seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73)
+- Virtual Profile CRUD plus PERSONAL reference-image presign/attach, explicit main photo (`mainImageKey`), seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73 / WARDROBE-157). API paths stay `/ai-profiles`.
 - Outfit and item try-on worker (Gemini `generateContent` image; writes unique `renders/{renderId}.png` keys and appends them to outfit / item history)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 - Job-done inbox (`GET /me/events` + ack) so Flutter can stop blind-polling when item processing or try-on finishes (WARDROBE-114 / Flutter WARDROBE-115). Optional FCM push when `wardrobe/{stage}/firebase-fcm` is a real service-account JSON.
@@ -418,7 +418,7 @@ Same `{ "error": { "code", "message" } }` envelope as the rest of the API. No in
 | 403 | `ENTITLEMENT_OUTFIT_LIMIT` | Free already has 5 outfits | Basic (or Premium) |
 | 403 | `ENTITLEMENT_AI_REQUIRED` | Free or Basic hit Try On, recommendations, or other AI | Premium |
 
-Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. PATCH / DELETE are not gated. Creating a PERSONAL AI profile is not gated; **using** it for try-on is.
+Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. PATCH / DELETE are not gated. Creating a PERSONAL Virtual Profile and managing its photos (upload, attach, set-main, replace-main, delete-one) are not gated; **using** the profile for Virtual Try On is Premium.
 
 #### Webhook / restore path
 
@@ -1769,11 +1769,13 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
-## AI profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80 / WARDROBE-82)
+## Virtual Profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80 / WARDROBE-82 / WARDROBE-157)
 
-Phase-3 foundation. Separate from wardrobe CRUD. Outfit try-on / render is WARDROBE-47.
+Phase-3 foundation. Separate from wardrobe CRUD. Outfit Virtual Try On / render is WARDROBE-47. **Flutter-facing name is Virtual Profile** (API paths stay `/ai-profiles`).
 
 Identity comes from the Firebase authorizer (`getUserId`). Body/query/path `userId` is ignored.
+
+**Premium:** create PERSONAL + photo management (upload / attach / set-main / replace / delete-one) stay ungated. Virtual Try On remains Premium (`features.aiTryOn` / `ENTITLEMENT_AI_REQUIRED`). No new gates on this ticket.
 
 ```http
 POST   /ai-profiles
@@ -1786,18 +1788,22 @@ PATCH  /ai-profiles/{aiProfileId}
 DELETE /ai-profiles/{aiProfileId}
 POST   /ai-profiles/{aiProfileId}/uploads
 POST   /ai-profiles/{aiProfileId}/reference-images
+PATCH  /ai-profiles/{aiProfileId}/reference-images/main
+DELETE /ai-profiles/{aiProfileId}/reference-images
 ```
 
 | Route | Behaviour |
 | --- | --- |
-| `POST /ai-profiles` | Create a `PERSONAL` profile for the token UID. Body is optional. Starts `READY` with `referenceImages: []` (nothing to process yet). |
-| `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). Includes `frontImageUrl` when a frontal key can be presigned (WARDROBE-73). |
-| `GET /ai-profiles/models` | Try-on picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). Same DTO, including `frontImageUrl`. |
-| `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). Same `frontImageUrl` contract as list. |
-| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only. Update optional body/context fields (WARDROBE-80 / WARDROBE-82). `GENERIC_MODEL` is `403`. |
-| `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
-| `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. |
-| `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Attach confirmed `objectKey`(s) into `referenceImages[]`. |
+| `POST /ai-profiles` | Create a `PERSONAL` Virtual Profile for the token UID. Body is optional. Starts `READY` with `referenceImages: []` (nothing to process yet). Not Premium-gated. |
+| `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). Includes `frontImageUrl` (signed GET of `mainImageKey` on PERSONAL, or the frontal key on GENERIC_MODEL). |
+| `GET /ai-profiles/models` | Virtual Try On picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). Same DTO, including `frontImageUrl`. GENERIC_MODEL does not expose `mainImageKey`. |
+| `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). Same `frontImageUrl` / `mainImageKey` contract as list. |
+| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only. Update optional body/context fields (WARDROBE-80 / WARDROBE-82). Also backfills `mainImageKey` when refs exist. `GENERIC_MODEL` is `403`. |
+| `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Best-effort delete of S3 objects under `users/{uid}/ai-profiles/{aiProfileId}/`. Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
+| `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. Unchanged. |
+| `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Attach confirmed `objectKey`(s) into `referenceImages[]`. Optional `setAsMain` / `replaceMain` (WARDROBE-157). |
+| `PATCH /ai-profiles/{aiProfileId}/reference-images/main` | Owner `PERSONAL` only. Set `mainImageKey` to an existing gallery key. No re-upload. |
+| `DELETE /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Remove one gallery key + best-effort S3 delete. Promote rules below. |
 
 Create body (all fields optional):
 
@@ -1834,6 +1840,8 @@ Flutter `AiProfile` DTO (`201` / `200`) — never includes Dynamo `PK` / `SK` / 
   "updatedAt": "2026-09-06T08:00:00.000Z"
 }
 ```
+
+`mainImageKey` is PERSONAL-only. Soft-omitted when empty. When set it is always a member of `referenceImages`. `frontImageUrl` is the signed GET of that key (compat with Flutter WARDROBE-71). GENERIC_MODEL rows omit `mainImageKey` and keep frontal seeding (`front.*` else first).
 
 Seeded generic models also include optional `label` (picker display name) plus seeded body/context defaults (WARDROBE-80). PERSONAL rows omit `label`. Empty body/context fields (including `braSize`) are **soft-omitted** from every response — they are never required and never sent as `null`.
 
@@ -1878,7 +1886,7 @@ Soft-omit rules (must not break create / get / list / try-on):
 - **Update (`PATCH /ai-profiles/{aiProfileId}`)** — owner `PERSONAL` only. Send at least one body/context field. `null` or `""` **clears** that stored field. Omitted fields are left unchanged.
 - **Responses** — a field is present only when a value is stored. Never `null`. List, get, create, update, attach, and `/models` all use this DTO.
 - **Try-on** — stored fields are copied into the Gemini prompt as `height: 175 cm`, `weight: 70 kg`, … Missing fields are not mentioned. Empty context does not fail render.
-- **Images** — `frontImageUrl` / `referenceImages` / `referenceImageUrls` are unchanged (WARDROBE-73 / WARDROBE-79).
+- **Images** — `frontImageUrl` follows `mainImageKey` on PERSONAL (WARDROBE-157). `referenceImages` / `referenceImageUrls` are unchanged (WARDROBE-73 / WARDROBE-79). GENERIC_MODEL still uses the frontal filename rule.
 
 PATCH example:
 
@@ -1911,7 +1919,7 @@ Same soft-omit rules as the WARDROBE-80 body/context fields:
 - **Update (`PATCH /ai-profiles/{aiProfileId}`)** — owner `PERSONAL` only. `null` or `""` **clears** a previously stored `braSize`. Omitted fields are left unchanged. WARDROBE-80 fields stay independently writable.
 - **Responses** — present only when a value is stored. Never `null`. List, get, create, and update all use this DTO.
 - **Try-on** — when stored, copied into the Gemini prompt as `bra size: 34B`. Missing `braSize` is not mentioned and does not fail render.
-- **Images** — `frontImageUrl` / `referenceImages` / `referenceImageUrls` are unchanged (WARDROBE-73 / WARDROBE-79).
+- **Images** — `frontImageUrl` follows `mainImageKey` on PERSONAL (WARDROBE-157). `referenceImages` / `referenceImageUrls` are unchanged (WARDROBE-73 / WARDROBE-79). GENERIC_MODEL still uses the frontal filename rule.
 - **GENERIC_MODEL** — catalog seeds do not set `braSize`. The field is for PERSONAL profiles.
 
 PATCH example:
@@ -1926,19 +1934,22 @@ PATCH /ai-profiles/{aiProfileId}
 }
 ```
 
-### Reference image GET URLs (WARDROBE-73) — Flutter contract
+### Reference image GET URLs (WARDROBE-73 / WARDROBE-157) — Flutter contract
 
 `referenceImages` stays the stored S3 object keys. List and get also add short-lived HTTPS GET URLs (same helper / TTL as clothing-item `originalImageUrl`: `createPresignedGetUrl`, `expiresIn` **900**). URLs are never written to Dynamo.
 
-**Flutter WARDROBE-71 should read `frontImageUrl`.** Do not treat `referenceImages` as display URLs.
+**Flutter WARDROBE-71 should read `frontImageUrl`.** Do not treat `referenceImages` as display URLs. PERSONAL also exposes `mainImageKey` (the object key `frontImageUrl` is signed from).
 
 | Field | When present |
 | --- | --- |
-| `referenceImages` | Always (may be `[]`). S3 keys only — not HTTPS |
-| `frontImageUrl` | When a frontal key exists and presign succeeds. Soft-omitted if presign fails or there are no refs |
-| `referenceImageUrls` | When additional (non-frontal) keys exist and those presigns succeed. Map of `objectKey` → GET URL. Omitted when there are no extra angles or those presigns fail |
+| `referenceImages` | Always (may be `[]`). S3 keys only — not HTTPS. Max 10. |
+| `mainImageKey` | PERSONAL only, when the gallery is nonempty. Soft-omitted when empty. Always a member of `referenceImages`. GENERIC_MODEL omits this field. |
+| `frontImageUrl` | When a main / frontal key exists and presign succeeds. Soft-omitted if presign fails or there are no refs. PERSONAL: signed GET of `mainImageKey`. GENERIC_MODEL: signed GET of the frontal key. |
+| `referenceImageUrls` | When additional (non-main / non-frontal) keys exist and those presigns succeed. Map of `objectKey` → GET URL. Omitted when there are no extra angles or those presigns fail |
 
-Frontal key: a `referenceImages` entry whose filename starts with `front.` (seeded GENERIC_MODEL `front.png`, WARDROBE-72). Otherwise the first key (PERSONAL attach order — upload filenames are `{nanoid}.{ext}`, not `front.*`). PERSONAL get/list/create also coerce a Dynamo String Set or `{ objectKey }` entry into keys before presigning (WARDROBE-79); GENERIC_MODEL catalog rows were already a string list.
+PERSONAL main key: stored `mainImageKey` when it is still in `referenceImages`. If missing (legacy rows), resolve with the existing frontal rule — a `referenceImages` entry whose filename starts with `front.` (seeded GENERIC_MODEL `front.png`, WARDROBE-72), otherwise the first key — and **persist on the next mutating write** (create-with-refs, body PATCH, attach, set-main, delete-one). GET / list never write Dynamo. GENERIC_MODEL never mutates `mainImageKey`; keep existing frontal seeding.
+
+PERSONAL get/list/create also coerce a Dynamo String Set or `{ objectKey }` entry into keys before presigning (WARDROBE-79); GENERIC_MODEL catalog rows were already a string list.
 
 A presign failure is logged and the URL field is omitted; list / get / create / attach still return `200` / `201`. Same pattern as item `originalImageUrl`.
 
@@ -1972,6 +1983,7 @@ Example — PERSONAL with a named frontal plus a side angle:
     "users/{uid}/ai-profiles/{aiProfileId}/side.jpg",
     "users/{uid}/ai-profiles/{aiProfileId}/front.jpg"
   ],
+  "mainImageKey": "users/{uid}/ai-profiles/{aiProfileId}/front.jpg",
   "frontImageUrl": "https://...presigned GetObject for front.jpg...",
   "referenceImageUrls": {
     "users/{uid}/ai-profiles/{aiProfileId}/side.jpg": "https://...presigned GetObject for side.jpg..."
@@ -2040,7 +2052,9 @@ POST /ai-profiles/{aiProfileId}/reference-images
 
 ```json
 {
-  "objectKey": "users/{uid}/ai-profiles/{aiProfileId}/{id}.jpg"
+  "objectKey": "users/{uid}/ai-profiles/{aiProfileId}/{id}.jpg",
+  "setAsMain": true,
+  "replaceMain": false
 }
 ```
 
@@ -2060,9 +2074,47 @@ Rules:
 - Owner `PERSONAL` only. Other-user personal → `404 AI_PROFILE_NOT_FOUND`. `GENERIC_MODEL` → `403 UNAUTHORIZED`.
 - Each key must be a file directly under `users/{tokenUid}/ai-profiles/{aiProfileId}/`. Cross-user keys, wardrobe-item upload keys, and nested paths are `400 VALIDATION_ERROR`.
 - Keys are appended (deduped, existing order kept). Combined list max is 10.
-- `200` returns the updated Flutter `AiProfile` DTO.
+- `setAsMain` (boolean, optional) — default **true** when the gallery was empty before attach, otherwise **false**. When true, the first incoming key becomes `mainImageKey`.
+- `replaceMain` (boolean, optional, default false) — only valid with `setAsMain: true` (`400` otherwise). After a successful Dynamo update, best-effort delete the previous main S3 object and drop it from `referenceImages`. If attach never succeeds (validation, not found, Dynamo failure), the old main photo is left untouched.
+- Replacing the main photo at a full gallery (10 keys) is allowed: the previous main is removed in the same write so the combined list stays at 10.
+- `200` returns the updated Flutter `AiProfile` DTO (`mainImageKey` + `frontImageUrl`).
+
+Set main without re-upload:
+
+```http
+PATCH /ai-profiles/{aiProfileId}/reference-images/main
+```
+
+```json
+{
+  "objectKey": "users/{uid}/ai-profiles/{aiProfileId}/{id}.jpg"
+}
+```
+
+`objectKey` must already be in `referenceImages` (`400` otherwise). Sets `mainImageKey`. No S3 write. Body `userId` is ignored.
+
+Delete one reference photo:
+
+```http
+DELETE /ai-profiles/{aiProfileId}/reference-images
+```
+
+```json
+{
+  "objectKey": "users/{uid}/ai-profiles/{aiProfileId}/{id}.jpg",
+  "promoteObjectKey": "users/{uid}/ai-profiles/{aiProfileId}/{other}.jpg"
+}
+```
+
+- Non-main: remove from the array + best-effort S3 delete. `mainImageKey` is unchanged (or backfilled if it was missing).
+- Deleting main with **exactly one** other photo left: auto-promote the remaining key.
+- Deleting main with **two or more** others remaining: `promoteObjectKey` is required and must be another remaining key. Missing promote → `400 MAIN_IMAGE_REQUIRED`. Invalid promote → `400 VALIDATION_ERROR`.
+- Deleting the last image: empty gallery, `mainImageKey` is cleared (soft-omitted).
+- S3 delete is best-effort **after** a successful Dynamo update.
 
 `POST /uploads` stays clothing-item only (`purpose: WARDROBE_ITEM`). Do not send `AI_PROFILE_REFERENCE` there.
+
+Virtual Try On (outfit and item) uses `selectTryOnProfileImageKeys`: one person photo, preferring `mainImageKey` when it is still in the gallery, otherwise the frontal filename rule. GENERIC_MODEL keeps frontal seeding.
 
 ### Status transition
 

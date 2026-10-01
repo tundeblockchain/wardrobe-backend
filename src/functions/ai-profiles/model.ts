@@ -88,8 +88,50 @@ function objectKeyFromReferenceEntry(entry: unknown): string | undefined {
   return undefined;
 }
 
+export function storedMainImageKey(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/**
+ * PERSONAL main photo (WARDROBE-157). Prefer a stored `mainImageKey` that is
+ * still in `referenceImages`. Otherwise the existing frontal rule
+ * (`front.*` filename, else first key).
+ */
+export function resolveMainImageKey(
+  referenceImages: unknown,
+  storedMain?: unknown,
+): string | undefined {
+  const objectKeys = normalizeReferenceImageKeys(referenceImages);
+  const main = storedMainImageKey(storedMain);
+  if (main && objectKeys.includes(main)) {
+    return main;
+  }
+  return frontalReferenceImageKey(objectKeys);
+}
+
+/**
+ * Attributes to SET / REMOVE on a PERSONAL mutating write so `mainImageKey`
+ * stays a member of `referenceImages` (or is cleared when the gallery is
+ * empty). GENERIC_MODEL must not call this.
+ */
+export function personalMainImageWrite(
+  referenceImages: unknown,
+  storedMain?: unknown,
+): { set?: string; remove: boolean } {
+  const resolved = resolveMainImageKey(referenceImages, storedMain);
+  if (!resolved) {
+    return { remove: true };
+  }
+  return { set: resolved, remove: false };
+}
+
 export function toAiProfile(item: DynamoItem): AiProfile {
   const referenceImages = normalizeReferenceImageKeys(item.referenceImages);
+  const type = item.type === 'GENERIC_MODEL' ? 'GENERIC_MODEL' : 'PERSONAL';
 
   const label =
     typeof item.label === 'string' && item.label.trim()
@@ -97,15 +139,20 @@ export function toAiProfile(item: DynamoItem): AiProfile {
       : undefined;
 
   const body = pickAiProfileBodyContext(item);
+  const mainImageKey =
+    type === 'PERSONAL'
+      ? resolveMainImageKey(referenceImages, item.mainImageKey)
+      : undefined;
 
   return {
     aiProfileId: String(item.aiProfileId),
-    type: item.type === 'GENERIC_MODEL' ? 'GENERIC_MODEL' : 'PERSONAL',
+    type,
     referenceImages,
     status: normalizeStatus(item.status),
     createdAt: String(item.createdAt),
     updatedAt: String(item.updatedAt),
     ...(label ? { label } : {}),
+    ...(mainImageKey ? { mainImageKey } : {}),
     ...body,
   };
 }
@@ -153,7 +200,10 @@ export async function withSignedReferenceImageUrls(
     }
   }
 
-  const frontKey = frontalReferenceImageKey(profile.referenceImages);
+  const frontKey = resolveMainImageKey(
+    profile.referenceImages,
+    profile.mainImageKey,
+  );
   const frontImageUrl = frontKey ? signed.get(frontKey) : undefined;
   const extraUrls = Object.fromEntries(
     [...signed.entries()].filter(([key]) => key !== frontKey),
@@ -203,6 +253,7 @@ export function buildPersonalAiProfile(input: {
   userId: string;
   aiProfileId?: string;
   referenceImages?: string[];
+  mainImageKey?: string;
   status?: AiProfileStatus;
   createdAt?: string;
   updatedAt?: string;
@@ -210,6 +261,11 @@ export function buildPersonalAiProfile(input: {
 }): DynamoItem {
   const aiProfileId = input.aiProfileId ?? newAiProfileId();
   const timestamp = input.createdAt ?? nowIso();
+  const referenceImages = input.referenceImages ?? [];
+  const mainImageKey = resolveMainImageKey(
+    referenceImages,
+    input.mainImageKey,
+  );
 
   return applyAiProfileBodyContext(
     {
@@ -219,10 +275,11 @@ export function buildPersonalAiProfile(input: {
       userId: input.userId,
       aiProfileId,
       type: 'PERSONAL',
-      referenceImages: input.referenceImages ?? [],
+      referenceImages,
       status: input.status ?? 'READY',
       createdAt: timestamp,
       updatedAt: input.updatedAt ?? timestamp,
+      ...(mainImageKey ? { mainImageKey } : {}),
     },
     isEmptyAiProfileBodyContext(input.body) ? undefined : input.body,
   );

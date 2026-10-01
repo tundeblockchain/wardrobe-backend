@@ -504,10 +504,13 @@ export class WardrobeStack extends cdk.Stack {
     );
     firebaseFcmSecret.grantRead(processingFn);
     mediaBucket.grantPut(uploadsFn);
-    // PERSONAL AI profile reference-image presign PUT (WARDROBE-44) and
-    // short-lived GET for frontImageUrl / referenceImageUrls (WARDROBE-73).
+    // PERSONAL Virtual Profile reference-image presign PUT (WARDROBE-44),
+    // short-lived GET for frontImageUrl / referenceImageUrls (WARDROBE-73),
+    // and best-effort DeleteObject for set-main replace / delete-one /
+    // DELETE profile prefix cleanup (WARDROBE-157).
     mediaBucket.grantPut(aiProfilesFn);
     mediaBucket.grantRead(aiProfilesFn);
+    mediaBucket.grantDelete(aiProfilesFn);
     // Account wipe lists and deletes objects under users/{uid}/ only.
     mediaBucket.grantRead(meFn);
     mediaBucket.grantDelete(meFn);
@@ -998,7 +1001,14 @@ export class WardrobeStack extends cdk.Stack {
 
     httpApi.addRoutes({
       path: '/ai-profiles/{aiProfileId}/reference-images',
-      methods: [apigwv2.HttpMethod.POST],
+      methods: [apigwv2.HttpMethod.POST, apigwv2.HttpMethod.DELETE],
+      integration: aiProfilesIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/ai-profiles/{aiProfileId}/reference-images/main',
+      methods: [apigwv2.HttpMethod.PATCH],
       integration: aiProfilesIntegration,
       authorizer: firebaseAuthorizer,
     });

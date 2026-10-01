@@ -9,6 +9,7 @@ export type ErrorCode =
   | 'OUTFIT_NOT_FOUND'
   | 'RENDER_NOT_FOUND'
   | 'AI_PROFILE_NOT_FOUND'
+  | 'MAIN_IMAGE_REQUIRED'
   | 'EVENT_NOT_FOUND'
   | 'SHARE_NOT_FOUND'
   | 'SHARE_GONE'
@@ -91,6 +92,14 @@ export const Errors = {
 
   aiProfileNotFound: (message = 'Virtual Profile not found.') =>
     new AppError('AI_PROFILE_NOT_FOUND', message, 404),
+
+  /**
+   * Deleting the main Virtual Profile photo while two or more others remain
+   * (WARDROBE-157). Flutter must send `promoteObjectKey`.
+   */
+  mainImageRequired: (
+    message = 'promoteObjectKey is required when deleting the main Virtual Profile photo while other photos remain.',
+  ) => new AppError('MAIN_IMAGE_REQUIRED', message, 400),
 
   eventNotFound: (message = 'Job event not found.') =>
     new AppError('EVENT_NOT_FOUND', message, 404),

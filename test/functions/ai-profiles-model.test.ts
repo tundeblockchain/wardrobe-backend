@@ -17,6 +17,8 @@ import {
   frontalReferenceImageKey,
   mergeReferenceImages,
   normalizeReferenceImageKeys,
+  personalMainImageWrite,
+  resolveMainImageKey,
   SYSTEM_AI_PROFILE_OWNER,
   toAiProfile,
   withSignedReferenceImageUrls,
@@ -174,6 +176,46 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     expect(frontalReferenceImageKey([])).toBeUndefined();
   });
 
+  it('resolves PERSONAL mainImageKey from storage, else the frontal fallback', () => {
+    const side = 'users/u/ai-profiles/p/side.jpg';
+    const front = 'users/u/ai-profiles/p/front.jpg';
+    const extra = 'users/u/ai-profiles/p/extra.jpg';
+
+    expect(resolveMainImageKey([side, front], side)).toBe(side);
+    expect(resolveMainImageKey([side, front], extra)).toBe(front);
+    expect(resolveMainImageKey([side, extra])).toBe(side);
+    expect(resolveMainImageKey([])).toBeUndefined();
+    expect(personalMainImageWrite([side, front], extra)).toEqual({
+      set: front,
+      remove: false,
+    });
+    expect(personalMainImageWrite([])).toEqual({ remove: true });
+  });
+
+  it('exposes resolved mainImageKey on PERSONAL DTOs and omits it on GENERIC_MODEL', () => {
+    const key = 'users/uid-1/ai-profiles/profile_abc/V1StGXR8_Z5jdHi6.jpg';
+    const personal = toAiProfile(
+      buildPersonalAiProfile({
+        userId: 'uid-1',
+        aiProfileId: 'profile_abc',
+        referenceImages: [key],
+        createdAt: '2026-09-06T08:00:00.000Z',
+        updatedAt: '2026-09-06T08:00:00.000Z',
+      }),
+    );
+    expect(personal.mainImageKey).toBe(key);
+
+    const generic = toAiProfile(
+      buildGenericModelProfile({
+        aiProfileId: 'profile_generic_01',
+        referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
+        createdAt: '2026-09-06T00:00:00.000Z',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+      }),
+    );
+    expect(generic).not.toHaveProperty('mainImageKey');
+  });
+
   it('adds frontImageUrl and omits it when presign fails', async () => {
     const front = 'shared/ai-profiles/generic/alex/front.png';
     const side = 'shared/ai-profiles/generic/alex/side.jpg';
@@ -206,6 +248,37 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     expect(omitted).toEqual(base);
     expect(omitted).not.toHaveProperty('frontImageUrl');
     expect(omitted).not.toHaveProperty('referenceImageUrls');
+
+    delete process.env.MEDIA_BUCKET_NAME;
+  });
+
+  it('signs frontImageUrl from PERSONAL mainImageKey even when a front.* file exists', async () => {
+    const front = 'users/u/ai-profiles/p/front.jpg';
+    const side = 'users/u/ai-profiles/p/side.jpg';
+    const base = toAiProfile(
+      buildPersonalAiProfile({
+        userId: 'uid-1',
+        aiProfileId: 'profile_abc',
+        referenceImages: [side, front],
+        mainImageKey: side,
+        createdAt: '2026-09-06T08:00:00.000Z',
+        updatedAt: '2026-09-06T08:00:00.000Z',
+      }),
+    );
+
+    process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
+    mockGetSignedUrl.mockImplementation(
+      async (_client: unknown, command: { input?: { Key?: string } }) =>
+        `https://signed.example/${command.input?.Key ?? ''}`,
+    );
+
+    await expect(withSignedReferenceImageUrls(base)).resolves.toEqual({
+      ...base,
+      frontImageUrl: `https://signed.example/${side}`,
+      referenceImageUrls: {
+        [front]: `https://signed.example/${front}`,
+      },
+    });
 
     delete process.env.MEDIA_BUCKET_NAME;
   });

@@ -24,6 +24,15 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(Errors.aiRequired('custom').code).toBe('ENTITLEMENT_AI_REQUIRED');
   });
 
+  it('keeps MAIN_IMAGE_REQUIRED as a 400 for Virtual Profile photo delete', () => {
+    const error = Errors.mainImageRequired();
+
+    expect(error.code).toBe('MAIN_IMAGE_REQUIRED');
+    expect(error.statusCode).toBe(400);
+    expect(error.message).toContain('promoteObjectKey');
+    expect(error.message).toContain('Virtual Profile');
+  });
+
   it('marks account and auth deletion failures as retryable', () => {
     expect(Errors.accountDeletionFailed().code).toBe('ACCOUNT_DELETION_FAILED');
     expect(Errors.accountDeletionFailed().statusCode).toBe(500);

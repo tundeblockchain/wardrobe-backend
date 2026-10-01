@@ -194,6 +194,11 @@ export interface AiProfileBodyContext {
  * Optional body/context fields (WARDROBE-80 / WARDROBE-82) use the same
  * names in Dynamo and the try-on prompt. Flutter WARDROBE-81 / WARDROBE-83
  * should adopt these.
+ *
+ * `mainImageKey` (WARDROBE-157) is PERSONAL-only. Soft-omitted when empty.
+ * When set it is always a member of `referenceImages`. `frontImageUrl` is
+ * the signed GET of that key (compat with WARDROBE-71). GENERIC_MODEL rows
+ * keep frontal seeding (`front.*` else first) and never persist this field.
  */
 export interface AiProfile extends AiProfileBodyContext {
   aiProfileId: string;
@@ -204,13 +209,20 @@ export interface AiProfile extends AiProfileBodyContext {
   updatedAt: string;
   label?: string;
   /**
-   * Presigned GET for the frontal reference key. Present when that key
-   * exists and presign succeeds. Soft-omitted on presign failure.
+   * Explicit main reference object key (PERSONAL). Soft-omitted when empty.
+   * Always one of `referenceImages` when present.
+   */
+  mainImageKey?: string;
+  /**
+   * Presigned GET for the main / frontal reference key. Present when that
+   * key exists and presign succeeds. Soft-omitted on presign failure.
+   * PERSONAL: signed GET of `mainImageKey` (or the frontal fallback before
+   * backfill). GENERIC_MODEL: signed GET of the seeded frontal key.
    */
   frontImageUrl?: string;
   /**
-   * Presigned GETs for additional (non-frontal) `referenceImages` keys.
-   * Map of objectKey → URL. Omitted when there are no extra angles or
+   * Presigned GETs for additional (non-main / non-frontal) `referenceImages`
+   * keys. Map of objectKey → URL. Omitted when there are no extra angles or
    * those presigns fail.
    */
   referenceImageUrls?: Record<string, string>;

@@ -19,7 +19,7 @@ import {
   resolveGeminiGenerateContentConfig,
   resolveGeminiImageMimeType,
 } from './gemini';
-import { frontalReferenceImageKey } from '../ai-profiles/model';
+import { resolveMainImageKey } from '../ai-profiles/model';
 import {
   buildTryOnPrompt,
   composeOutfitTryOn,
@@ -135,6 +135,8 @@ export async function runOutfitTryOn(
     profileBody?: AiProfileBodyContext;
     /** Unique per try-on so S3 does not overwrite earlier READY images. */
     renderId?: string;
+    /** PERSONAL main photo (WARDROBE-157). Preferred over frontal filename. */
+    mainImageKey?: string;
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
@@ -153,6 +155,7 @@ export async function runOutfitTryOn(
       profileImageKeys: input.profileImageKeys,
       garmentImages: input.garmentImages,
       profileBody: input.profileBody,
+      mainImageKey: input.mainImageKey,
     },
     deps,
   );
@@ -167,6 +170,8 @@ export async function runItemTryOn(
     garmentImages: OutfitTryOnGarment[];
     profileBody?: AiProfileBodyContext;
     renderId?: string;
+    /** PERSONAL main photo (WARDROBE-157). Preferred over frontal filename. */
+    mainImageKey?: string;
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
@@ -181,6 +186,7 @@ export async function runItemTryOn(
       profileImageKeys: input.profileImageKeys,
       garmentImages: input.garmentImages,
       profileBody: input.profileBody,
+      mainImageKey: input.mainImageKey,
     },
     deps,
   );
@@ -197,10 +203,14 @@ async function runTryOnRender(
     profileImageKeys: string[];
     garmentImages: OutfitTryOnGarment[];
     profileBody?: AiProfileBodyContext;
+    mainImageKey?: string;
   },
   deps: TryOnDeps = {},
 ): Promise<string> {
-  const profileKeys = selectTryOnProfileImageKeys(input.profileImageKeys);
+  const profileKeys = selectTryOnProfileImageKeys(
+    input.profileImageKeys,
+    input.mainImageKey,
+  );
   if (profileKeys.length === 0) {
     throw new PermanentProcessingError(
       'Virtual Profile has no reference images to render against.',
@@ -275,8 +285,16 @@ function defaultObjectStore(): ObjectStore {
   };
 }
 
-function selectTryOnProfileImageKeys(profileImageKeys: string[]): string[] {
-  const front = frontalReferenceImageKey(profileImageKeys);
+/**
+ * Virtual Try On uses one person photo. Prefer an explicit `mainImageKey`
+ * that is still in the gallery (WARDROBE-157). Otherwise the frontal
+ * filename rule (`front.*`, else first).
+ */
+export function selectTryOnProfileImageKeys(
+  profileImageKeys: string[],
+  mainImageKey?: string,
+): string[] {
+  const front = resolveMainImageKey(profileImageKeys, mainImageKey);
   return front ? [front] : [];
 }
 

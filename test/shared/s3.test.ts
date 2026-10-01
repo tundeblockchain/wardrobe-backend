@@ -36,6 +36,7 @@ import {
   bucketName,
   createPresignedGetUrl,
   createPresignedPutUrl,
+  deleteObjectsUnderAiProfilePrefix,
   deleteObjectBestEffort,
   deleteObjectsUnderUserPrefix,
   extensionForContentType,
@@ -399,6 +400,38 @@ describe('s3 helpers (WARDROBE-8)', () => {
         failed: 0,
       });
       expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('deleteObjectsUnderAiProfilePrefix', () => {
+    it('lists and deletes only keys under the Virtual Profile prefix', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Contents: [
+            { Key: 'users/uid-1/ai-profiles/profile_abc/a.jpg' },
+            { Key: 'users/uid-1/ai-profiles/other/leak.jpg' },
+          ],
+          IsTruncated: false,
+        })
+        .mockResolvedValueOnce({
+          Deleted: [{ Key: 'users/uid-1/ai-profiles/profile_abc/a.jpg' }],
+        });
+
+      await expect(
+        deleteObjectsUnderAiProfilePrefix('uid-1', 'profile_abc'),
+      ).resolves.toEqual({
+        deleted: 1,
+        failed: 0,
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'ListObjectsV2',
+          input: expect.objectContaining({
+            Prefix: 'users/uid-1/ai-profiles/profile_abc/',
+          }),
+        }),
+      );
     });
   });
 

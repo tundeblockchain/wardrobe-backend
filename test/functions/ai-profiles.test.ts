@@ -4,6 +4,8 @@ import { AiProfile, DynamoItem } from '../../src/shared/types';
 const mockSend = jest.fn();
 const mockGetSignedUrl = jest.fn();
 
+const mockS3Send = jest.fn();
+
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({})),
 }));
@@ -39,14 +41,24 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 jest.mock('@aws-sdk/client-s3', () => ({
-  S3Client: jest.fn(() => ({})),
+  S3Client: jest.fn(() => ({ send: mockS3Send })),
   GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
     _op: 'GetObject',
     input,
   })),
   PutObjectCommand: jest.fn(),
-  ListObjectsV2Command: jest.fn(),
-  DeleteObjectsCommand: jest.fn(),
+  ListObjectsV2Command: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'ListObjectsV2',
+    input,
+  })),
+  DeleteObjectsCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'DeleteObjects',
+    input,
+  })),
+  DeleteObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'DeleteObject',
+    input,
+  })),
 }));
 
 import { handler } from '../../src/functions/ai-profiles/handler';
@@ -247,6 +259,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       async (_client: unknown, command: { input?: { Key?: string } }) =>
         signedUrlFor(command.input?.Key ?? ''),
     );
+    mockS3Send.mockResolvedValue({ Contents: [], IsTruncated: false });
   });
 
   afterEach(() => {
@@ -344,8 +357,10 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(result.statusCode).toBe(201);
       expect((bodyOf(result) as AiProfile).referenceImages).toEqual([key]);
       expect((bodyOf(result) as AiProfile).frontImageUrl).toBe(signedUrlFor(key));
+      expect((bodyOf(result) as AiProfile).mainImageKey).toBe(key);
       const command = mockSend.mock.calls[0][0] as Command;
       expect(command.input.Item?.referenceImages).toEqual([key]);
+      expect(command.input.Item?.mainImageKey).toBe(key);
       expect(command.input.Item?.status).toBe('READY');
     });
 
@@ -746,6 +761,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         aiProfiles: [
           personalDto({
             referenceImages: [personalFront],
+            mainImageKey: personalFront,
             frontImageUrl: signedUrlFor(personalFront),
           }),
         ],
@@ -765,6 +781,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(bodyOf(result)).toEqual(
         personalDto({
           referenceImages: [personalFront],
+          mainImageKey: personalFront,
           frontImageUrl: signedUrlFor(personalFront),
         }),
       );
@@ -785,6 +802,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(bodyOf(result)).toEqual(
         personalDto({
           referenceImages: [personalSide, personalFront],
+          mainImageKey: personalFront,
           frontImageUrl: signedUrlFor(personalFront),
           referenceImageUrls: {
             [personalSide]: signedUrlFor(personalSide),
@@ -804,7 +822,10 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       const result = asResult(await handler(event({ method: 'GET' })));
 
       expect(result.statusCode).toBe(200);
-      const listed = personalDto({ referenceImages: [personalFront] });
+      const listed = personalDto({
+        referenceImages: [personalFront],
+        mainImageKey: personalFront,
+      });
       expect(bodyOf(result)).toEqual({ aiProfiles: [listed] });
       expect(
         (bodyOf(result) as { aiProfiles: AiProfile[] }).aiProfiles[0],
@@ -823,7 +844,10 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
       expect(result.statusCode).toBe(200);
       expect(bodyOf(result)).toEqual(
-        personalDto({ referenceImages: [personalFront] }),
+        personalDto({
+          referenceImages: [personalFront],
+          mainImageKey: personalFront,
+        }),
       );
       expect(bodyOf(result) as AiProfile).not.toHaveProperty('frontImageUrl');
     });
@@ -838,6 +862,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
       expect(created.statusCode).toBe(201);
       expect((bodyOf(created) as AiProfile).frontImageUrl).toBe(signedUrlFor(key));
+      expect((bodyOf(created) as AiProfile).mainImageKey).toBe(key);
 
       mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
       const omitted = asResult(
@@ -867,6 +892,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         aiProfiles: [
           personalDto({
             referenceImages: [personalKey],
+            mainImageKey: personalKey,
             frontImageUrl: signedUrlFor(personalKey),
           }),
         ],
@@ -885,6 +911,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(bodyOf(got)).toEqual(
         personalDto({
           referenceImages: [personalKey],
+          mainImageKey: personalKey,
           frontImageUrl: signedUrlFor(personalKey),
         }),
       );

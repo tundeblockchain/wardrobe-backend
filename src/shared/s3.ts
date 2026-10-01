@@ -304,7 +304,36 @@ export interface DeleteUserPrefixResult {
 export async function deleteObjectsUnderUserPrefix(
   userId: string,
 ): Promise<DeleteUserPrefixResult> {
-  const prefix = userMediaPrefix(userId);
+  return deleteObjectsUnderPrefix(userMediaPrefix(userId), 'user media wipe');
+}
+
+/**
+ * Best-effort delete of PERSONAL Virtual Profile reference photos
+ * (WARDROBE-157) under `users/{uid}/ai-profiles/{aiProfileId}/`.
+ */
+export async function deleteObjectsUnderAiProfilePrefix(
+  userId: string,
+  aiProfileId: string,
+): Promise<DeleteUserPrefixResult> {
+  return deleteObjectsUnderPrefix(
+    aiProfileReferencePrefix(userId, aiProfileId),
+    'Virtual Profile media wipe',
+  );
+}
+
+/**
+ * Best-effort list + batch-delete under a trailing-slash prefix. Keys must
+ * start with the prefix and be longer than it so the prefix itself is never
+ * targeted. Logs and continues on individual object or list failures.
+ */
+export async function deleteObjectsUnderPrefix(
+  prefix: string,
+  logContext = 'prefix wipe',
+): Promise<DeleteUserPrefixResult> {
+  if (!prefix.endsWith('/') || prefix.length < 2) {
+    throw Errors.internal('Refusing to wipe an invalid S3 prefix.');
+  }
+
   let deleted = 0;
   let failed = 0;
   let continuationToken: string | undefined;
@@ -328,7 +357,7 @@ export async function deleteObjectsUnderUserPrefix(
         ? listed.NextContinuationToken
         : undefined;
     } catch (error) {
-      logger.warn('S3 list failed during user media wipe', {
+      logger.warn(`S3 list failed during ${logContext}`, {
         prefix,
         error: error instanceof Error ? error.message : 'unknown',
       });
@@ -359,7 +388,7 @@ export async function deleteObjectsUnderUserPrefix(
         }
       } catch (error) {
         failed += chunk.length;
-        logger.warn('S3 delete batch failed during user media wipe', {
+        logger.warn(`S3 delete batch failed during ${logContext}`, {
           prefix,
           count: chunk.length,
           error: error instanceof Error ? error.message : 'unknown',

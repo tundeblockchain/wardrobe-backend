@@ -614,7 +614,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
         (action) => action === 's3:GetObject' || action === 's3:GetObject*',
       ),
     ).toBe(true);
-    expect(s3).not.toContain('s3:DeleteObject');
+    expect(
+      s3.some(
+        (action) => action === 's3:DeleteObject' || action === 's3:DeleteObject*',
+      ),
+    ).toBe(true);
     expect(s3).not.toContain('s3:*');
   });
 
@@ -1412,6 +1416,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'DELETE /ai-profiles/{aiProfileId}',
       'POST /ai-profiles/{aiProfileId}/uploads',
       'POST /ai-profiles/{aiProfileId}/reference-images',
+      'DELETE /ai-profiles/{aiProfileId}/reference-images',
+      'PATCH /ai-profiles/{aiProfileId}/reference-images/main',
     ]) {
       const route = routes.find((candidate) => candidate.Properties.RouteKey === routeKey);
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');

@@ -7,6 +7,7 @@ import {
   parseTryOnSecret,
   runItemTryOn,
   runOutfitTryOn,
+  selectTryOnProfileImageKeys,
 } from '../../src/functions/processing/try-on';
 
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
@@ -436,6 +437,44 @@ describe('runOutfitTryOn (Gemini output)', () => {
 
     expect(gets).toEqual([PROFILE_KEY, GARMENT_KEY]);
     expect(gets).not.toContain(sideKey);
+  });
+
+  it('prefers mainImageKey over a front.* filename for try-on', async () => {
+    const sideKey = 'users/uid/ai-profiles/p/side.jpg';
+    const frontKey = 'users/uid/ai-profiles/p/front.jpg';
+    const gets: string[] = [];
+
+    expect(selectTryOnProfileImageKeys([sideKey, frontKey], sideKey)).toEqual([
+      sideKey,
+    ]);
+    expect(selectTryOnProfileImageKeys([sideKey, frontKey])).toEqual([frontKey]);
+
+    await runItemTryOn(
+      {
+        userId: USER_ID,
+        itemId: 'item_top123abcd',
+        profileImageKeys: [sideKey, frontKey],
+        mainImageKey: sideKey,
+        garmentImages: [{ slot: 'TOP', objectKey: GARMENT_KEY }],
+      },
+      {
+        store: {
+          async getObject(objectKey) {
+            gets.push(objectKey);
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject() {},
+        },
+        client: {
+          async render() {
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(gets).toEqual([sideKey, GARMENT_KEY]);
+    expect(gets).not.toContain(frontKey);
   });
 
   it('fails permanently when the profile has no reference images', async () => {
