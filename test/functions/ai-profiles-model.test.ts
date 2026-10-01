@@ -111,6 +111,10 @@ describe('AI profile model hooks (WARDROBE-43 / 45 / 47)', () => {
     expect(withDisplay.notes).toBe('prefer natural light');
 
     const omitted = toAiProfile({
+      PK: 'USER#uid-1',
+      SK: 'AIPROFILE#profile_abc',
+      entityType: 'AIPROFILE',
+      userId: 'uid-1',
       aiProfileId: 'profile_abc',
       type: 'PERSONAL',
       referenceImages: [],

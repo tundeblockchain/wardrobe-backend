@@ -779,7 +779,20 @@ function assignOptionalString(
   remove: AiProfileBodyFieldName[],
   allowClear: boolean,
 ): void {
-  assignClearableString(source, field, maxLength, set, remove, allowClear);
+  if (!(field in source)) {
+    return;
+  }
+  const value = source[field];
+  if (isClearValue(value)) {
+    if (allowClear) {
+      remove.push(field);
+    }
+    return;
+  }
+  const parsed = optionalNonEmptyString(value, field, maxLength);
+  if (parsed !== undefined) {
+    set[field] = parsed;
+  }
 }
 
 function assignClearableString<T extends string>(
