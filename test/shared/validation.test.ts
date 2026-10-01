@@ -1,5 +1,8 @@
 import {
+  AI_PROFILE_LABEL_MAX,
+  AI_PROFILE_NOTES_MAX,
   hasAiProfileBodyWrite,
+  hasAiProfileDisplayWrite,
   optionalBoolean,
   optionalFiniteNumber,
   optionalInteger,
@@ -11,6 +14,7 @@ import {
   optionalReferenceImages,
   optionalStringArray,
   parseAiProfileBodyContext,
+  parseAiProfileDisplayFields,
   requireAiProfileType,
   requireAttachReferenceImageKeys,
   requireCategory,
@@ -634,6 +638,74 @@ describe('validation', () => {
       ).toThrow(AppError);
       expect(() =>
         parseAiProfileBodyContext({ braSize: 34 }),
+      ).toThrow(AppError);
+    });
+  });
+
+  describe('WARDROBE-158 display fields', () => {
+    it('soft-omits missing, null, and blank fields on create', () => {
+      expect(parseAiProfileDisplayFields(undefined)).toEqual({
+        set: {},
+        remove: [],
+      });
+      expect(
+        parseAiProfileDisplayFields({
+          label: null,
+          notes: '',
+        }),
+      ).toEqual({ set: {}, remove: [] });
+      expect(hasAiProfileDisplayWrite({ set: {}, remove: [] })).toBe(false);
+    });
+
+    it('parses trimmed label and notes', () => {
+      expect(
+        parseAiProfileDisplayFields({
+          label: '  Home look  ',
+          notes: '  prefer natural light  ',
+        }),
+      ).toEqual({
+        set: {
+          label: 'Home look',
+          notes: 'prefer natural light',
+        },
+        remove: [],
+      });
+      expect(
+        hasAiProfileDisplayWrite({
+          set: { label: 'Home look' },
+          remove: [],
+        }),
+      ).toBe(true);
+    });
+
+    it('clears fields on PATCH when null or blank', () => {
+      expect(
+        parseAiProfileDisplayFields(
+          { label: null, notes: '', heightCm: 170 },
+          { allowClear: true },
+        ),
+      ).toEqual({
+        set: {},
+        remove: ['label', 'notes'],
+      });
+    });
+
+    it('rejects non-string and over-limit values', () => {
+      expect(() => parseAiProfileDisplayFields({ label: 12 })).toThrow(
+        AppError,
+      );
+      expect(() => parseAiProfileDisplayFields({ notes: 12 })).toThrow(
+        AppError,
+      );
+      expect(() =>
+        parseAiProfileDisplayFields({
+          label: 'x'.repeat(AI_PROFILE_LABEL_MAX + 1),
+        }),
+      ).toThrow(AppError);
+      expect(() =>
+        parseAiProfileDisplayFields({
+          notes: 'x'.repeat(AI_PROFILE_NOTES_MAX + 1),
+        }),
       ).toThrow(AppError);
     });
   });
