@@ -53,6 +53,7 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
 
 import { handler } from '../../src/functions/ai-profiles/handler';
 import { buildGenericModelProfile } from '../../src/functions/ai-profiles/model';
+import { answerEntitlement } from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -108,6 +109,21 @@ function expectEnvelope(
       message: expect.any(String),
     },
   });
+}
+
+function mockDynamo(
+  impl:
+    | ((command: Command) => unknown | Promise<unknown>)
+    | Record<string, unknown> = {},
+): void {
+  mockSend.mockImplementation(
+    answerEntitlement(async (command: Command) => {
+      if (typeof impl === 'function') {
+        return impl(command);
+      }
+      return impl;
+    }),
+  );
 }
 
 function dynamoPersonal(
@@ -225,7 +241,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
 
   describe('POST /ai-profiles/{aiProfileId}/uploads', () => {
     it('returns an UploadTicket under users/{uid}/ai-profiles/{aiProfileId}/', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -260,7 +276,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('ignores body userId and keys the object to the token UID', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -286,7 +302,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('signs ContentLength when declared within the 10MB limit', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -309,7 +325,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('returns 400 UPLOAD_INVALID for an unsupported contentType', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -327,7 +343,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('returns 400 UPLOAD_INVALID when purpose is not AI_PROFILE_REFERENCE', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -350,7 +366,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('returns 400 UPLOAD_INVALID when contentLength exceeds 10MB', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -371,7 +387,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('returns 404 when the PERSONAL profile belongs to another user', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(
         await handler(
@@ -392,7 +408,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('returns 403 when uploading to a GENERIC_MODEL profile', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
           return {};
         }
@@ -443,7 +459,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     const ownedKey = `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/ref1.jpg`;
 
     it('appends confirmed keys, sets READY, and returns the Flutter DTO', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return { Item: dynamoPersonal(OWNER_ID) };
         }
@@ -507,7 +523,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
       const existing = `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/old.jpg`;
       const incoming = `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/new.png`;
 
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return {
             Item: dynamoPersonal(OWNER_ID, { referenceImages: [existing] }),
@@ -550,7 +566,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('rejects a key that is not under this profile prefix', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -570,7 +586,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('rejects another user objectKey', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -595,7 +611,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('returns 404 when attaching to another user PERSONAL profile', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(
         await handler(
@@ -613,7 +629,7 @@ describe('ai-profiles reference-image upload (WARDROBE-44)', () => {
     });
 
     it('returns 403 when attaching to a GENERIC_MODEL profile', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
           return {};
         }

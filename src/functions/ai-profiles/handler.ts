@@ -13,6 +13,7 @@ import {
   queryByPk,
   updateAttributes,
 } from '../../shared/dynamodb';
+import { assertPremiumAi } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import {
   created,
@@ -96,10 +97,11 @@ interface CreateReferenceUploadBody {
  * (WARDROBE-43/44) + frontal GET URLs on create/get/list (WARDROBE-73 /
  * WARDROBE-79) + optional body/context fields (WARDROBE-80 / WARDROBE-82)
  * + explicit main photo on PERSONAL galleries (WARDROBE-157)
- * + optional PERSONAL display name / notes (WARDROBE-158).
+ * + optional PERSONAL display name / notes (WARDROBE-158)
+ * + Premium assert on PERSONAL create / list / get / mutate (WARDROBE-160).
  *
  * Identity comes from the Firebase authorizer (`getUserId`). Body / query /
- * path `userId` is ignored.
+ * path `userId` is ignored. GENERIC_MODEL catalog reads stay ungated.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -174,9 +176,7 @@ export async function handler(
     }
 
     if (method === 'GET') {
-      return ok(
-        await toAiProfileDto(await getReadableAiProfile(userId, aiProfileId)),
-      );
+      return ok(await getReadableProfile(userId, aiProfileId));
     }
 
     if (method === 'PATCH') {
@@ -252,6 +252,7 @@ async function listAiProfiles(
 }
 
 async function listPersonalProfiles(userId: string): Promise<AiProfileList> {
+  await assertPremiumAi(userId);
   const items = await queryByPk(keys.userPk(userId), 'AIPROFILE#');
   return {
     aiProfiles: await Promise.all(
@@ -260,6 +261,17 @@ async function listPersonalProfiles(userId: string): Promise<AiProfileList> {
         .map(toAiProfileDto),
     ),
   };
+}
+
+async function getReadableProfile(
+  userId: string,
+  aiProfileId: string,
+): Promise<AiProfile> {
+  const profile = await getReadableAiProfile(userId, aiProfileId);
+  if (isPersonalAiProfile(profile, userId)) {
+    await assertPremiumAi(userId);
+  }
+  return toAiProfileDto(profile);
 }
 
 async function listGenericModels(): Promise<AiProfileList> {
@@ -298,6 +310,7 @@ async function createPersonalProfile(
   const { set: display } = parseAiProfileDisplayFields(
     body as Record<string, unknown>,
   );
+  await assertPremiumAi(userId);
   const timestamp = nowIso();
 
   const item = buildPersonalAiProfile({
@@ -339,6 +352,8 @@ async function updatePersonalProfile(
       'At least one body context, label, or notes field is required.',
     );
   }
+
+  await assertPremiumAi(userId);
 
   const mainAttributes = mainImageUpdate(
     profile.referenceImages,
@@ -389,6 +404,7 @@ async function deletePersonalProfile(
     throw error;
   }
 
+  await assertPremiumAi(userId);
   await deleteItem(keys.userPk(userId), keys.aiProfileSk(aiProfileId));
   await deleteObjectsUnderAiProfilePrefix(userId, aiProfileId);
 }
@@ -434,6 +450,8 @@ async function createReferenceImageUpload(
       ? undefined
       : assertUploadContentLength(declaredLength);
 
+  await assertPremiumAi(userId);
+
   const extension = extensionForContentType(contentType);
   const objectKey = `${aiProfileReferencePrefix(userId, aiProfileId)}${newUploadId()}.${extension}`;
   const { uploadUrl, expiresIn } = await createPresignedPutUrl({
@@ -469,6 +487,8 @@ async function attachReferenceImages(
   if (replaceMain && !setAsMain) {
     throw Errors.validation('replaceMain requires setAsMain to be true.');
   }
+
+  await assertPremiumAi(userId);
 
   const previousMain = resolveMainImageKey(existing, profile.mainImageKey);
   const replacingPreviousMain =
@@ -531,6 +551,7 @@ async function setMainReferenceImage(
     body.objectKey,
     referenceImages,
   );
+  await assertPremiumAi(userId);
   const mainAttributes = mainImageUpdate(referenceImages, objectKey);
 
   const updated = await updateAttributes(
@@ -592,6 +613,7 @@ async function deleteReferenceImage(
     preferredMain = promote;
   }
 
+  await assertPremiumAi(userId);
   const mainAttributes = mainImageUpdate(remaining, preferredMain);
   const updated = await updateAttributes(
     keys.userPk(userId),

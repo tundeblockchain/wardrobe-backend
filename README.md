@@ -32,7 +32,7 @@ Working in this first cut:
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
-- Virtual Profile CRUD plus PERSONAL reference-image presign/attach, explicit main photo (`mainImageKey`), optional display `label` / `notes` (WARDROBE-158), seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73 / WARDROBE-157). API paths stay `/ai-profiles`.
+- Virtual Profile CRUD plus PERSONAL reference-image presign/attach, explicit main photo (`mainImageKey`), optional display `label` / `notes` (WARDROBE-158), seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73 / WARDROBE-157). PERSONAL create/list/get/mutate is Premium (`assertPremiumAi` / `ENTITLEMENT_AI_REQUIRED`, WARDROBE-160). GENERIC_MODEL catalog reads stay ungated. API paths stay `/ai-profiles`.
 - Outfit and item try-on worker (Gemini `generateContent` image; writes unique `renders/{renderId}.png` keys and appends them to outfit / item history)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
 - Job-done inbox (`GET /me/events` + ack) so Flutter can stop blind-polling when item processing or try-on finishes (WARDROBE-114 / Flutter WARDROBE-115). Optional FCM push when `wardrobe/{stage}/firebase-fcm` is a real service-account JSON.
@@ -398,7 +398,7 @@ Authorization: Bearer <firebase-id-token>
 | `status` | `NONE` \| `ACTIVE` \| `CANCELED` \| `BILLING_ISSUE` \| `PAUSED` \| `EXPIRED` | `CANCELED` still has access until `expiresAt` |
 | `features.unlimitedCatalog` | boolean | `true` on Basic and Premium |
 | `features.aiTryOn` | boolean | Premium only — POST outfit or item `/render` |
-| `features.otherAi` | boolean | Premium only — recommendations + item-processing enqueue / retry (classify / colour / bg-removal) |
+| `features.otherAi` | boolean | Premium only — recommendations, item-processing enqueue / retry (classify / colour / bg-removal), and PERSONAL Virtual Profile create / list / get / mutate |
 | `limits` | object or `null` | Free caps. `null` = unlimited |
 | `usage` | object | Current owned counts (all wardrobes) |
 | `productId` / `store` / `period` / `expiresAt` | optional | Soft-omitted when unknown. `store` is `APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`. `period` is `MONTHLY` \| `YEARLY` \| `UNKNOWN` |
@@ -416,9 +416,9 @@ Same `{ "error": { "code", "message" } }` envelope as the rest of the API. No in
 | 403 | `ENTITLEMENT_WARDROBE_LIMIT` | Free already has 1 wardrobe | Basic (or Premium) |
 | 403 | `ENTITLEMENT_ITEM_LIMIT` | Free already has 5 items | Basic (or Premium) |
 | 403 | `ENTITLEMENT_OUTFIT_LIMIT` | Free already has 5 outfits | Basic (or Premium) |
-| 403 | `ENTITLEMENT_AI_REQUIRED` | Free or Basic hit Try On, recommendations, or other AI | Premium |
+| 403 | `ENTITLEMENT_AI_REQUIRED` | Free or Basic hit Try On, recommendations, PERSONAL Virtual Profiles, or other AI | Premium |
 
-Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. PATCH / DELETE are not gated. Creating a PERSONAL Virtual Profile and managing its photos (upload, attach, set-main, replace-main, delete-one) are not gated; **using** the profile for Virtual Try On is Premium.
+Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. Wardrobe / item / outfit PATCH / DELETE are not gated. PERSONAL Virtual Profile create, list, get, and photo mutations are Premium (`assertPremiumAi`). GENERIC_MODEL catalog list/get is not gated. Virtual Try On generate remains Premium.
 
 #### Webhook / restore path
 
@@ -1769,13 +1769,13 @@ A Lambda authorizer reads the Firebase project ID from Secrets Manager and valid
 - Issuer: `https://securetoken.google.com/<firebase-project-id>`
 - Audience: `<firebase-project-id>`
 
-## Virtual Profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80 / WARDROBE-82 / WARDROBE-157 / WARDROBE-158)
+## Virtual Profiles (WARDROBE-43 / WARDROBE-44 / WARDROBE-45 / WARDROBE-73 / WARDROBE-80 / WARDROBE-82 / WARDROBE-157 / WARDROBE-158 / WARDROBE-160)
 
 Phase-3 foundation. Separate from wardrobe CRUD. Outfit Virtual Try On / render is WARDROBE-47. **Flutter-facing name is Virtual Profile** (API paths stay `/ai-profiles`).
 
 Identity comes from the Firebase authorizer (`getUserId`). Body/query/path `userId` is ignored.
 
-**Premium:** create PERSONAL + photo management (upload / attach / set-main / replace / delete-one) stay ungated. Virtual Try On remains Premium (`features.aiTryOn` / `ENTITLEMENT_AI_REQUIRED`). No new gates on this ticket.
+**Premium (WARDROBE-160):** Flutter soft-gates the Virtual Profiles UX. Backend hard-gates PERSONAL create / list / get / mutate with `assertPremiumAi` → `403 ENTITLEMENT_AI_REQUIRED` (same code as Virtual Try On). GENERIC_MODEL catalog (`GET /ai-profiles/models` and `?type=GENERIC_MODEL`, plus GET of a GENERIC_MODEL id) stays readable without Premium so try-on internals for paid users stay simple. Auth is still the token UID only.
 
 ```http
 POST   /ai-profiles
@@ -1794,16 +1794,16 @@ DELETE /ai-profiles/{aiProfileId}/reference-images
 
 | Route | Behaviour |
 | --- | --- |
-| `POST /ai-profiles` | Create a `PERSONAL` Virtual Profile for the token UID. Body is optional. Starts `READY` with `referenceImages: []` (nothing to process yet). Not Premium-gated. |
-| `GET /ai-profiles` | List the caller's `PERSONAL` profiles. `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`). Includes `frontImageUrl` (signed GET of `mainImageKey` on PERSONAL, or the frontal key on GENERIC_MODEL). |
-| `GET /ai-profiles/models` | Virtual Try On picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). Same DTO, including `frontImageUrl`. GENERIC_MODEL does not expose `mainImageKey`. |
-| `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL`. Any authenticated user may read `GENERIC_MODEL`. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). Same `frontImageUrl` / `mainImageKey` contract as list. |
-| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only. Update optional body/context fields (WARDROBE-80 / WARDROBE-82) and/or display `label` / `notes` (WARDROBE-158). Also backfills `mainImageKey` when refs exist. `GENERIC_MODEL` is `403`. |
-| `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`). Best-effort delete of S3 objects under `users/{uid}/ai-profiles/{aiProfileId}/`. Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
-| `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only. Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. Unchanged. |
-| `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Attach confirmed `objectKey`(s) into `referenceImages[]`. Optional `setAsMain` / `replaceMain` (WARDROBE-157). |
-| `PATCH /ai-profiles/{aiProfileId}/reference-images/main` | Owner `PERSONAL` only. Set `mainImageKey` to an existing gallery key. No re-upload. |
-| `DELETE /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only. Remove one gallery key + best-effort S3 delete. Promote rules below. |
+| `POST /ai-profiles` | Create a `PERSONAL` Virtual Profile for the token UID. Body is optional. Starts `READY` with `referenceImages: []` (nothing to process yet). Premium (`403 ENTITLEMENT_AI_REQUIRED`). |
+| `GET /ai-profiles` | List the caller's `PERSONAL` profiles (Premium). `?type=GENERIC_MODEL` lists the shared model catalog (same as `/models`; not Premium-gated). Includes `frontImageUrl` (signed GET of `mainImageKey` on PERSONAL, or the frontal key on GENERIC_MODEL). |
+| `GET /ai-profiles/models` | Virtual Try On picker: every seeded `GENERIC_MODEL` profile (WARDROBE-45). Same DTO, including `frontImageUrl`. GENERIC_MODEL does not expose `mainImageKey`. Not Premium-gated. |
+| `GET /ai-profiles/{aiProfileId}` | Owner-only for `PERSONAL` (Premium). Any authenticated user may read `GENERIC_MODEL` without Premium. Other-user personal profiles return `404 AI_PROFILE_NOT_FOUND` (no leak). Same `frontImageUrl` / `mainImageKey` contract as list. |
+| `PATCH /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (Premium). Update optional body/context fields (WARDROBE-80 / WARDROBE-82) and/or display `label` / `notes` (WARDROBE-158). Also backfills `mainImageKey` when refs exist. `GENERIC_MODEL` is `403 UNAUTHORIZED`. |
+| `DELETE /ai-profiles/{aiProfileId}` | Owner `PERSONAL` only (`204`, Premium). Best-effort delete of S3 objects under `users/{uid}/ai-profiles/{aiProfileId}/`. Users cannot delete `GENERIC_MODEL` (`403 UNAUTHORIZED`). |
+| `POST /ai-profiles/{aiProfileId}/uploads` | Owner `PERSONAL` only (Premium). Returns a Flutter `UploadTicket` for a reference photo under `users/{uid}/ai-profiles/{aiProfileId}/`. |
+| `POST /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only (Premium). Attach confirmed `objectKey`(s) into `referenceImages[]`. Optional `setAsMain` / `replaceMain` (WARDROBE-157). |
+| `PATCH /ai-profiles/{aiProfileId}/reference-images/main` | Owner `PERSONAL` only (Premium). Set `mainImageKey` to an existing gallery key. No re-upload. |
+| `DELETE /ai-profiles/{aiProfileId}/reference-images` | Owner `PERSONAL` only (Premium). Remove one gallery key + best-effort S3 delete. Promote rules below. |
 
 Create body (all fields optional):
 

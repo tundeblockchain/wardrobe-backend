@@ -49,3 +49,45 @@ export function entitlementReadResult(
   const items = Array.isArray(item) ? item : [item];
   return { Items: items, Item: items[0] };
 }
+
+export function entitlementUserIdFromCommand(command: {
+  input?: {
+    Key?: { PK?: string };
+    ExpressionAttributeValues?: Record<string, unknown>;
+  };
+}): string | undefined {
+  const pk =
+    command.input?.Key?.PK ?? command.input?.ExpressionAttributeValues?.[':pk'];
+  if (typeof pk === 'string' && pk.startsWith('USER#')) {
+    return pk.slice('USER#'.length);
+  }
+  return undefined;
+}
+
+/**
+ * Intercept entitlement reads so existing handler tests stay Premium by
+ * default (WARDROBE-160). Pass `MISSING` for no row (resolves to Free).
+ */
+export function answerEntitlement<
+  T extends {
+    _op?: string;
+    input?: {
+      Key?: { PK?: string; SK?: string };
+      ExpressionAttributeValues?: Record<string, unknown>;
+    };
+  },
+>(
+  impl: (command: T) => unknown | Promise<unknown>,
+  tier: SubscriptionTier | 'MISSING' = 'PREMIUM',
+): (command: T) => Promise<unknown> {
+  return async (command: T) => {
+    if (isEntitlementGet(command)) {
+      if (tier === 'MISSING') {
+        return entitlementReadResult();
+      }
+      const userId = entitlementUserIdFromCommand(command) ?? 'unknown';
+      return entitlementReadResult(dynamoEntitlement(userId, tier));
+    }
+    return impl(command);
+  };
+}
