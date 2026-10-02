@@ -246,9 +246,13 @@ describe('recommendations handler (WARDROBE-23)', () => {
       expect(body.recommendations[0]).not.toHaveProperty('outfitId');
       expect(body.recommendations[0]).not.toHaveProperty('PK');
 
-      const query = mockSend.mock.calls.find(
-        (call) => (call[0] as Command)._op === 'Query',
-      )?.[0] as Command;
+      const query = mockSend.mock.calls.find((call) => {
+        const command = call[0] as Command;
+        return (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ITEM#'
+        );
+      })?.[0] as Command;
       expect(query.input.ExpressionAttributeValues).toEqual({
         ':pk': `WARDROBE#${WARDROBE_ID}`,
         ':sk': 'ITEM#',

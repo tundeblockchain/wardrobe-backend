@@ -568,7 +568,10 @@ describe('item move/copy (WARDROBE-118)', () => {
 
       expect(result.statusCode).toBe(201);
       expect(
-        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Query'),
+        mockSend.mock.calls.some((call) => {
+          const command = call[0] as Command;
+          return command._op === 'Query' && !isEntitlementGet(command);
+        }),
       ).toBe(false);
     });
 
