@@ -60,7 +60,11 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { handler } from '../../src/functions/outfits/handler';
-import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
+import {
+  dynamoEntitlement,
+  entitlementReadResult,
+  isEntitlementGet,
+} from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -277,7 +281,7 @@ const ownedItemIds = new Set([
 function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   mockSend.mockImplementation(async (command: Command) => {
     if (isEntitlementGet(command)) {
-      return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+      return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
     }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
@@ -1150,7 +1154,7 @@ describe('outfits handler (WARDROBE-7)', () => {
     it('rejects try-on on Basic with ENTITLEMENT_AI_REQUIRED', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
-          return { Item: dynamoEntitlement(OWNER_ID, 'BASIC') };
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
         }
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
           return { Item: dynamoWardrobe() };

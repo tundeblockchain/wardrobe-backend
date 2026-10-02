@@ -1,13 +1,14 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import {
   applySuperwallEvent,
+  listStoredEntitlements,
   persistEntitlement,
+  pickLatestEntitlement,
   resolveSuperwallUserId,
   StoredEntitlement,
   superwallEventName,
   SuperwallWebhookEvent,
 } from '../../shared/entitlements';
-import { getItem, keys } from '../../shared/dynamodb';
 import { Errors } from '../../shared/errors';
 import { errorResponse, json } from '../../shared/http';
 import { logger } from '../../shared/logger';
@@ -16,7 +17,6 @@ import {
   SvixWebhookHeaders,
   verifySvixWebhookSignature,
 } from '../../shared/svix';
-import { DynamoItem } from '../../shared/types';
 import { loadSuperwallConfig, SuperwallConfig } from './config';
 
 export interface SuperwallWebhookDeps {
@@ -31,10 +31,10 @@ export interface SuperwallWebhookDeps {
  * Public Superwall subscription webhook (WARDROBE-91):
  *   POST /webhooks/superwall
  *
- * Verifies Svix headers, maps the event onto USER#{uid} / ENTITLEMENT,
- * and returns 200 even when the user cannot be resolved so Superwall
- * does not retry forever. Identity is the Superwall app user id, which
- * Flutter must set to the Firebase UID.
+ * Verifies Svix headers, appends a USER#{uid} / ENTITLEMENT#{ts}#{id}
+ * history row (WARDROBE-159), and returns 200 even when the user cannot
+ * be resolved so Superwall does not retry forever. Identity is the
+ * Superwall app user id, which Flutter must set to the Firebase UID.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -90,10 +90,12 @@ export async function handleSuperwallWebhook(
       return json(200, { status: 'ignored', reason: 'unknown_user' });
     }
 
-    const existing = await (deps.loadStored ?? loadStoredEntitlement)(userId);
+    const history = await loadHistory(userId, deps);
+    const existing = pickLatestEntitlement(history);
     const productId = productIdFrom(inbound);
     const { stored, skipped } = applySuperwallEvent({
       existing,
+      history,
       userId,
       eventName,
       productId,
@@ -143,38 +145,15 @@ export function svixHeaders(event: APIGatewayProxyEventV2): SvixWebhookHeaders {
   };
 }
 
-async function loadStoredEntitlement(
+async function loadHistory(
   userId: string,
-): Promise<StoredEntitlement | undefined> {
-  const row = await getItem(keys.userPk(userId), keys.entitlementSk);
-  if (!row || row.entityType !== 'ENTITLEMENT') {
-    return undefined;
+  deps: SuperwallWebhookDeps,
+): Promise<StoredEntitlement[]> {
+  if (deps.loadStored) {
+    const existing = await deps.loadStored(userId);
+    return existing ? [existing] : [];
   }
-  return fromRow(row);
-}
-
-function fromRow(item: DynamoItem): StoredEntitlement {
-  return {
-    userId: String(item.userId),
-    tier: (item.tier as StoredEntitlement['tier']) ?? 'FREE',
-    status: (item.status as StoredEntitlement['status']) ?? 'NONE',
-    productId:
-      typeof item.productId === 'string' ? item.productId : undefined,
-    store: item.store as StoredEntitlement['store'],
-    period: item.period as StoredEntitlement['period'],
-    expiresAt:
-      typeof item.expiresAt === 'string' ? item.expiresAt : undefined,
-    originalTransactionId:
-      typeof item.originalTransactionId === 'string'
-        ? item.originalTransactionId
-        : undefined,
-    lastEventId:
-      typeof item.lastEventId === 'string' ? item.lastEventId : undefined,
-    lastEventAt:
-      typeof item.lastEventAt === 'number' ? item.lastEventAt : undefined,
-    createdAt: String(item.createdAt),
-    updatedAt: String(item.updatedAt),
-  };
+  return listStoredEntitlements(userId);
 }
 
 function productIdFrom(event: SuperwallWebhookEvent): string | undefined {

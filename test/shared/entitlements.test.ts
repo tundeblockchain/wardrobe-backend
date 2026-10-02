@@ -1,13 +1,34 @@
+const mockQueryByPk = jest.fn();
+const mockPutItem = jest.fn();
+const mockPutItemIfNotExists = jest.fn();
+
+jest.mock('../../src/shared/dynamodb', () => {
+  const actual = jest.requireActual('../../src/shared/dynamodb') as typeof import('../../src/shared/dynamodb');
+  return {
+    ...actual,
+    queryByPk: (...args: unknown[]) => mockQueryByPk(...args),
+    putItem: (...args: unknown[]) => mockPutItem(...args),
+    putItemIfNotExists: (...args: unknown[]) => mockPutItemIfNotExists(...args),
+  };
+});
+
 import {
   applySuperwallEvent,
+  assertCanCreateCatalog,
+  defaultGrantExpiresAt,
+  ensureFreeEntitlement,
   featuresForTier,
   mapProductToTier,
   parseProductTiers,
+  persistEntitlement,
+  pickLatestEntitlement,
+  resolveEntitlement,
   resolveSuperwallUserId,
+  StoredEntitlement,
   superwallEventName,
   toEntitlementDto,
 } from '../../src/shared/entitlements';
-import { FREE_CATALOG_LIMITS } from '../../src/shared/types';
+import { DynamoItem, FREE_CATALOG_LIMITS } from '../../src/shared/types';
 
 describe('entitlement mapping (WARDROBE-91)', () => {
   it('maps configured product IDs from the operator secret', () => {
@@ -52,7 +73,7 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     ).toBeUndefined();
   });
 
-  it('overwrites a stored Free row when the user subscribes', () => {
+  it('builds a new ACTIVE record when the user subscribes over Free', () => {
     const subscribed = applySuperwallEvent({
       existing: {
         userId: 'uid',
@@ -71,8 +92,11 @@ describe('entitlement mapping (WARDROBE-91)', () => {
 
     expect(subscribed.tier).toBe('PREMIUM');
     expect(subscribed.status).toBe('ACTIVE');
-    expect(subscribed.createdAt).toBe('2026-09-01T00:00:00.000Z');
+    expect(subscribed.createdAt).toBe('2026-09-16T00:00:00.000Z');
     expect(subscribed.updatedAt).toBe('2026-09-16T00:00:00.000Z');
+    expect(subscribed.expiresAt).toBe(
+      defaultGrantExpiresAt('MONTHLY', '2026-09-16T00:00:00.000Z'),
+    );
   });
 
   it('grants PREMIUM on initial_purchase and keeps access on cancellation until expiry', () => {
@@ -170,5 +194,253 @@ describe('entitlement mapping (WARDROBE-91)', () => {
   it('reads Superwall event name from data.name or type', () => {
     expect(superwallEventName({ data: { name: 'renewal' } })).toBe('renewal');
     expect(superwallEventName({ type: 'cancellation' })).toBe('cancellation');
+  });
+});
+
+describe('entitlement history (WARDROBE-159)', () => {
+  const nowMs = Date.parse('2026-10-02T12:00:00.000Z');
+
+  beforeEach(() => {
+    mockQueryByPk.mockReset();
+    mockPutItem.mockReset();
+    mockPutItemIfNotExists.mockReset();
+    mockQueryByPk.mockResolvedValue([]);
+    mockPutItem.mockResolvedValue(undefined);
+    mockPutItemIfNotExists.mockResolvedValue(true);
+  });
+
+  function stored(overrides: Partial<StoredEntitlement> = {}): StoredEntitlement {
+    return {
+      userId: 'uid',
+      tier: 'PREMIUM',
+      status: 'ACTIVE',
+      createdAt: '2026-09-16T00:00:00.000Z',
+      updatedAt: '2026-09-16T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function row(overrides: Partial<DynamoItem> = {}): DynamoItem {
+    return {
+      PK: 'USER#uid',
+      SK: 'ENTITLEMENT',
+      entityType: 'ENTITLEMENT',
+      userId: 'uid',
+      tier: 'PREMIUM',
+      status: 'ACTIVE',
+      createdAt: '2026-09-16T00:00:00.000Z',
+      updatedAt: '2026-09-16T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('appends a history SK on grant persist instead of overwriting ENTITLEMENT', async () => {
+    const granted = applySuperwallEvent({
+      userId: 'uid',
+      eventName: 'initial_purchase',
+      productId: 'premium_monthly',
+      productTiers: {},
+      eventId: 'evt_grant',
+      nowIso: '2026-10-02T00:00:00.000Z',
+    }).stored;
+
+    await persistEntitlement(granted);
+
+    expect(mockPutItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        PK: 'USER#uid',
+        SK: 'ENTITLEMENT#2026-10-02T00:00:00.000Z#evt_grant',
+        entityType: 'ENTITLEMENT',
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+      }),
+    );
+    expect(mockPutItem.mock.calls[0][0].SK).not.toBe('ENTITLEMENT');
+  });
+
+  it('resolves the latest ACTIVE paid row over an older expired one', async () => {
+    mockQueryByPk.mockResolvedValue([
+      row({
+        SK: 'ENTITLEMENT#2026-08-01T00:00:00.000Z#evt_old',
+        status: 'EXPIRED',
+        expiresAt: '2026-09-01T00:00:00.000Z',
+        lastEventId: 'evt_old',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      }),
+      row({
+        SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_new',
+        status: 'ACTIVE',
+        expiresAt: '2026-11-01T00:00:00.000Z',
+        lastEventId: 'evt_new',
+        createdAt: '2026-10-01T00:00:00.000Z',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      }),
+    ]);
+
+    const resolved = await resolveEntitlement('uid', nowMs);
+
+    expect(resolved.tier).toBe('PREMIUM');
+    expect(resolved.status).toBe('ACTIVE');
+    expect(resolved.expiresAt).toBe('2026-11-01T00:00:00.000Z');
+    expect(resolved.sk).toBe('ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_new');
+  });
+
+  it('ignores a stale expiresAt on an older row when a newer paid row is current', () => {
+    const latest = pickLatestEntitlement([
+      stored({
+        sk: 'ENTITLEMENT#old',
+        status: 'CANCELED',
+        expiresAt: '2020-01-01T00:00:00.000Z',
+        lastEventId: 'evt_old',
+        updatedAt: '2026-08-01T00:00:00.000Z',
+      }),
+      stored({
+        sk: 'ENTITLEMENT#new',
+        status: 'ACTIVE',
+        expiresAt: '2026-11-01T00:00:00.000Z',
+        lastEventId: 'evt_new',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      }),
+    ]);
+
+    expect(latest?.sk).toBe('ENTITLEMENT#new');
+    expect(latest?.expiresAt).toBe('2026-11-01T00:00:00.000Z');
+    expect(latest?.status).toBe('ACTIVE');
+  });
+
+  it('does not inherit a past expiresAt on a grant that omits expirationAt', () => {
+    const granted = applySuperwallEvent({
+      existing: stored({
+        status: 'CANCELED',
+        expiresAt: '2020-01-01T00:00:00.000Z',
+        lastEventId: 'evt_old',
+      }),
+      userId: 'uid',
+      eventName: 'initial_purchase',
+      productId: 'premium_yearly',
+      productTiers: {},
+      eventId: 'evt_resub',
+      nowIso: '2026-10-02T00:00:00.000Z',
+    }).stored;
+
+    expect(granted.tier).toBe('PREMIUM');
+    expect(granted.status).toBe('ACTIVE');
+    expect(granted.expiresAt).toBe(
+      defaultGrantExpiresAt('YEARLY', '2026-10-02T00:00:00.000Z'),
+    );
+    expect(granted.expiresAt).not.toBe('2020-01-01T00:00:00.000Z');
+    expect(Date.parse(granted.expiresAt!)).toBeGreaterThan(
+      Date.parse('2026-10-02T00:00:00.000Z'),
+    );
+  });
+
+  it('skips a duplicate event id already present in history', () => {
+    const prior = stored({ lastEventId: 'evt_dup', sk: 'ENTITLEMENT#prior' });
+    const latest = stored({
+      lastEventId: 'evt_later',
+      lastEventAt: 2_000,
+      updatedAt: '2026-10-01T00:00:00.000Z',
+      sk: 'ENTITLEMENT#later',
+    });
+
+    const duplicate = applySuperwallEvent({
+      existing: latest,
+      history: [prior, latest],
+      userId: 'uid',
+      eventName: 'renewal',
+      productId: 'premium_monthly',
+      productTiers: {},
+      eventId: 'evt_dup',
+    });
+
+    expect(duplicate.skipped).toBe(true);
+    expect(duplicate.stored.sk).toBe('ENTITLEMENT#prior');
+  });
+
+  it('skips an out-of-order event against the latest row', () => {
+    const latest = stored({ lastEventId: 'evt_new', lastEventAt: 2_000 });
+    const result = applySuperwallEvent({
+      existing: latest,
+      userId: 'uid',
+      eventName: 'renewal',
+      productTiers: {},
+      eventId: 'evt_old',
+      eventAtMs: 1_000,
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(result.stored.lastEventId).toBe('evt_new');
+  });
+
+  it('seeds Free with a conditional SK=ENTITLEMENT write', async () => {
+    mockQueryByPk.mockResolvedValue([]);
+    mockPutItemIfNotExists.mockResolvedValue(true);
+
+    const seeded = await ensureFreeEntitlement('uid', nowMs);
+
+    expect(seeded.tier).toBe('FREE');
+    expect(seeded.status).toBe('NONE');
+    expect(mockPutItemIfNotExists).toHaveBeenCalledWith(
+      expect.objectContaining({
+        PK: 'USER#uid',
+        SK: 'ENTITLEMENT',
+        tier: 'FREE',
+        status: 'NONE',
+      }),
+    );
+  });
+
+  it('does not let a later Free seed beat a subscription that raced first', async () => {
+    mockQueryByPk
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        row({
+          SK: 'ENTITLEMENT',
+          tier: 'FREE',
+          status: 'NONE',
+          createdAt: '2026-10-02T12:00:01.000Z',
+          updatedAt: '2026-10-02T12:00:01.000Z',
+        }),
+        row({
+          SK: 'ENTITLEMENT#2026-10-02T11:59:00.000Z#evt_sub',
+          lastEventId: 'evt_sub',
+          expiresAt: '2026-11-02T00:00:00.000Z',
+          createdAt: '2026-10-02T11:59:00.000Z',
+          updatedAt: '2026-10-02T11:59:00.000Z',
+        }),
+      ]);
+    mockPutItemIfNotExists.mockResolvedValue(true);
+
+    const resolved = await ensureFreeEntitlement('uid', nowMs);
+
+    expect(resolved.tier).toBe('PREMIUM');
+    expect(resolved.status).toBe('ACTIVE');
+    expect(resolved.expiresAt).toBe('2026-11-02T00:00:00.000Z');
+  });
+
+  it('lets catalog creates through when the latest row is paid', async () => {
+    mockQueryByPk.mockResolvedValue([
+      row({
+        SK: 'ENTITLEMENT#2026-08-01T00:00:00.000Z#evt_old',
+        status: 'EXPIRED',
+        expiresAt: '2026-09-01T00:00:00.000Z',
+        lastEventId: 'evt_old',
+        updatedAt: '2026-09-01T00:00:00.000Z',
+      }),
+      row({
+        SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_new',
+        lastEventId: 'evt_new',
+        expiresAt: '2099-11-01T00:00:00.000Z',
+        createdAt: '2026-10-01T00:00:00.000Z',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      }),
+    ]);
+
+    await expect(assertCanCreateCatalog('uid', 'wardrobe')).resolves.toEqual(
+      expect.objectContaining({ tier: 'PREMIUM', status: 'ACTIVE' }),
+    );
+    expect(mockQueryByPk).toHaveBeenCalledWith('USER#uid', 'ENTITLEMENT');
+    expect(mockQueryByPk).toHaveBeenCalledTimes(1);
   });
 });

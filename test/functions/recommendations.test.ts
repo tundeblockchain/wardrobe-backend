@@ -40,7 +40,11 @@ import {
   handler,
   resolveRecommenderStrategy,
 } from '../../src/functions/recommendations/handler';
-import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
+import {
+  dynamoEntitlement,
+  entitlementReadResult,
+  isEntitlementGet,
+} from '../helpers/entitlements';
 
 const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
@@ -173,7 +177,7 @@ function expectEnvelope(
 function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   mockSend.mockImplementation(async (command: Command) => {
     if (isEntitlementGet(command)) {
-      return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+      return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
     }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
@@ -242,9 +246,13 @@ describe('recommendations handler (WARDROBE-23)', () => {
       expect(body.recommendations[0]).not.toHaveProperty('outfitId');
       expect(body.recommendations[0]).not.toHaveProperty('PK');
 
-      const query = mockSend.mock.calls.find(
-        (call) => (call[0] as Command)._op === 'Query',
-      )?.[0] as Command;
+      const query = mockSend.mock.calls.find((call) => {
+        const command = call[0] as Command;
+        return (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ITEM#'
+        );
+      })?.[0] as Command;
       expect(query.input.ExpressionAttributeValues).toEqual({
         ':pk': `WARDROBE#${WARDROBE_ID}`,
         ':sk': 'ITEM#',
@@ -259,7 +267,7 @@ describe('recommendations handler (WARDROBE-23)', () => {
     it('rejects recommendations on Basic with ENTITLEMENT_AI_REQUIRED', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
-          return { Item: dynamoEntitlement(OWNER_ID, 'BASIC') };
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
         }
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
           return { Item: dynamoWardrobe() };

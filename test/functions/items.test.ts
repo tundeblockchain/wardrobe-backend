@@ -73,7 +73,11 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { handler } from '../../src/functions/items/handler';
-import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
+import {
+  dynamoEntitlement,
+  entitlementReadResult,
+  isEntitlementGet,
+} from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -297,7 +301,7 @@ function createBody(overrides: Record<string, unknown> = {}) {
 function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   mockSend.mockImplementation(async (command: Command) => {
     if (isEntitlementGet(command)) {
-      return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+      return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
     }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
@@ -325,7 +329,9 @@ function mockReprocessReads(
   const tier = options.tier ?? 'PREMIUM';
   mockSend.mockImplementation(async (command: Command) => {
     if (isEntitlementGet(command)) {
-      return tier === 'FREE' ? {} : { Item: dynamoEntitlement(OWNER_ID, tier) };
+      return entitlementReadResult(
+        tier === 'FREE' ? undefined : dynamoEntitlement(OWNER_ID, tier),
+      );
     }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
@@ -770,7 +776,7 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
     it('creates Basic items as READY without enqueueing AI processing', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
-          return { Item: dynamoEntitlement(OWNER_ID, 'BASIC') };
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
         }
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
           return { Item: dynamoWardrobe() };
@@ -1858,7 +1864,9 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
         const tier = options.tier ?? 'PREMIUM';
         mockSend.mockImplementation(async (command: Command) => {
           if (isEntitlementGet(command)) {
-            return tier === 'FREE' ? {} : { Item: dynamoEntitlement(OWNER_ID, tier) };
+            return entitlementReadResult(
+        tier === 'FREE' ? undefined : dynamoEntitlement(OWNER_ID, tier),
+      );
           }
           if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
             return { Item: dynamoWardrobe() };
@@ -2305,7 +2313,7 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       let itemGets = 0;
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
-          return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
         }
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
           return { Item: dynamoWardrobe() };
@@ -2740,7 +2748,9 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       const tier = options?.tier ?? 'PREMIUM';
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
-          return tier === 'FREE' ? {} : { Item: dynamoEntitlement(OWNER_ID, tier) };
+          return entitlementReadResult(
+        tier === 'FREE' ? undefined : dynamoEntitlement(OWNER_ID, tier),
+      );
         }
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
           return { Item: dynamoWardrobe() };
