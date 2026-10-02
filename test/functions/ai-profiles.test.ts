@@ -63,6 +63,7 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 import { handler } from '../../src/functions/ai-profiles/handler';
 import { buildGenericModelProfile } from '../../src/functions/ai-profiles/model';
+import { answerEntitlement } from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -250,6 +251,35 @@ function expectFlutterDto(body: AiProfile): void {
   expect(body).not.toHaveProperty('entityType');
 }
 
+function mockDynamo(
+  impl:
+    | ((command: Command) => unknown | Promise<unknown>)
+    | Record<string, unknown> = {},
+): void {
+  mockSend.mockImplementation(
+    answerEntitlement(async (command: Command) => {
+      if (typeof impl === 'function') {
+        return impl(command);
+      }
+      return impl;
+    }),
+  );
+}
+
+function dynamoOp(op: Command['_op']): Command {
+  return mockSend.mock.calls.find((call) => (call[0] as Command)._op === op)?.[0] as Command;
+}
+
+function personalListQuery(): Command {
+  return mockSend.mock.calls.find((call) => {
+    const command = call[0] as Command;
+    return (
+      command._op === 'Query' &&
+      command.input.ExpressionAttributeValues?.[':sk'] === 'AIPROFILE#'
+    );
+  })?.[0] as Command;
+}
+
 describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -269,7 +299,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
   describe('POST /ai-profiles', () => {
     it('creates a PERSONAL profile for the token UID with READY and empty refs', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(await handler(event({ method: 'POST', body: {} })));
 
@@ -286,7 +316,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expectFlutterDto(body);
       expect(body.createdAt).toBe(body.updatedAt);
 
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = dynamoOp('Put');
       expect(command._op).toBe('Put');
       expect(command.input.TableName).toBe('wardrobe-app-test');
       expect(command.input.Item).toEqual(
@@ -304,7 +334,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('allows a missing body', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(await handler(event({ method: 'POST' })));
 
@@ -313,7 +343,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('ignores body userId and still owns the profile as the token UID', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(
         await handler(
@@ -325,7 +355,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       );
 
       expect(result.statusCode).toBe(201);
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = dynamoOp('Put');
       expect(command.input.Item?.userId).toBe(OWNER_ID);
       expect(command.input.Item?.PK).toBe(`USER#${OWNER_ID}`);
     });
@@ -347,7 +377,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('accepts owned referenceImages as a WARDROBE-44 hook', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
       const key = `users/${OWNER_ID}/ai-profiles/tmp/reference-1.jpg`;
 
       const result = asResult(
@@ -358,14 +388,14 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect((bodyOf(result) as AiProfile).referenceImages).toEqual([key]);
       expect((bodyOf(result) as AiProfile).frontImageUrl).toBe(signedUrlFor(key));
       expect((bodyOf(result) as AiProfile).mainImageKey).toBe(key);
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = dynamoOp('Put');
       expect(command.input.Item?.referenceImages).toEqual([key]);
       expect(command.input.Item?.mainImageKey).toBe(key);
       expect(command.input.Item?.status).toBe('READY');
     });
 
     it('persists optional body context and returns it on create', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(
         await handler(
@@ -401,7 +431,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       });
       expectFlutterDto(body);
 
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = dynamoOp('Put');
       expect(command.input.Item).toEqual(
         expect.objectContaining({
           heightCm: 170,
@@ -416,7 +446,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('persists optional label and notes on create', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(
         await handler(
@@ -433,7 +463,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(body.notes).toBe('prefer natural light');
       expectFlutterDto(body);
 
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = dynamoOp('Put');
       expect(command.input.Item).toEqual(
         expect.objectContaining({
           label: 'Home look',
@@ -443,7 +473,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('soft-omits empty label and notes on create', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(
         await handler(
@@ -459,13 +489,13 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(body).not.toHaveProperty('label');
       expect(body).not.toHaveProperty('notes');
 
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = dynamoOp('Put');
       expect(command.input.Item).not.toHaveProperty('label');
       expect(command.input.Item).not.toHaveProperty('notes');
     });
 
     it('soft-omits empty body context so create still succeeds', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
 
       const result = asResult(
         await handler(
@@ -490,7 +520,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(body).not.toHaveProperty('braSize');
       expect(body).not.toHaveProperty('gender');
 
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = dynamoOp('Put');
       expect(command.input.Item).not.toHaveProperty('heightCm');
       expect(command.input.Item).not.toHaveProperty('weightKg');
     });
@@ -529,7 +559,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
   describe('GET /ai-profiles', () => {
     it('returns stored body context and soft-omits missing fields', async () => {
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Items: [
           dynamoPersonal(OWNER_ID, {
             heightCm: 175,
@@ -554,7 +584,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns stored label and notes and soft-omits empties', async () => {
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Items: [
           dynamoPersonal(OWNER_ID, {
             label: 'Home look',
@@ -584,7 +614,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
     it('lists only the caller PERSONAL profiles', async () => {
       const owned = dynamoPersonal(OWNER_ID);
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Items: [
           owned,
           {
@@ -602,7 +632,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       expect(bodyOf(result)).toEqual({ aiProfiles: [personalDto()] });
       expectFlutterDto((bodyOf(result) as { aiProfiles: AiProfile[] }).aiProfiles[0]);
 
-      const command = mockSend.mock.calls[0][0] as Command;
+      const command = personalListQuery();
       expect(command._op).toBe('Query');
       expect(command.input.IndexName).toBeUndefined();
       expect(command.input.ExpressionAttributeValues).toEqual({
@@ -612,7 +642,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns an empty list when the owner has none', async () => {
-      mockSend.mockResolvedValue({ Items: [] });
+      mockDynamo({ Items: [] });
 
       const result = asResult(await handler(event({ method: 'GET' })));
 
@@ -621,7 +651,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('lists GENERIC_MODEL via GSI1 when type=GENERIC_MODEL', async () => {
-      mockSend.mockResolvedValue({ Items: [dynamoGeneric()] });
+      mockDynamo({ Items: [dynamoGeneric()] });
 
       const result = asResult(
         await handler(event({ method: 'GET', query: { type: 'GENERIC_MODEL' } })),
@@ -640,7 +670,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('falls back to the catalog PK when GSI1 is empty', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Query' && command.input.IndexName === 'GSI1') {
           return { Items: [] };
         }
@@ -682,7 +712,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
   describe('GET /ai-profiles/models', () => {
     it('lists GENERIC_MODEL profiles for the try-on picker', async () => {
-      mockSend.mockResolvedValue({ Items: [dynamoGeneric()] });
+      mockDynamo({ Items: [dynamoGeneric()] });
 
       const result = asResult(await handler(event({ method: 'GET', models: true })));
 
@@ -701,7 +731,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         createdAt: '2026-09-06T00:00:00.000Z',
         updatedAt: '2026-09-06T00:00:00.000Z',
       });
-      mockSend.mockResolvedValue({ Items: [seeded] });
+      mockDynamo({ Items: [seeded] });
 
       const result = asResult(await handler(event({ method: 'GET', models: true })));
 
@@ -725,7 +755,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
   describe('GET /ai-profiles/{aiProfileId}', () => {
     it('returns persisted body context on get', async () => {
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Item: dynamoPersonal(OWNER_ID, {
           heightCm: 172,
           weightKg: 64,
@@ -751,7 +781,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns the owned PERSONAL DTO', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
@@ -770,7 +800,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns GENERIC_MODEL to any authenticated user', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
           return {};
         }
@@ -792,7 +822,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns 404 AI_PROFILE_NOT_FOUND when missing', async () => {
-      mockSend.mockResolvedValue({ Items: [] });
+      mockDynamo({ Items: [] });
 
       const result = asResult(
         await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
@@ -805,7 +835,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns 404 when the PERSONAL profile belongs to another user', async () => {
-      mockSend.mockResolvedValue({ Items: [] });
+      mockDynamo({ Items: [] });
 
       const result = asResult(
         await handler(
@@ -826,7 +856,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/side.jpg`;
 
     it('includes frontImageUrl on GET list when a frontal key exists', async () => {
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Items: [
           dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
         ],
@@ -847,7 +877,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('includes frontImageUrl on GET profile', async () => {
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Item: dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
       });
 
@@ -866,7 +896,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('prefers a front.* filename and maps other angles to referenceImageUrls', async () => {
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Item: dynamoPersonal(OWNER_ID, {
           referenceImages: [personalSide, personalFront],
         }),
@@ -891,7 +921,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
     it('omits frontImageUrl on list when presign fails and still returns 200', async () => {
       mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Items: [
           dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
         ],
@@ -912,7 +942,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
     it('omits frontImageUrl on get when presign fails and still returns 200', async () => {
       mockGetSignedUrl.mockRejectedValue(new Error('presign unavailable'));
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Item: dynamoPersonal(OWNER_ID, { referenceImages: [personalFront] }),
       });
 
@@ -931,7 +961,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('includes frontImageUrl on POST create and omits it when presign fails', async () => {
-      mockSend.mockResolvedValue({});
+      mockDynamo({});
       const key = `users/${OWNER_ID}/ai-profiles/tmp/V1StGXR8_Z5jdHi6.jpg`;
 
       const created = asResult(
@@ -956,7 +986,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
       const personalKey =
         `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/V1StGXR8_Z5jdHi6.jpg`;
 
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Items: [
           dynamoPersonal(OWNER_ID, {
             referenceImages: new Set([personalKey]),
@@ -976,7 +1006,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
         ],
       });
 
-      mockSend.mockResolvedValue({
+      mockDynamo({
         Item: dynamoPersonal(OWNER_ID, {
           referenceImages: new Set([personalKey]),
         }),
@@ -996,7 +1026,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('omits frontImageUrl when referenceImages is empty', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(event({ method: 'GET', aiProfileId: PROFILE_ID })),
@@ -1013,7 +1043,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
   describe('PATCH /ai-profiles/{aiProfileId}', () => {
     it('updates body context on an owned PERSONAL profile', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return { Item: dynamoPersonal(OWNER_ID, { heightCm: 160 }) };
         }
@@ -1070,7 +1100,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
     it('clears a field with null and keeps frontImageUrl working', async () => {
       const front = `users/${OWNER_ID}/ai-profiles/${PROFILE_ID}/front.jpg`;
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return {
             Item: dynamoPersonal(OWNER_ID, {
@@ -1115,7 +1145,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('updates label and notes without a body context field', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return { Item: dynamoPersonal(OWNER_ID, { heightCm: 160 }) };
         }
@@ -1171,7 +1201,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('leaves omitted label and notes unchanged', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return {
             Item: dynamoPersonal(OWNER_ID, {
@@ -1223,7 +1253,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('clears label and notes with null or blank', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return {
             Item: dynamoPersonal(OWNER_ID, {
@@ -1268,7 +1298,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns 403 when updating a GENERIC_MODEL profile', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
           return {};
         }
@@ -1295,7 +1325,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns 403 when PATCHing GENERIC_MODEL with only label or notes', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
           return {};
         }
@@ -1322,7 +1352,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns 400 when no writable field is sent', async () => {
-      mockSend.mockResolvedValue({ Item: dynamoPersonal(OWNER_ID) });
+      mockDynamo({ Item: dynamoPersonal(OWNER_ID) });
 
       const result = asResult(
         await handler(
@@ -1347,7 +1377,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
 
   describe('DELETE /ai-profiles/{aiProfileId}', () => {
     it('deletes an owned PERSONAL profile and returns 204', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get') {
           return { Item: dynamoPersonal(OWNER_ID) };
         }
@@ -1373,7 +1403,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns 403 when deleting a GENERIC_MODEL profile', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
+      mockDynamo(async (command: Command) => {
         if (command._op === 'Get' && command.input.Key?.PK === `USER#${OWNER_ID}`) {
           return {};
         }
@@ -1397,7 +1427,7 @@ describe('ai-profiles handler (WARDROBE-43 / WARDROBE-73)', () => {
     });
 
     it('returns 404 AI_PROFILE_NOT_FOUND when deleting a missing profile', async () => {
-      mockSend.mockResolvedValue({ Items: [] });
+      mockDynamo({ Items: [] });
 
       const result = asResult(
         await handler(event({ method: 'DELETE', aiProfileId: PROFILE_ID })),

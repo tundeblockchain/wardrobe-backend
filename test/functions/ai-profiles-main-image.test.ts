@@ -65,6 +65,7 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
 
 import { handler } from '../../src/functions/ai-profiles/handler';
 import { buildGenericModelProfile } from '../../src/functions/ai-profiles/model';
+import { answerEntitlement } from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -154,30 +155,32 @@ function dynamoGeneric(): DynamoItem {
 }
 
 function mockOwnedUpdate(item: DynamoItem): void {
-  mockSend.mockImplementation(async (command: Command) => {
-    if (command._op === 'Get') {
-      if (command.input.Key?.PK === `USER#${OWNER_ID}`) {
-        return { Item: item };
+  mockSend.mockImplementation(
+    answerEntitlement(async (command: Command) => {
+      if (command._op === 'Get') {
+        if (command.input.Key?.PK === `USER#${OWNER_ID}`) {
+          return { Item: item };
+        }
+        return {};
       }
-      return {};
-    }
-    if (command._op === 'Update') {
-      return {
-        Attributes: {
-          ...item,
-          ...Object.fromEntries(
-            Object.entries(command.input.ExpressionAttributeValues ?? {}).map(
-              ([name, value]) => [name.slice(1), value],
+      if (command._op === 'Update') {
+        return {
+          Attributes: {
+            ...item,
+            ...Object.fromEntries(
+              Object.entries(command.input.ExpressionAttributeValues ?? {}).map(
+                ([name, value]) => [name.slice(1), value],
+              ),
             ),
-          ),
-        },
-      };
-    }
-    if (command._op === 'Delete') {
-      return {};
-    }
-    throw new Error(`unexpected op ${command._op}`);
-  });
+          },
+        };
+      }
+      if (command._op === 'Delete') {
+        return {};
+      }
+      throw new Error(`unexpected op ${command._op}`);
+    }),
+  );
 }
 
 function mockGenericMutation(suffix: 'reference-images' | 'reference-images/main'): void {
