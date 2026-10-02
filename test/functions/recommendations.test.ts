@@ -40,7 +40,11 @@ import {
   handler,
   resolveRecommenderStrategy,
 } from '../../src/functions/recommendations/handler';
-import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
+import {
+  dynamoEntitlement,
+  entitlementReadResult,
+  isEntitlementGet,
+} from '../helpers/entitlements';
 
 const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
@@ -173,7 +177,7 @@ function expectEnvelope(
 function mockOwnedWardrobeThen(next: (command: Command) => Promise<unknown>) {
   mockSend.mockImplementation(async (command: Command) => {
     if (isEntitlementGet(command)) {
-      return { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+      return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
     }
     if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
       return { Item: dynamoWardrobe() };
@@ -259,7 +263,7 @@ describe('recommendations handler (WARDROBE-23)', () => {
     it('rejects recommendations on Basic with ENTITLEMENT_AI_REQUIRED', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
-          return { Item: dynamoEntitlement(OWNER_ID, 'BASIC') };
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
         }
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
           return { Item: dynamoWardrobe() };

@@ -1,6 +1,6 @@
 import { DynamoItem, SubscriptionTier } from '../../src/shared/types';
 
-/** Test fixture for USER#{uid} / ENTITLEMENT (WARDROBE-91). */
+/** Test fixture for USER#{uid} entitlement rows (WARDROBE-91 / WARDROBE-159). */
 export function dynamoEntitlement(
   userId: string,
   tier: SubscriptionTier = 'PREMIUM',
@@ -21,7 +21,31 @@ export function dynamoEntitlement(
 
 export function isEntitlementGet(command: {
   _op?: string;
-  input?: { Key?: { SK?: string } };
+  input?: {
+    Key?: { SK?: string };
+    ExpressionAttributeValues?: Record<string, unknown>;
+  };
 }): boolean {
-  return command._op === 'Get' && command.input?.Key?.SK === 'ENTITLEMENT';
+  if (command._op === 'Get') {
+    const sk = command.input?.Key?.SK;
+    return (
+      typeof sk === 'string' &&
+      (sk === 'ENTITLEMENT' || sk.startsWith('ENTITLEMENT#'))
+    );
+  }
+  if (command._op === 'Query') {
+    const sk = command.input?.ExpressionAttributeValues?.[':sk'];
+    return typeof sk === 'string' && sk.startsWith('ENTITLEMENT');
+  }
+  return false;
+}
+
+export function entitlementReadResult(
+  item?: DynamoItem | DynamoItem[],
+): { Items: DynamoItem[]; Item?: DynamoItem } {
+  if (!item) {
+    return { Items: [] };
+  }
+  const items = Array.isArray(item) ? item : [item];
+  return { Items: items, Item: items[0] };
 }

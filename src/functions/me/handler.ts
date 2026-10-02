@@ -46,10 +46,11 @@ export interface MeHandlerDeps {
 /**
  * Owner-only account APIs.
  *
- * GET    /me         — current entitlement (WARDROBE-91). Flutter WARDROBE-90
- *                      reads this to soft-gate Superwall UX. The first call
- *                      for an account writes FREE / NONE. Superwall overwrites
- *                      that row when the user subscribes.
+ * GET    /me         — current entitlement (WARDROBE-91 / WARDROBE-159).
+ *                      Flutter WARDROBE-90 reads this to soft-gate Superwall
+ *                      UX. The first call for an account writes FREE / NONE
+ *                      at SK=ENTITLEMENT. Superwall appends history rows;
+ *                      this handler always returns the latest record.
  * DELETE /me/content — wipe wardrobes, items, outfits, worn-on dates,
  *                      personal AI profiles, job-done events, device tokens,
  *                      share tokens, and S3 under users/{uid}/. Entitlement +
@@ -320,7 +321,11 @@ function ownedUserPartitionRow(item: DynamoItem, userId: string): boolean {
 }
 
 function isEntitlementRow(item: DynamoItem): boolean {
-  return item.entityType === 'ENTITLEMENT' || item.SK === keys.entitlementSk;
+  return (
+    item.entityType === 'ENTITLEMENT' ||
+    item.SK === keys.entitlementSk ||
+    item.SK.startsWith(`${keys.entitlementSkPrefix}#`)
+  );
 }
 
 function isProfileRow(item: DynamoItem): boolean {

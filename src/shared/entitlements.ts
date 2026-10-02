@@ -1,4 +1,5 @@
-import { getItem, keys, putItem, putItemIfNotExists, queryByPk } from './dynamodb';
+import { nanoid } from 'nanoid';
+import { keys, putItem, putItemIfNotExists, queryByPk } from './dynamodb';
 import { Errors } from './errors';
 import { nowIso } from './ids';
 import {
@@ -30,6 +31,8 @@ export type ProductTierMap = Record<string, SubscriptionTier>;
 
 export interface StoredEntitlement {
   userId: string;
+  /** Dynamo SK when loaded. Not part of the GET /me DTO. */
+  sk?: string;
   tier: SubscriptionTier;
   status: EntitlementStatus;
   productId?: string;
@@ -63,9 +66,12 @@ export interface SuperwallWebhookEvent {
 }
 
 /**
- * Resolve the caller's current tier. Missing row, expired `expiresAt`,
- * or unknown stored values all become FREE. Dynamo is the source of
- * truth — Firebase custom claims are not read in this MVP.
+ * Resolve the caller's current tier. Missing row, expired `expiresAt`
+ * on the latest row, or unknown stored values all become FREE. Dynamo
+ * is the source of truth — Firebase custom claims are not read in this MVP.
+ *
+ * Always picks the latest entitlement record (WARDROBE-159). A stale
+ * expired/canceled row must not win over a newer ACTIVE paid row.
  *
  * Does not write. Catalog and AI gates use this so a user who has not
  * called `GET /me` yet is still Free.
@@ -74,36 +80,37 @@ export async function resolveEntitlement(
   userId: string,
   nowMs: number = Date.now(),
 ): Promise<StoredEntitlement> {
-  const row = await getItem(keys.userPk(userId), keys.entitlementSk);
-  if (!row || row.entityType !== 'ENTITLEMENT') {
+  const latest = await loadStoredEntitlement(userId);
+  if (!latest) {
     return freeEntitlement(userId);
   }
-  return effectiveEntitlement(fromDynamo(row), nowMs);
+  return effectiveEntitlement(latest, nowMs);
 }
 
 /**
  * First sight of an account (`GET /me` on launch). Persists
- * `USER#{uid} / ENTITLEMENT` as FREE / NONE when no row exists.
- * A later Superwall grant overwrites that row via `persistEntitlement`.
- * The create is conditional so a subscription that lands first is kept.
+ * `USER#{uid} / SK=ENTITLEMENT` as FREE / NONE when no entitlement
+ * rows exist. Superwall events append new `ENTITLEMENT#{ts}#{id}`
+ * rows instead of overwriting this seed. The create is conditional
+ * so a subscription that lands first is kept.
  */
 export async function ensureFreeEntitlement(
   userId: string,
   nowMs: number = Date.now(),
 ): Promise<StoredEntitlement> {
-  const existing = await loadStoredEntitlement(userId);
-  if (existing) {
-    return effectiveEntitlement(existing, nowMs);
+  const existing = await listStoredEntitlements(userId);
+  if (existing.length > 0) {
+    return effectiveEntitlement(pickLatestEntitlement(existing)!, nowMs);
   }
 
   const created = freeEntitlement(userId);
-  const wrote = await putItemIfNotExists(entitlementItem(created));
-  if (wrote) {
-    return created;
-  }
+  await putItemIfNotExists(entitlementItem(created));
 
-  const raced = await loadStoredEntitlement(userId);
-  return raced ? effectiveEntitlement(raced, nowMs) : created;
+  const after = await listStoredEntitlements(userId);
+  if (after.length > 0) {
+    return effectiveEntitlement(pickLatestEntitlement(after)!, nowMs);
+  }
+  return created;
 }
 
 export function featuresForTier(tier: SubscriptionTier): EntitlementFeatures {
@@ -234,6 +241,8 @@ export function mapProductToTier(
 
 export function applySuperwallEvent(options: {
   existing?: StoredEntitlement;
+  /** Full history for idempotency. Defaults to `[existing]` when omitted. */
+  history?: StoredEntitlement[];
   userId: string;
   eventName: string;
   productId?: string;
@@ -246,14 +255,16 @@ export function applySuperwallEvent(options: {
   nowIso?: string;
 }): { stored: StoredEntitlement; skipped: boolean } {
   const timestamp = options.nowIso ?? nowIso();
-  const existing = options.existing;
-  if (
-    options.eventId &&
-    existing?.lastEventId &&
-    existing.lastEventId === options.eventId
-  ) {
-    return { stored: existing, skipped: true };
+  const history =
+    options.history ?? (options.existing ? [options.existing] : []);
+  if (options.eventId) {
+    const duplicate = history.find((row) => row.lastEventId === options.eventId);
+    if (duplicate) {
+      return { stored: duplicate, skipped: true };
+    }
   }
+
+  const existing = options.existing ?? pickLatestEntitlement(history);
   if (
     typeof options.eventAtMs === 'number' &&
     typeof existing?.lastEventAt === 'number' &&
@@ -264,20 +275,16 @@ export function applySuperwallEvent(options: {
 
   const base = existing ?? freeEntitlement(options.userId, timestamp);
   const productId = options.productId?.trim() || undefined;
-  const expiresAt =
-    typeof options.expirationAtMs === 'number' &&
-    Number.isFinite(options.expirationAtMs)
-      ? new Date(options.expirationAtMs).toISOString()
-      : base.expiresAt;
   const store = normalizeStore(options.store) ?? base.store;
   const period = inferPeriod(productId) ?? base.period;
   const originalTransactionId =
     options.originalTransactionId?.trim() || base.originalTransactionId;
+  const granting = GRANTING_SUPERWALL_EVENTS.has(options.eventName);
 
   let tier = base.tier;
   let status: EntitlementStatus = base.status;
 
-  if (GRANTING_SUPERWALL_EVENTS.has(options.eventName)) {
+  if (granting) {
     tier =
       mapProductToTier(productId, options.productTiers, { paidGrant: true }) ??
       (base.tier === 'FREE' ? 'BASIC' : base.tier);
@@ -293,29 +300,49 @@ export function applySuperwallEvent(options: {
     status = 'PAUSED';
   }
 
+  const expiresAt = resolveEventExpiresAt({
+    expirationAtMs: options.expirationAtMs,
+    granting,
+    expired: status === 'EXPIRED',
+    period,
+    inherited: base.expiresAt,
+    timestamp,
+  });
+
   const stored: StoredEntitlement = {
     ...base,
+    sk: undefined,
     userId: options.userId,
     tier,
     status,
     productId: productId ?? base.productId,
     store,
     period,
-    expiresAt: status === 'EXPIRED' ? expiresAt ?? timestamp : expiresAt,
+    expiresAt,
     originalTransactionId,
     lastEventId: options.eventId ?? base.lastEventId,
     lastEventAt: options.eventAtMs ?? base.lastEventAt,
+    createdAt: timestamp,
     updatedAt: timestamp,
   };
 
   return { stored, skipped: false };
 }
 
+export async function listStoredEntitlements(
+  userId: string,
+): Promise<StoredEntitlement[]> {
+  const rows = await queryByPk(keys.userPk(userId), keys.entitlementSkPrefix);
+  return rows.flatMap((row) => {
+    const stored = storedEntitlementFromRow(row);
+    return stored ? [stored] : [];
+  });
+}
+
 export async function loadStoredEntitlement(
   userId: string,
 ): Promise<StoredEntitlement | undefined> {
-  const row = await getItem(keys.userPk(userId), keys.entitlementSk);
-  return storedEntitlementFromRow(row);
+  return pickLatestEntitlement(await listStoredEntitlements(userId));
 }
 
 export function storedEntitlementFromRow(
@@ -327,16 +354,31 @@ export function storedEntitlementFromRow(
   return fromDynamo(item);
 }
 
+/**
+ * Append a Superwall entitlement row. Never overwrites `SK=ENTITLEMENT`.
+ *
+ * Write vs in-place (WARDROBE-159):
+ * - Superwall subscribe / status-changing events → new
+ *   `ENTITLEMENT#{updatedAt}#{eventId}` row (append history).
+ * - `ensureFreeEntitlement` → conditional `SK=ENTITLEMENT` seed only when
+ *   no entitlement rows exist. That is the only singleton write.
+ */
 export async function persistEntitlement(
   stored: StoredEntitlement,
 ): Promise<void> {
-  await putItem(entitlementItem(stored));
+  await putItem(entitlementItem(stored, { history: true }));
 }
 
-function entitlementItem(stored: StoredEntitlement): DynamoItem {
+function entitlementItem(
+  stored: StoredEntitlement,
+  options?: { history?: boolean },
+): DynamoItem {
+  const sk = options?.history
+    ? keys.entitlementHistorySk(stored.updatedAt, historySkUnique(stored))
+    : (stored.sk ?? keys.entitlementSk);
   const item: DynamoItem = {
     PK: keys.userPk(stored.userId),
-    SK: keys.entitlementSk,
+    SK: sk,
     entityType: 'ENTITLEMENT',
     userId: stored.userId,
     tier: stored.tier,
@@ -427,7 +469,98 @@ function freeEntitlement(userId: string, timestamp = nowIso()): StoredEntitlemen
   };
 }
 
-function effectiveEntitlement(
+const MS_PER_DAY = 86_400_000;
+const DEFAULT_GRANT_DAYS = 30;
+const YEARLY_GRANT_DAYS = 365;
+
+/**
+ * Latest row for GET /me and create gates. A FREE/NONE seed
+ * (`SK=ENTITLEMENT`, no Superwall event) never beats a subscription
+ * history row, even when the seed was written later.
+ */
+export function pickLatestEntitlement(
+  rows: StoredEntitlement[],
+): StoredEntitlement | undefined {
+  if (rows.length === 0) {
+    return undefined;
+  }
+  const history = rows.filter((row) => !isFreeSeedEntitlement(row));
+  const pool = history.length > 0 ? history : rows;
+  return pool.reduce((latest, row) =>
+    compareEntitlementRecency(row, latest) >= 0 ? row : latest,
+  );
+}
+
+export function isFreeSeedEntitlement(row: StoredEntitlement): boolean {
+  return row.tier === 'FREE' && row.status === 'NONE' && !row.lastEventId;
+}
+
+function compareEntitlementRecency(
+  a: StoredEntitlement,
+  b: StoredEntitlement,
+): number {
+  const byUpdated = a.updatedAt.localeCompare(b.updatedAt);
+  if (byUpdated !== 0) {
+    return byUpdated;
+  }
+  const byCreated = a.createdAt.localeCompare(b.createdAt);
+  if (byCreated !== 0) {
+    return byCreated;
+  }
+  return (a.sk ?? '').localeCompare(b.sk ?? '');
+}
+
+function resolveEventExpiresAt(options: {
+  expirationAtMs?: number;
+  granting: boolean;
+  expired: boolean;
+  period?: EntitlementPeriod;
+  inherited?: string;
+  timestamp: string;
+}): string | undefined {
+  if (
+    typeof options.expirationAtMs === 'number' &&
+    Number.isFinite(options.expirationAtMs)
+  ) {
+    return new Date(options.expirationAtMs).toISOString();
+  }
+  if (options.expired) {
+    return options.inherited ?? options.timestamp;
+  }
+  if (options.granting) {
+    // Do not inherit a past expiresAt — that demotes a fresh paid grant.
+    return defaultGrantExpiresAt(options.period, options.timestamp);
+  }
+  return options.inherited;
+}
+
+export function defaultGrantExpiresAt(
+  period: EntitlementPeriod | undefined,
+  fromIso: string,
+): string {
+  const start = Date.parse(fromIso);
+  const base = Number.isFinite(start) ? start : Date.now();
+  const days = period === 'YEARLY' ? YEARLY_GRANT_DAYS : DEFAULT_GRANT_DAYS;
+  return new Date(base + days * MS_PER_DAY).toISOString();
+}
+
+function historySkUnique(stored: StoredEntitlement): string {
+  const fromEvent = sanitizeSkPart(stored.lastEventId);
+  if (fromEvent) {
+    return fromEvent;
+  }
+  return `row_${nanoid(10)}`;
+}
+
+function sanitizeSkPart(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const cleaned = value.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
+  return cleaned || undefined;
+}
+
+export function effectiveEntitlement(
   stored: StoredEntitlement,
   nowMs: number,
 ): StoredEntitlement {
@@ -451,6 +584,7 @@ function effectiveEntitlement(
 function fromDynamo(item: DynamoItem): StoredEntitlement {
   return {
     userId: String(item.userId),
+    sk: typeof item.SK === 'string' ? item.SK : undefined,
     tier: isTier(item.tier) ? item.tier : 'FREE',
     status: isStatus(item.status) ? item.status : 'NONE',
     productId: optionalString(item.productId),

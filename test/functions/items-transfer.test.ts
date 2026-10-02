@@ -61,7 +61,11 @@ jest.mock('@aws-sdk/client-s3', () => ({
 
 import { handler } from '../../src/functions/items/handler';
 import { outfitReferencesItem } from '../../src/functions/items/transfer';
-import { dynamoEntitlement, isEntitlementGet } from '../helpers/entitlements';
+import {
+  dynamoEntitlement,
+  entitlementReadResult,
+  isEntitlementGet,
+} from '../helpers/entitlements';
 
 const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
@@ -270,8 +274,8 @@ function mockHappyPath(options?: {
   mockSend.mockImplementation(async (command: Command) => {
     if (isEntitlementGet(command)) {
       return options && 'entitlement' in options
-        ? { Item: options.entitlement }
-        : { Item: dynamoEntitlement(OWNER_ID, 'PREMIUM') };
+        ? entitlementReadResult(options.entitlement)
+        : entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
     }
     if (wardrobeGet(command, SOURCE_WARDROBE_ID)) {
       return { Item: dynamoWardrobe(SOURCE_WARDROBE_ID) };

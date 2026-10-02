@@ -10,6 +10,10 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.userPk('firebase-uid-123')).toBe('USER#firebase-uid-123');
     expect(keys.profileSk).toBe('PROFILE');
     expect(keys.entitlementSk).toBe('ENTITLEMENT');
+    expect(keys.entitlementSkPrefix).toBe('ENTITLEMENT');
+    expect(
+      keys.entitlementHistorySk('2026-10-02T00:00:00.000Z', 'evt_1'),
+    ).toBe('ENTITLEMENT#2026-10-02T00:00:00.000Z#evt_1');
     expect(keys.deletionSk).toBe('DELETION');
     expect(keys.shoppingCacheSk('item_xyz123')).toBe('SHOPPING#item_xyz123');
     expect(keys.shoppingCacheSkPrefix).toBe('SHOPPING#');

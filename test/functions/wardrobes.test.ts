@@ -265,18 +265,23 @@ describe('wardrobes handler (WARDROBE-5)', () => {
 
     it('allows a second wardrobe on Basic', async () => {
       mockSend.mockImplementation(async (command: Command) => {
-        if (command._op === 'Get' && command.input.Key?.SK === 'ENTITLEMENT') {
+        if (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ENTITLEMENT'
+        ) {
           return {
-            Item: {
-              PK: `USER#${OWNER_ID}`,
-              SK: 'ENTITLEMENT',
-              entityType: 'ENTITLEMENT',
-              userId: OWNER_ID,
-              tier: 'BASIC',
-              status: 'ACTIVE',
-              createdAt: '2026-09-16T00:00:00.000Z',
-              updatedAt: '2026-09-16T00:00:00.000Z',
-            },
+            Items: [
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'BASIC',
+                status: 'ACTIVE',
+                createdAt: '2026-09-16T00:00:00.000Z',
+                updatedAt: '2026-09-16T00:00:00.000Z',
+              },
+            ],
           };
         }
         if (command._op === 'Put') {

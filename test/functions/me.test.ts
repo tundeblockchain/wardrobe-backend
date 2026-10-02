@@ -316,6 +316,24 @@ function mockPopulatedWipe(
       ) {
         return { Items: [dynamoShare()] };
       }
+      if (pk === `USER#${OWNER_ID}` && sk === 'ENTITLEMENT') {
+        return {
+          Items: options.includeEntitlement
+            ? [
+                {
+                  PK: `USER#${OWNER_ID}`,
+                  SK: 'ENTITLEMENT',
+                  entityType: 'ENTITLEMENT',
+                  userId: OWNER_ID,
+                  tier: 'PREMIUM',
+                  status: 'ACTIVE',
+                  createdAt: '2026-09-16T00:00:00.000Z',
+                  updatedAt: '2026-09-16T00:00:00.000Z',
+                },
+              ]
+            : [],
+        };
+      }
       if (pk === `USER#${OWNER_ID}` && !sk) {
         const items: DynamoItem[] = [dynamoWardrobe(), ...userPartitionExtras()];
         if (options.includeProfile) {
@@ -1021,24 +1039,29 @@ describe('me handler (WARDROBE-36)', () => {
     });
 
     it('keeps a subscription that wins the create race', async () => {
-      let reads = 0;
+      let entitlementReads = 0;
       mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
-        if (command._op === 'Get' && command.input.Key?.SK === 'ENTITLEMENT') {
-          reads += 1;
-          if (reads === 1) {
-            return {};
+        if (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ENTITLEMENT'
+        ) {
+          entitlementReads += 1;
+          if (entitlementReads === 1) {
+            return { Items: [] };
           }
           return {
-            Item: {
-              PK: `USER#${OWNER_ID}`,
-              SK: 'ENTITLEMENT',
-              entityType: 'ENTITLEMENT',
-              userId: OWNER_ID,
-              tier: 'PREMIUM',
-              status: 'ACTIVE',
-              createdAt: '2026-09-16T00:00:00.000Z',
-              updatedAt: '2026-09-16T12:00:00.000Z',
-            },
+            Items: [
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT#2026-09-16T12:00:00.000Z#evt_sub',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'PREMIUM',
+                status: 'ACTIVE',
+                createdAt: '2026-09-16T12:00:00.000Z',
+                updatedAt: '2026-09-16T12:00:00.000Z',
+              },
+            ],
           };
         }
         if (command._op === 'Put') {
@@ -1067,28 +1090,28 @@ describe('me handler (WARDROBE-36)', () => {
 
     it('returns Premium with usage and omits Dynamo keys', async () => {
       mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
-        if (
-          command._op === 'Get' &&
-          command.input.Key?.SK === 'ENTITLEMENT'
-        ) {
-          return {
-            Item: {
-              PK: `USER#${OWNER_ID}`,
-              SK: 'ENTITLEMENT',
-              entityType: 'ENTITLEMENT',
-              userId: OWNER_ID,
-              tier: 'PREMIUM',
-              status: 'ACTIVE',
-              productId: 'premium_monthly',
-              store: 'APP_STORE',
-              period: 'MONTHLY',
-              createdAt: '2026-09-16T00:00:00.000Z',
-              updatedAt: '2026-09-16T12:00:00.000Z',
-            },
-          };
-        }
         if (command._op === 'Query') {
           const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          const sk = command.input.ExpressionAttributeValues?.[':sk'];
+          if (pk === `USER#${OWNER_ID}` && sk === 'ENTITLEMENT') {
+            return {
+              Items: [
+                {
+                  PK: `USER#${OWNER_ID}`,
+                  SK: 'ENTITLEMENT',
+                  entityType: 'ENTITLEMENT',
+                  userId: OWNER_ID,
+                  tier: 'PREMIUM',
+                  status: 'ACTIVE',
+                  productId: 'premium_monthly',
+                  store: 'APP_STORE',
+                  period: 'MONTHLY',
+                  createdAt: '2026-09-16T00:00:00.000Z',
+                  updatedAt: '2026-09-16T12:00:00.000Z',
+                },
+              ],
+            };
+          }
           if (pk === `USER#${OWNER_ID}`) {
             return { Items: [dynamoWardrobe()] };
           }
@@ -1129,21 +1152,94 @@ describe('me handler (WARDROBE-36)', () => {
       expect(puts).toHaveLength(0);
     });
 
+    it('returns the latest paid row after cancel then resubscribe', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ENTITLEMENT'
+        ) {
+          return {
+            Items: [
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'FREE',
+                status: 'NONE',
+                createdAt: '2026-08-01T00:00:00.000Z',
+                updatedAt: '2026-08-01T00:00:00.000Z',
+              },
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT#2026-09-01T00:00:00.000Z#evt_old',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'PREMIUM',
+                status: 'CANCELED',
+                expiresAt: '2026-09-15T00:00:00.000Z',
+                lastEventId: 'evt_old',
+                createdAt: '2026-09-01T00:00:00.000Z',
+                updatedAt: '2026-09-10T00:00:00.000Z',
+              },
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_resub',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'PREMIUM',
+                status: 'ACTIVE',
+                productId: 'premium_monthly',
+                expiresAt: '2026-11-01T00:00:00.000Z',
+                lastEventId: 'evt_resub',
+                createdAt: '2026-10-01T00:00:00.000Z',
+                updatedAt: '2026-10-01T00:00:00.000Z',
+              },
+            ],
+          };
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          tier: 'PREMIUM',
+          status: 'ACTIVE',
+          limits: null,
+          expiresAt: '2026-11-01T00:00:00.000Z',
+          productId: 'premium_monthly',
+        }),
+      );
+    });
+
     it('treats an expired Premium row as Free', async () => {
       mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
-        if (command._op === 'Get') {
+        if (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ENTITLEMENT'
+        ) {
           return {
-            Item: {
-              PK: `USER#${OWNER_ID}`,
-              SK: 'ENTITLEMENT',
-              entityType: 'ENTITLEMENT',
-              userId: OWNER_ID,
-              tier: 'PREMIUM',
-              status: 'ACTIVE',
-              expiresAt: '2020-01-01T00:00:00.000Z',
-              createdAt: '2019-01-01T00:00:00.000Z',
-              updatedAt: '2019-01-01T00:00:00.000Z',
-            },
+            Items: [
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'PREMIUM',
+                status: 'ACTIVE',
+                expiresAt: '2020-01-01T00:00:00.000Z',
+                createdAt: '2019-01-01T00:00:00.000Z',
+                updatedAt: '2019-01-01T00:00:00.000Z',
+              },
+            ],
           };
         }
         if (command._op === 'Query') {

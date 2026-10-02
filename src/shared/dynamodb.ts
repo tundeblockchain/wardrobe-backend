@@ -43,8 +43,15 @@ export const keys = {
     `OUTFIT#${outfitId}#WORN#${wornOn}`,
   outfitWornOnSkPrefix: (outfitId: string) => `OUTFIT#${outfitId}#WORN#`,
   profileSk: 'PROFILE',
-  /** WARDROBE-91 Superwall-verified subscription row. */
+  /**
+   * Free-seed singleton (WARDROBE-91 / WARDROBE-159).
+   * Superwall events append `ENTITLEMENT#{updatedAt}#{eventId}` instead of
+   * overwriting this key. Resolve queries `begins_with ENTITLEMENT`.
+   */
   entitlementSk: 'ENTITLEMENT',
+  entitlementSkPrefix: 'ENTITLEMENT',
+  entitlementHistorySk: (updatedAt: string, unique: string) =>
+    `ENTITLEMENT#${updatedAt}#${unique}`,
   /**
    * Transient DELETE /me marker (WARDROBE-154). Written after AWS data is
    * gone and removed after Firebase Auth delete succeeds.
