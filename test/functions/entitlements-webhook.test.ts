@@ -2,6 +2,12 @@ import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-l
 import { handleSuperwallWebhook } from '../../src/functions/entitlements-webhook/handler';
 import { signSvixWebhook } from '../../src/shared/svix';
 import { StoredEntitlement } from '../../src/shared/entitlements';
+import {
+  IOS_ALIAS_ID,
+  IOS_DEVICE_ID,
+  iosSuperwallEvent,
+  superwallSdkAttributes,
+} from '../helpers/superwall-payloads';
 
 const SECRET = `whsec_${Buffer.from('unit-test-superwall-secret').toString('base64')}`;
 const TIMESTAMP = '1710000000';
@@ -82,7 +88,8 @@ function purchasePayload(overrides: Record<string, unknown> = {}) {
       id: 'evt_purchase_1',
       name: 'initial_purchase',
       productId: 'premium_monthly',
-      originalAppUserId: OWNER_ID,
+      originalAppUserId: '$SuperwallAlias:7152E89E-60A6-4B2E-9C67-D7ED8F5BE372',
+      userAttributes: { appUserId: OWNER_ID },
       store: 'APP_STORE',
       expirationAt: Date.parse('2026-10-16T00:00:00.000Z'),
       ...overrides,
@@ -150,6 +157,7 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
   it('ignores events that cannot be mapped to a Firebase UID', async () => {
     const payload = purchasePayload({
       originalAppUserId: '$SuperwallAlias:unknown',
+      userAttributes: { aliasId: '$SuperwallAlias:unknown' },
     });
     const result = asResult(
       await handleSuperwallWebhook(webhookEvent({ payload }), deps()),
@@ -468,6 +476,7 @@ describe('Superwall device identity (WARDROBE-166)', () => {
             originalAppUserId: DEVICE_ID,
             appUserId: DEVICE_ID,
             originalTransactionId: TXN_B,
+            userAttributes: { aliasId: ANON_ID, appUserId: DEVICE_ID },
           }),
         }),
         deps(),
@@ -490,6 +499,7 @@ describe('Superwall device identity (WARDROBE-166)', () => {
             originalAppUserId: ANON_ID,
             appUserId: ANON_ID,
             originalTransactionId: TXN_B,
+            userAttributes: { aliasId: ANON_ID },
           }),
         }),
         deps(),
@@ -553,6 +563,7 @@ describe('Superwall device identity (WARDROBE-166)', () => {
             originalAppUserId: ACCOUNT_A,
             appUserId: DEVICE_ID,
             originalTransactionId: TXN_B,
+            userAttributes: { aliasId: ANON_ID },
           }),
         }),
         deps(),
@@ -565,5 +576,287 @@ describe('Superwall device identity (WARDROBE-166)', () => {
     });
     expect(save).not.toHaveBeenCalled();
     expect(bindOwner).not.toHaveBeenCalled();
+  });
+});
+
+describe('Superwall iOS Gmail purchase, documented payload shape (WARDROBE-167)', () => {
+  const GMAIL_UID = 'Xq3pT9bLw2MZkV7rHd5sNc1yFa84';
+  const loadConfig = jest.fn();
+  const loadStored = jest.fn();
+  const save = jest.fn();
+  const loadTransactionOwner = jest.fn();
+  const bindOwner = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    loadConfig.mockResolvedValue({ webhookSecret: SECRET, productTiers: {} });
+    loadStored.mockResolvedValue(undefined);
+    save.mockResolvedValue(undefined);
+    loadTransactionOwner.mockResolvedValue(undefined);
+    bindOwner.mockResolvedValue(true);
+  });
+
+  function deps() {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+    };
+  }
+
+  async function send(body: unknown) {
+    return asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: JSON.stringify(body) }),
+        deps(),
+      ),
+    );
+  }
+
+  function expectNoDeviceWrites() {
+    for (const id of [IOS_DEVICE_ID, IOS_ALIAS_ID]) {
+      expect(save).not.toHaveBeenCalledWith(expect.objectContaining({ userId: id }));
+      expect(loadStored).not.toHaveBeenCalledWith(id);
+      expect(bindOwner).not.toHaveBeenCalledWith(expect.anything(), id);
+    }
+  }
+
+  it('documented payload has no data.appUserId and an alias originalAppUserId', () => {
+    const { data } = iosSuperwallEvent();
+    expect(data).not.toHaveProperty('appUserId');
+    expect(data.originalAppUserId).toBe(IOS_ALIAS_ID);
+  });
+
+  it('grants the Firebase uid the SDK identified, not the device id', async () => {
+    const result = await send(
+      iosSuperwallEvent({
+        userAttributes: superwallSdkAttributes({ appUserId: GMAIL_UID }),
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: GMAIL_UID,
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        store: 'APP_STORE',
+        originalTransactionId: '700002050981465',
+      }),
+    );
+    expect(bindOwner).toHaveBeenCalledWith('700002050981465', GMAIL_UID);
+    expectNoDeviceWrites();
+  });
+
+  it('grants userAttributes.firebaseUid when the SDK appUserId is the device id', async () => {
+    const result = await send(
+      iosSuperwallEvent({
+        userAttributes: superwallSdkAttributes({
+          appUserId: IOS_DEVICE_ID,
+          firebaseUid: GMAIL_UID,
+        }),
+      }),
+    );
+
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: GMAIL_UID, tier: 'PREMIUM' }),
+    );
+    expectNoDeviceWrites();
+  });
+
+  it.each([
+    ['SDK attributes only', superwallSdkAttributes()],
+    ['device UUID appUserId', superwallSdkAttributes({ appUserId: IOS_DEVICE_ID })],
+    ['lowercase device UUID', superwallSdkAttributes({ appUserId: IOS_DEVICE_ID.toLowerCase() })],
+    ['undashed device UUID', superwallSdkAttributes({ appUserId: IOS_DEVICE_ID.replace(/-/g, '') })],
+    ['$SuperwallAlias appUserId', superwallSdkAttributes({ appUserId: IOS_ALIAS_ID })],
+    ['$SuperwallAnonymous firebaseUid', superwallSdkAttributes({ firebaseUid: `$SuperwallAnonymous:${IOS_DEVICE_ID}` })],
+    ['no userAttributes', undefined],
+  ])('grants nobody when the only identity is a device id (%s)', async (_label, attrs) => {
+    const body = iosSuperwallEvent({ userAttributes: attrs });
+    if (attrs === undefined) {
+      delete (body.data as { userAttributes?: unknown }).userAttributes;
+    }
+    const result = await send(body);
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ status: 'ignored', reason: 'unknown_user' });
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+    expect(loadStored).not.toHaveBeenCalled();
+  });
+
+  it('does not grant the receipt owner when the event carries no uid', async () => {
+    loadTransactionOwner.mockResolvedValue(ACCOUNT_A);
+    const fromA = await send(
+      iosSuperwallEvent({ name: 'renewal', userAttributes: superwallSdkAttributes() }),
+    );
+    expect(bodyOf(fromA)).toEqual({ status: 'ignored', reason: 'unknown_user' });
+
+    loadTransactionOwner.mockResolvedValue(IOS_DEVICE_ID);
+    const fromDevice = await send(
+      iosSuperwallEvent({
+        name: 'renewal',
+        userAttributes: superwallSdkAttributes({ appUserId: IOS_DEVICE_ID }),
+      }),
+    );
+    expect(bodyOf(fromDevice)).toEqual({ status: 'ignored', reason: 'unknown_user' });
+
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+  });
+
+  it('grants the Firebase uid when the receipt was bound to a device id before WARDROBE-166', async () => {
+    loadTransactionOwner.mockResolvedValue(IOS_DEVICE_ID);
+    const result = await send(
+      iosSuperwallEvent({
+        userAttributes: superwallSdkAttributes({ appUserId: GMAIL_UID }),
+      }),
+    );
+
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ userId: GMAIL_UID }));
+    expect(bindOwner).toHaveBeenCalledWith('700002050981465', GMAIL_UID);
+    expectNoDeviceWrites();
+  });
+
+  it('grants only B when B pays on a device that had A, with originalAppUserId still A', async () => {
+    loadTransactionOwner.mockImplementation(async (txnId: string) =>
+      txnId === TXN_A ? ACCOUNT_A : undefined,
+    );
+
+    for (const original of [ACCOUNT_A, IOS_ALIAS_ID]) {
+      jest.clearAllMocks();
+      const result = await send(
+        iosSuperwallEvent({
+          id: `evt_b_${original}`,
+          originalAppUserId: original,
+          originalTransactionId: TXN_B,
+          userAttributes: superwallSdkAttributes({ appUserId: ACCOUNT_B }),
+        }),
+      );
+
+      expect(bodyOf(result)).toEqual({
+        status: 'applied',
+        eventName: 'initial_purchase',
+        tier: 'PREMIUM',
+      });
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: ACCOUNT_B,
+          tier: 'PREMIUM',
+          originalTransactionId: TXN_B,
+        }),
+      );
+      expect(save).not.toHaveBeenCalledWith(expect.objectContaining({ userId: ACCOUNT_A }));
+      expect(loadStored).not.toHaveBeenCalledWith(ACCOUNT_A);
+      expect(bindOwner).toHaveBeenCalledWith(TXN_B, ACCOUNT_B);
+      expectNoDeviceWrites();
+    }
+  });
+
+  it("does not copy A's Premium to B when B signs in and A's receipt renews", async () => {
+    loadTransactionOwner.mockResolvedValue(ACCOUNT_A);
+    const result = await send(
+      iosSuperwallEvent({
+        name: 'renewal',
+        originalAppUserId: ACCOUNT_A,
+        originalTransactionId: TXN_A,
+        userAttributes: superwallSdkAttributes({ appUserId: ACCOUNT_B }),
+      }),
+    );
+
+    expect(bodyOf(result)).toEqual({
+      status: 'ignored',
+      reason: 'transaction_owned_by_other_user',
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+  });
+
+  it('grants nobody when the payload carries two different Firebase uids', async () => {
+    const result = await send(
+      iosSuperwallEvent({
+        userAttributes: superwallSdkAttributes({
+          appUserId: ACCOUNT_A,
+          firebaseUid: ACCOUNT_B,
+        }),
+      }),
+    );
+
+    expect(bodyOf(result)).toEqual({ status: 'ignored', reason: 'ambiguous_user' });
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not flip anyone to Premium on cancellation or billing issue', async () => {
+    for (const name of ['cancellation', 'billing_issue']) {
+      jest.clearAllMocks();
+      const result = await send(
+        iosSuperwallEvent({
+          id: `evt_${name}`,
+          name,
+          userAttributes: superwallSdkAttributes({ appUserId: ACCOUNT_B }),
+        }),
+      );
+      expect(bodyOf(result)).toEqual({ status: 'applied', eventName: name, tier: 'FREE' });
+      expect(save).not.toHaveBeenCalledWith(expect.objectContaining({ tier: 'PREMIUM' }));
+      expect(bindOwner).not.toHaveBeenCalled();
+
+      jest.clearAllMocks();
+      const deviceOnly = await send(
+        iosSuperwallEvent({ id: `evt_${name}_device`, name }),
+      );
+      expect(bodyOf(deviceOnly)).toEqual({ status: 'ignored', reason: 'unknown_user' });
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
+
+  it('appends a history row per event and the latest row wins (WARDROBE-159)', async () => {
+    const rows: StoredEntitlement[] = [];
+    save.mockImplementation(async (stored: StoredEntitlement) => {
+      rows.push(stored);
+    });
+    loadStored.mockImplementation(async () => rows[rows.length - 1]);
+    const attrs = superwallSdkAttributes({ appUserId: GMAIL_UID });
+    const t0 = Date.parse('2026-10-04T13:00:00.000Z');
+
+    await send(iosSuperwallEvent({ id: 'evt_1', purchasedAt: t0, userAttributes: attrs }));
+    await send(
+      iosSuperwallEvent({ id: 'evt_2', name: 'cancellation', purchasedAt: t0 + 1000, userAttributes: attrs }),
+    );
+    const resubscribed = await send(
+      iosSuperwallEvent({ id: 'evt_3', name: 'uncancellation', purchasedAt: t0 + 2000, userAttributes: attrs }),
+    );
+
+    expect(rows.map((row) => row.status)).toEqual(['ACTIVE', 'CANCELED', 'ACTIVE']);
+    expect(rows.every((row) => row.userId === GMAIL_UID)).toBe(true);
+    expect(rows[rows.length - 1]).toEqual(
+      expect.objectContaining({ tier: 'PREMIUM', status: 'ACTIVE', lastEventId: 'evt_3' }),
+    );
+    expect(bodyOf(resubscribed)).toEqual({
+      status: 'applied',
+      eventName: 'uncancellation',
+      tier: 'PREMIUM',
+    });
   });
 });

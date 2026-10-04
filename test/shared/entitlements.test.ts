@@ -2,6 +2,7 @@ const mockQueryByPk = jest.fn();
 const mockPutItem = jest.fn();
 const mockPutItemIfNotExists = jest.fn();
 const mockGetItem = jest.fn();
+const mockPutItemIfAttributeEquals = jest.fn();
 
 jest.mock('../../src/shared/dynamodb', () => {
   const actual = jest.requireActual('../../src/shared/dynamodb') as typeof import('../../src/shared/dynamodb');
@@ -11,6 +12,8 @@ jest.mock('../../src/shared/dynamodb', () => {
     putItem: (...args: unknown[]) => mockPutItem(...args),
     putItemIfNotExists: (...args: unknown[]) => mockPutItemIfNotExists(...args),
     getItem: (...args: unknown[]) => mockGetItem(...args),
+    putItemIfAttributeEquals: (...args: unknown[]) =>
+      mockPutItemIfAttributeEquals(...args),
   };
 });
 
@@ -26,6 +29,7 @@ import {
   pickLatestEntitlement,
   resolveEntitlement,
   resolvePurchaseTarget,
+  resolveSuperwallIdentity,
   resolveSuperwallUserId,
   isDeviceOrAnonymousAppUserId,
   StoredEntitlement,
@@ -64,10 +68,26 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     expect(mapProductToTier('com.unknown.sku', {})).toBeUndefined();
   });
 
-  it('resolves Flutter Firebase UID from originalAppUserId or userAttributes', () => {
+  it('resolves the Firebase UID from userAttributes, never originalAppUserId (WARDROBE-167)', () => {
     expect(
       resolveSuperwallUserId({ originalAppUserId: 'firebase-uid-owner' }),
-    ).toBe('firebase-uid-owner');
+    ).toBeUndefined();
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: '$SuperwallAlias:ABC',
+        userAttributes: { aliasId: '$SuperwallAlias:ABC', appUserId: 'firebase-sdk-identify' },
+      }),
+    ).toBe('firebase-sdk-identify');
+    expect(
+      resolveSuperwallIdentity({
+        userAttributes: { appUserId: 'firebase-uid-a', firebaseUid: 'firebase-uid-b' },
+      }),
+    ).toEqual({ status: 'ambiguous_user' });
+    expect(
+      resolveSuperwallIdentity({
+        userAttributes: { appUserId: 'firebase-uid-b', firebaseUid: 'firebase-uid-b' },
+      }),
+    ).toEqual({ status: 'ok', userId: 'firebase-uid-b' });
     expect(
       resolveSuperwallUserId({
         originalAppUserId: '$SuperwallAlias:ABC',
@@ -710,5 +730,71 @@ describe('purchase identity (WARDROBE-165)', () => {
       updatedAt: '2026-10-01T00:00:00.000Z',
     });
     await expect(loadTransactionOwner(txnA)).resolves.toBe(accountA);
+  });
+
+  const legacyDeviceId = '7152E89E-60A6-4B2E-9C67-D7ED8F5BE372';
+  const legacyOwnerRow = {
+    PK: `TXN#${txnA}`,
+    SK: 'OWNER',
+    entityType: 'ENTITLEMENT_TXN',
+    userId: legacyDeviceId,
+    originalTransactionId: txnA,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+
+  it('never grants the receipt owner when the event has no uid (WARDROBE-167)', () => {
+    expect(
+      resolvePurchaseTarget({
+        claimedUserId: undefined,
+        transactionOwnerUserId: accountA,
+        originalTransactionId: txnA,
+      }),
+    ).toEqual({ status: 'unknown_user' });
+    expect(
+      resolvePurchaseTarget({
+        claimedUserId: legacyDeviceId,
+        transactionOwnerUserId: undefined,
+        originalTransactionId: txnA,
+      }),
+    ).toEqual({ status: 'unknown_user' });
+  });
+
+  it('treats a legacy device-id receipt owner as unbound and replaces it', async () => {
+    mockGetItem.mockResolvedValue(legacyOwnerRow);
+    await expect(loadTransactionOwner(txnA)).resolves.toBeUndefined();
+    expect(
+      resolvePurchaseTarget({
+        claimedUserId: accountB,
+        transactionOwnerUserId: legacyDeviceId,
+        originalTransactionId: txnA,
+      }),
+    ).toEqual({ status: 'ok', userId: accountB, bindTransaction: true });
+
+    mockPutItemIfNotExists.mockResolvedValue(false);
+    mockPutItemIfAttributeEquals.mockResolvedValue(true);
+    await expect(bindTransactionOwner(txnA, accountB)).resolves.toBe(true);
+    expect(mockPutItemIfAttributeEquals).toHaveBeenCalledWith(
+      expect.objectContaining({ PK: `TXN#${txnA}`, userId: accountB }),
+      'userId',
+      legacyDeviceId,
+    );
+  });
+
+  it('does not replace a receipt already bound to a Firebase uid', async () => {
+    mockPutItemIfNotExists.mockResolvedValue(false);
+    mockPutItemIfAttributeEquals.mockClear();
+    mockGetItem.mockResolvedValue({ ...legacyOwnerRow, userId: accountA });
+    await expect(bindTransactionOwner(txnA, accountB)).resolves.toBe(false);
+    expect(mockPutItemIfAttributeEquals).not.toHaveBeenCalled();
+  });
+
+  it('never binds a receipt to a device or alias id', async () => {
+    mockPutItemIfNotExists.mockClear();
+    await expect(bindTransactionOwner(txnB, legacyDeviceId)).resolves.toBe(false);
+    await expect(
+      bindTransactionOwner(txnB, `$SuperwallAlias:${legacyDeviceId}`),
+    ).resolves.toBe(false);
+    expect(mockPutItemIfNotExists).not.toHaveBeenCalled();
   });
 });

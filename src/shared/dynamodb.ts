@@ -128,6 +128,31 @@ export async function putItemIfNotExists(item: DynamoItem): Promise<boolean> {
   }
 }
 
+/** Overwrite only while `attribute` still equals `expected`. False when it changed. */
+export async function putItemIfAttributeEquals(
+  item: DynamoItem,
+  attribute: string,
+  expected: string,
+): Promise<boolean> {
+  try {
+    await client.send(
+      new PutCommand({
+        TableName: tableName(),
+        Item: item,
+        ConditionExpression: '#attr = :expected',
+        ExpressionAttributeNames: { '#attr': attribute },
+        ExpressionAttributeValues: { ':expected': expected },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
+      return false;
+    }
+    throw error;
+  }
+}
+
 export async function getItem<T extends DynamoItem>(
   pk: string,
   sk: string,

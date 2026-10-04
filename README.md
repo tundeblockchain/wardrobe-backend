@@ -345,7 +345,16 @@ Client Superwall gates are not enough. This API is the source of truth for Free 
 
 **Chosen path:** Superwall Svix webhook → verified Dynamo row `USER#{firebaseUid} / ENTITLEMENT`. Firebase custom claims are **not** written or read in this MVP. Firebase Admin is used only to delete the Auth user on `DELETE /me` (WARDROBE-154). A later ticket may copy `tier` onto claims; do not treat ID-token claims as access.
 
-Flutter must call Superwall `identify` with the **current Firebase UID** and set `userAttributes.firebaseUid` to that uid **before** purchase. The webhook grants `USER#{uid}` from **`userAttributes.firebaseUid`** (or `firebase_uid`). `data.appUserId` / `originalAppUserId` are used only when they are already a Firebase uid. An iOS device UUID or `$SuperwallAlias:` id is never a grant target — on iOS, StoreKit `appAccountToken` must be a UUID, so Superwall can still send the device / anonymous alias as `appUserId` even after `identify(firebaseUid)` (WARDROBE-166). Superwall's `originalAppUserId` is the first alias on the subscription and can still be a previous account on the same device (WARDROBE-165). There is no client confirm grant path — `GET /me` is read-only after purchase. Store receipts (`originalTransactionId`) are bound to the first granted Firebase uid and are not copied to another account.
+Superwall's webhook `data` has **no `appUserId`**. Its only identity fields are `originalAppUserId` (the first id ever seen on the subscription — on iOS the `$SuperwallAlias:` UUID sent to StoreKit as `appAccountToken`, and on a shared device possibly a previous account) and `userAttributes` (the SDK's current attributes: `aliasId`, `seed`, `appUserId` after `identify()`, plus anything the app set with `setUserAttributes`).
+
+The webhook grants `USER#{uid}` only from **`userAttributes`** (WARDROBE-167): `firebaseUid` / `firebase_uid`, or the SDK's own `appUserId`. Values that are a device UUID (dashed, braced or 32 hex) or any `$`-prefixed Superwall id are discarded. Exactly one distinct Firebase uid must remain; none → `200 { "status": "ignored", "reason": "unknown_user" }`, two different uids → `reason: "ambiguous_user"`. `originalAppUserId` is **never** a grant target. A store receipt's owner is never a fallback target either: an event without a uid grants nobody.
+
+Flutter contract — either of these, signed in **before** the paywall opens:
+
+- `Superwall.shared.identify(userId: firebaseUid)` on sign-in and `Superwall.shared.reset()` on sign-out. Superwall then reports `userAttributes.appUserId = firebaseUid`; it keeps using its alias UUID as the StoreKit `appAccountToken` because a Firebase uid is not a UUID.
+- Or, if the app identifies with a device UUID, `setUserAttributes({ "firebaseUid": firebaseUid })` on every sign-in, and clear it on sign-out.
+
+There is no client confirm grant path — `GET /me` is read-only after purchase. Store receipts (`originalTransactionId`) are bound to the first granted Firebase uid and are not copied to another account. A receipt bound to a device / alias id before WARDROBE-166 counts as unbound and is re-bound to the next Firebase uid that pays on it.
 
 #### Product matrix
 
@@ -429,11 +438,12 @@ Flutter launch
 GET /me  →  DynamoDB USER#{uid} / ENTITLEMENT (FREE / NONE if missing)
 
 Flutter Superwall purchase or restore
-        │  identify(currentFirebaseUid) + userAttributes.firebaseUid
+        │  identify(currentFirebaseUid) or userAttributes.firebaseUid
         v
 Superwall  →  POST /webhooks/superwall  (Svix-signed, no Firebase auth)
         │  verify svix-id / svix-timestamp / svix-signature
-        │  grant userAttributes.firebaseUid only — never a device / alias id
+        │  grant the single Firebase uid in userAttributes — never a
+        │  device / alias id, never originalAppUserId (WARDROBE-167)
         │  bind originalTransactionId to that uid (WARDROBE-166)
         │  map productId → BASIC | PREMIUM
         v

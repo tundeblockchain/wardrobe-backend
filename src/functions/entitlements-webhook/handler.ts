@@ -7,8 +7,9 @@ import {
   loadTransactionOwner,
   persistEntitlement,
   pickLatestEntitlement,
+  describeSuperwallIdentity,
   resolvePurchaseTarget,
-  resolveSuperwallUserId,
+  resolveSuperwallIdentity,
   StoredEntitlement,
   superwallEventName,
   SuperwallWebhookEvent,
@@ -46,12 +47,13 @@ export interface SuperwallWebhookDeps {
  * history row (WARDROBE-159), and returns 200 even when the user cannot
  * be resolved so Superwall does not retry forever.
  *
- * Identity (WARDROBE-166) is the Firebase uid of this event —
- * userAttributes.firebaseUid (or firebase_uid). data.appUserId and
- * originalAppUserId are used only when they are already a Firebase
- * uid. An iOS device UUID or $SuperwallAlias: id is never granted.
+ * Identity (WARDROBE-167) is the single Firebase uid in
+ * data.userAttributes (firebaseUid / firebase_uid, or the SDK's own
+ * appUserId set by identify()). originalAppUserId is never granted. An
+ * iOS device UUID or $SuperwallAlias: id is never granted.
  * A store receipt is bound to the first granted Firebase uid and is
- * not attached to a later account on the same device.
+ * not attached to a later account on the same device; a bound receipt
+ * never grants its owner from an event that carries no uid.
  * There is no client confirm grant path; GET /me is read-only.
  */
 export async function handler(
@@ -100,7 +102,17 @@ export async function handleSuperwallWebhook(
       return json(200, { status: 'ignored', reason: 'missing_event_name' });
     }
 
-    const claimedUserId = resolveSuperwallUserId(inbound.data);
+    const identity = resolveSuperwallIdentity(inbound.data);
+    if (identity.status !== 'ok') {
+      logger.info('Superwall webhook ignored; no single Firebase UID', {
+        eventName,
+        reason: identity.status,
+        identityFields: describeSuperwallIdentity(inbound.data),
+      });
+      return json(200, { status: 'ignored', reason: identity.status });
+    }
+
+    const claimedUserId = identity.userId;
     const originalTransactionId = stringOrUndefined(
       inbound.data?.originalTransactionId,
     );

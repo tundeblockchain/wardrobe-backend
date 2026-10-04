@@ -3,6 +3,7 @@ import {
   getItem,
   keys,
   putItem,
+  putItemIfAttributeEquals,
   putItemIfNotExists,
   queryByPk,
 } from './dynamodb';
@@ -57,8 +58,9 @@ export interface SuperwallEventData {
   name?: unknown;
   productId?: unknown;
   newProductId?: unknown;
+  /** First id ever seen on the subscription. Never a grant target. */
   originalAppUserId?: unknown;
-  /** Current Superwall identity when the provider sends it. */
+  /** Not part of Superwall's documented webhook `data`. Read only if a uid. */
   appUserId?: unknown;
   originalTransactionId?: unknown;
   store?: unknown;
@@ -419,51 +421,93 @@ function entitlementItem(
 }
 
 /**
- * Firebase uid this Superwall event may grant (WARDROBE-166).
+ * `userAttributes` keys that may hold the signed-in Firebase uid.
  *
- * Grant field: `userAttributes.firebaseUid` (or `firebase_uid`).
- * `data.appUserId` / `originalAppUserId` are used only when they are
- * already a Firebase uid. An iOS device UUID or `$SuperwallAlias:` id
- * is never a grant target — StoreKit's `appAccountToken` must be a
- * UUID, so Superwall keeps the device / anonymous alias as appUserId
- * even when Flutter called `identify(firebaseUid)` and set
- * `userAttributes.firebaseUid`.
- *
- * On a shared device, `originalAppUserId` can still be account A
- * after B pays. If the current appUserId is a device / anonymous id
- * and no Firebase uid is present, grant nobody (do not fall back to A).
+ * Superwall webhook `data` has no `appUserId`. The only per-user
+ * identity is `userAttributes` (the SDK's current attributes, which
+ * include `appUserId` after `identify()` and `aliasId`) and
+ * `originalAppUserId` (the first id ever seen on the subscription).
+ * `aliasId` / `seed` are Superwall-generated and never a grant target.
  */
+const IDENTITY_ATTRIBUTE_KEYS = [
+  'firebaseUid',
+  'firebase_uid',
+  'appUserId',
+  'app_user_id',
+  'userId',
+  'user_id',
+] as const;
+
+export type SuperwallIdentity =
+  | { status: 'ok'; userId: string }
+  | { status: 'unknown_user' }
+  | { status: 'ambiguous_user' };
+
+/**
+ * Firebase uid signed in when this Superwall event was produced
+ * (WARDROBE-167).
+ *
+ * Reads `userAttributes` only. A device UUID, `$SuperwallAlias:` or any
+ * other `$`-prefixed Superwall id is never a grant target. Two different
+ * Firebase uids in the same payload grant nobody.
+ *
+ * `originalAppUserId` is never a grant target: on a shared device it is
+ * still account A after B pays, and on iOS it is the alias UUID that
+ * Superwall sent as the StoreKit `appAccountToken`.
+ */
+export function resolveSuperwallIdentity(
+  data: SuperwallEventData | undefined,
+): SuperwallIdentity {
+  if (!data) {
+    return { status: 'unknown_user' };
+  }
+  const attrs = parseUserAttributes(data.userAttributes);
+  const candidates = new Set<string>();
+  for (const key of IDENTITY_ATTRIBUTE_KEYS) {
+    const uid = sanitizeAppUserId(attrs[key]);
+    if (uid) {
+      candidates.add(uid);
+    }
+  }
+  const legacyAppUserId = sanitizeAppUserId(data.appUserId);
+  if (legacyAppUserId) {
+    candidates.add(legacyAppUserId);
+  }
+
+  if (candidates.size === 0) {
+    return { status: 'unknown_user' };
+  }
+  if (candidates.size > 1) {
+    return { status: 'ambiguous_user' };
+  }
+  return { status: 'ok', userId: [...candidates][0] };
+}
+
 export function resolveSuperwallUserId(
   data: SuperwallEventData | undefined,
 ): string | undefined {
-  if (!data) {
-    return undefined;
-  }
-  const attrs = parseUserAttributes(data.userAttributes);
-  const firebaseUid = firstNonEmpty(
-    sanitizeAppUserId(attrs.firebaseUid),
-    sanitizeAppUserId(attrs.firebase_uid),
-  );
-  if (firebaseUid) {
-    return firebaseUid;
-  }
+  const identity = resolveSuperwallIdentity(data);
+  return identity.status === 'ok' ? identity.userId : undefined;
+}
 
-  const current = firstNonEmpty(
-    sanitizeAppUserId(attrs.userId),
-    sanitizeAppUserId(attrs.user_id),
-    sanitizeAppUserId(data.appUserId),
-    sanitizeAppUserId(attrs.appUserId),
-    sanitizeAppUserId(attrs.app_user_id),
-  );
-  if (current) {
-    return current;
+/** Which identity fields an event carried. Names only — never values. */
+export function describeSuperwallIdentity(
+  data: SuperwallEventData | undefined,
+): Record<string, string> {
+  const attrs = parseUserAttributes(data?.userAttributes);
+  const fields: Record<string, string> = {};
+  const describe = (value: unknown) =>
+    typeof value !== 'string' || !value.trim()
+      ? 'absent'
+      : isDeviceOrAnonymousAppUserId(value)
+        ? 'device_or_alias'
+        : 'uid';
+  fields.originalAppUserId = describe(data?.originalAppUserId);
+  fields.appUserId = describe(data?.appUserId);
+  for (const key of [...IDENTITY_ATTRIBUTE_KEYS, 'aliasId']) {
+    fields[`userAttributes.${key}`] = describe(attrs[key]);
   }
-
-  if (isDeviceOrAnonymousAppUserId(data.appUserId)) {
-    return undefined;
-  }
-
-  return sanitizeAppUserId(data.originalAppUserId);
+  return fields;
 }
 
 export type PurchaseTarget =
@@ -477,29 +521,33 @@ export type PurchaseTarget =
  * A receipt (`originalTransactionId`) is owned by the first account that
  * was granted from it. Later accounts on the same device do not inherit
  * that grant. A new transaction attributed to B grants B only.
+ *
+ * The receipt owner is never a fallback grant target (WARDROBE-167):
+ * an event that carries no Firebase uid grants nobody, even when the
+ * receipt is already bound. A legacy owner that is a device / alias id
+ * counts as unbound.
  */
 export function resolvePurchaseTarget(options: {
   claimedUserId?: string;
   transactionOwnerUserId?: string;
   originalTransactionId?: string;
 }): PurchaseTarget {
-  const claimed = options.claimedUserId?.trim() || undefined;
-  const owner = options.transactionOwnerUserId?.trim() || undefined;
+  const claimed = sanitizeAppUserId(options.claimedUserId);
+  const owner = sanitizeAppUserId(options.transactionOwnerUserId);
   const transactionId = options.originalTransactionId?.trim() || undefined;
 
-  if (owner && claimed && owner !== claimed) {
-    return { status: 'foreign_transaction', ownerUserId: owner };
+  if (!claimed) {
+    return { status: 'unknown_user' };
   }
 
-  const userId = claimed ?? owner;
-  if (!userId) {
-    return { status: 'unknown_user' };
+  if (owner && owner !== claimed) {
+    return { status: 'foreign_transaction', ownerUserId: owner };
   }
 
   return {
     status: 'ok',
-    userId,
-    bindTransaction: Boolean(transactionId && !owner && claimed),
+    userId: claimed,
+    bindTransaction: Boolean(transactionId && !owner),
   };
 }
 
@@ -517,21 +565,39 @@ export async function loadTransactionOwner(
   if (!item || item.entityType !== 'ENTITLEMENT_TXN') {
     return undefined;
   }
-  const userId = typeof item.userId === 'string' ? item.userId.trim() : '';
-  return userId || undefined;
+  return sanitizeAppUserId(item.userId);
 }
 
-/** First writer wins. Returns false when the receipt is already bound. */
+/**
+ * First Firebase uid wins. Returns false when the receipt is already
+ * bound to a Firebase uid. A legacy binding to a device / alias id
+ * (written before WARDROBE-166) is replaced, never honoured.
+ */
 export async function bindTransactionOwner(
   originalTransactionId: string,
   userId: string,
 ): Promise<boolean> {
   const id = originalTransactionId.trim();
-  const owner = userId.trim();
+  const owner = sanitizeAppUserId(userId);
   if (!id || !owner) {
     return false;
   }
-  return putItemIfNotExists(transactionOwnerItem(id, owner));
+  if (await putItemIfNotExists(transactionOwnerItem(id, owner))) {
+    return true;
+  }
+  const existing = await getItem(
+    keys.transactionOwnerPk(id),
+    keys.transactionOwnerSk,
+  );
+  const legacy = typeof existing?.userId === 'string' ? existing.userId : '';
+  if (!legacy || !isDeviceOrAnonymousAppUserId(legacy)) {
+    return false;
+  }
+  return putItemIfAttributeEquals(
+    transactionOwnerItem(id, owner),
+    'userId',
+    legacy,
+  );
 }
 
 function transactionOwnerItem(
@@ -723,9 +789,9 @@ function fromDynamo(item: DynamoItem): StoredEntitlement {
  * Superwall / StoreKit device and anonymous identities. Never grant
  * `USER#{id}` Premium for these — they are not Firebase uids.
  *
- * - `$SuperwallAlias:` / `$SuperwallAnonymous:` (any case)
- * - Raw iOS IDFV / Superwall alias UUID (StoreKit `appAccountToken`
- *   fallback when `identify()` is not a UUID — Firebase uids are not)
+ * - Any `$`-prefixed Superwall id (`$SuperwallAlias:`, `$SuperwallAnonymous:`, …)
+ * - Raw iOS IDFV / Superwall alias UUID, dashed, braced or as 32 hex
+ *   (StoreKit `appAccountToken` must be a UUID — Firebase uids are not)
  */
 export function isDeviceOrAnonymousAppUserId(value: unknown): boolean {
   if (typeof value !== 'string') {
@@ -735,18 +801,15 @@ export function isDeviceOrAnonymousAppUserId(value: unknown): boolean {
   if (!trimmed) {
     return false;
   }
-  const lower = trimmed.toLowerCase();
-  if (
-    lower.startsWith('$superwallalias:') ||
-    lower.startsWith('$superwallanonymous:')
-  ) {
+  if (trimmed.startsWith('$')) {
     return true;
   }
-  return IOS_DEVICE_OR_ALIAS_UUID.test(trimmed);
+  return DEVICE_OR_ALIAS_UUID.test(trimmed) || HEX_UUID.test(trimmed);
 }
 
-const IOS_DEVICE_OR_ALIAS_UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEVICE_OR_ALIAS_UUID =
+  /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
+const HEX_UUID = /^[0-9a-f]{32}$/i;
 
 function sanitizeAppUserId(value: unknown): string | undefined {
   if (typeof value !== 'string') {
@@ -848,15 +911,4 @@ function asStringRecord(value: unknown): Record<string, string> {
     }
   }
   return result;
-}
-
-function firstNonEmpty(
-  ...values: Array<string | undefined>
-): string | undefined {
-  for (const value of values) {
-    if (value && value.trim()) {
-      return value.trim();
-    }
-  }
-  return undefined;
 }
