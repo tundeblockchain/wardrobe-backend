@@ -345,7 +345,25 @@ Client Superwall gates are not enough. This API is the source of truth for Free 
 
 **Chosen path:** Superwall Svix webhook → verified Dynamo row `USER#{firebaseUid} / ENTITLEMENT`. Firebase custom claims are **not** written or read in this MVP. Firebase Admin is used only to delete the Auth user on `DELETE /me` (WARDROBE-154). A later ticket may copy `tier` onto claims; do not treat ID-token claims as access.
 
-Flutter must call Superwall `identify` with the **current Firebase UID** and set `userAttributes.firebaseUid` to that uid **before** purchase. The webhook grants `USER#{uid}` from **`userAttributes.firebaseUid`** (or `firebase_uid`). `data.appUserId` / `originalAppUserId` are used only when they are already a Firebase uid. An iOS device UUID or `$SuperwallAlias:` id is never a grant target — on iOS, StoreKit `appAccountToken` must be a UUID, so Superwall can still send the device / anonymous alias as `appUserId` even after `identify(firebaseUid)` (WARDROBE-166). Superwall's `originalAppUserId` is the first alias on the subscription and can still be a previous account on the same device (WARDROBE-165). There is no client confirm grant path — `GET /me` is read-only after purchase. Store receipts (`originalTransactionId`) are bound to the first granted Firebase uid and are not copied to another account.
+Superwall's webhook `data` has **no `appUserId`**. Its identity fields are `originalAppUserId` (the StoreKit `appAccountToken` of the subscription's first purchase) and `userAttributes` (app attributes such as `firebaseUid`, plus the SDK's `aliasId` / `seed` / `appUserId`). SuperwallKit only sends `appUserId` to StoreKit as `appAccountToken` when it is a UUID, so a raw Firebase uid never becomes `originalAppUserId`.
+
+**Flutter contract (WARDROBE-167).** Before the paywall opens, the app calls Superwall `identify` with a UUID derived from the signed-in Firebase uid, and sets `userAttributes.firebaseUid` to the raw uid:
+
+1. SHA-256 of the UTF-8 string `wardrobe:superwall:app-user-id:` + Firebase uid
+2. Take the first 16 bytes
+3. Set the version-4 bits (`byte[6] = (byte[6] & 0x0f) | 0x40`) and the RFC 4122 variant bits (`byte[8] = (byte[8] & 0x3f) | 0x80`)
+4. Format as a lowercase dashed UUID — `uid-a` → `87fd3c93-5175-41f0-9dda-2884927fbc28`
+
+**Grant rule.** The webhook hashes `userAttributes.firebaseUid` (or `firebase_uid`) the same way and grants `USER#{uid}` only when the result equals `originalAppUserId`, ignoring case. Otherwise nobody is granted and the webhook returns `200 { "status": "ignored", "reason": … }`:
+
+| `reason` | When |
+| --- | --- |
+| `unknown_user` | No `firebaseUid` / `firebase_uid` attribute |
+| `ambiguous_user` | `firebaseUid` and `firebase_uid` disagree |
+| `app_user_id_mismatch` | `originalAppUserId` is not that uid's derived id — a device UUID, `$SuperwallAlias:`, a purchase from before this contract, or another account's subscription |
+| `transaction_owned_by_other_user` | The receipt is already bound to a different owner |
+
+There is no fallback to `userAttributes` alone, to the receipt owner, or to a stale `originalAppUserId`. There is no client confirm grant path — `GET /me` is read-only after purchase. Store receipts (`originalTransactionId`) are bound to their first owner and never rebound, including receipts bound to a device alias before this contract; those keep the old alias and grant nobody.
 
 #### Product matrix
 
@@ -429,11 +447,12 @@ Flutter launch
 GET /me  →  DynamoDB USER#{uid} / ENTITLEMENT (FREE / NONE if missing)
 
 Flutter Superwall purchase or restore
-        │  identify(currentFirebaseUid) + userAttributes.firebaseUid
+        │  identify(derivedUuid(firebaseUid)) + userAttributes.firebaseUid
         v
 Superwall  →  POST /webhooks/superwall  (Svix-signed, no Firebase auth)
         │  verify svix-id / svix-timestamp / svix-signature
-        │  grant userAttributes.firebaseUid only — never a device / alias id
+        │  grant firebaseUid only if derivedUuid(firebaseUid) ==
+        │  originalAppUserId (case-insensitive) — else nobody (WARDROBE-167)
         │  bind originalTransactionId to that uid (WARDROBE-166)
         │  map productId → BASIC | PREMIUM
         v
