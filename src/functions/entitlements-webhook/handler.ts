@@ -46,10 +46,12 @@ export interface SuperwallWebhookDeps {
  * history row (WARDROBE-159), and returns 200 even when the user cannot
  * be resolved so Superwall does not retry forever.
  *
- * Identity (WARDROBE-165) is the current Superwall / Firebase uid of
- * this event — userAttributes.firebaseUid or appUserId first, then
- * originalAppUserId. A store receipt is bound to the first granted
- * uid and is not attached to a later account on the same device.
+ * Identity (WARDROBE-166) is the Firebase uid of this event —
+ * userAttributes.firebaseUid (or firebase_uid). data.appUserId and
+ * originalAppUserId are used only when they are already a Firebase
+ * uid. An iOS device UUID or $SuperwallAlias: id is never granted.
+ * A store receipt is bound to the first granted Firebase uid and is
+ * not attached to a later account on the same device.
  * There is no client confirm grant path; GET /me is read-only.
  */
 export async function handler(

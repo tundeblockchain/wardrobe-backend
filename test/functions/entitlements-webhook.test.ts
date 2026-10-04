@@ -386,3 +386,184 @@ describe('Superwall purchase identity (WARDROBE-165)', () => {
     expect(bindOwner).not.toHaveBeenCalled();
   });
 });
+
+describe('Superwall device identity (WARDROBE-166)', () => {
+  const DEVICE_ID = '7152E89E-60A6-4B2E-9C67-D7ED8F5BE372';
+  const ANON_ID = `$SuperwallAlias:${DEVICE_ID}`;
+  const loadConfig = jest.fn();
+  const loadStored = jest.fn();
+  const save = jest.fn();
+  const loadTransactionOwner = jest.fn();
+  const bindOwner = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    loadConfig.mockResolvedValue({
+      webhookSecret: SECRET,
+      productTiers: {},
+    });
+    loadStored.mockResolvedValue(undefined);
+    save.mockResolvedValue(undefined);
+    loadTransactionOwner.mockResolvedValue(undefined);
+    bindOwner.mockResolvedValue(true);
+  });
+
+  function deps() {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+    };
+  }
+
+  it('grants only the Firebase uid when appUserId is a device or anonymous id', async () => {
+    const payload = purchasePayload({
+      id: 'evt_purchase_device_plus_uid',
+      originalAppUserId: ACCOUNT_A,
+      appUserId: DEVICE_ID,
+      originalTransactionId: TXN_B,
+      userAttributes: { firebaseUid: ACCOUNT_B },
+    });
+
+    const result = asResult(
+      await handleSuperwallWebhook(webhookEvent({ payload }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: ACCOUNT_B,
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        originalTransactionId: TXN_B,
+      }),
+    );
+    expect(save).not.toHaveBeenCalledWith(
+      expect.objectContaining({ userId: DEVICE_ID }),
+    );
+    expect(save).not.toHaveBeenCalledWith(
+      expect.objectContaining({ userId: ACCOUNT_A }),
+    );
+    expect(bindOwner).toHaveBeenCalledWith(TXN_B, ACCOUNT_B);
+    expect(loadStored).toHaveBeenCalledWith(ACCOUNT_B);
+    expect(loadStored).not.toHaveBeenCalledWith(DEVICE_ID);
+    expect(loadStored).not.toHaveBeenCalledWith(ACCOUNT_A);
+  });
+
+  it('does not grant Premium when the only identity is a device or anonymous id', async () => {
+    const deviceOnly = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: purchasePayload({
+            id: 'evt_device_only',
+            originalAppUserId: DEVICE_ID,
+            appUserId: DEVICE_ID,
+            originalTransactionId: TXN_B,
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(deviceOnly.statusCode).toBe(200);
+    expect(bodyOf(deviceOnly)).toEqual({
+      status: 'ignored',
+      reason: 'unknown_user',
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+
+    const anonOnly = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: purchasePayload({
+            id: 'evt_anon_only',
+            originalAppUserId: ANON_ID,
+            appUserId: ANON_ID,
+            originalTransactionId: TXN_B,
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(bodyOf(anonOnly)).toEqual({
+      status: 'ignored',
+      reason: 'unknown_user',
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not grant A when B pays on a device that previously had A', async () => {
+    loadTransactionOwner.mockImplementation(async (txnId: string) =>
+      txnId === TXN_A ? ACCOUNT_A : undefined,
+    );
+
+    const grantedB = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: purchasePayload({
+            id: 'evt_b_on_shared_device',
+            originalAppUserId: ACCOUNT_A,
+            appUserId: DEVICE_ID,
+            originalTransactionId: TXN_B,
+            userAttributes: { firebaseUid: ACCOUNT_B },
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(bodyOf(grantedB)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: ACCOUNT_B,
+        tier: 'PREMIUM',
+        originalTransactionId: TXN_B,
+      }),
+    );
+    expect(save).not.toHaveBeenCalledWith(
+      expect.objectContaining({ userId: ACCOUNT_A }),
+    );
+    expect(bindOwner).toHaveBeenCalledWith(TXN_B, ACCOUNT_B);
+
+    save.mockClear();
+    bindOwner.mockClear();
+
+    const noUidForB = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: purchasePayload({
+            id: 'evt_device_stale_a',
+            originalAppUserId: ACCOUNT_A,
+            appUserId: DEVICE_ID,
+            originalTransactionId: TXN_B,
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(bodyOf(noUidForB)).toEqual({
+      status: 'ignored',
+      reason: 'unknown_user',
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+  });
+});

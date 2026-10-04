@@ -419,13 +419,19 @@ function entitlementItem(
 }
 
 /**
- * Firebase uid for this Superwall event (WARDROBE-165).
+ * Firebase uid this Superwall event may grant (WARDROBE-166).
  *
- * Superwall's `originalAppUserId` is the first identified user on the
- * alias / subscription, not necessarily the account that just paid.
- * On a shared device that is often the previous Gmail user. Prefer the
- * current identity from user attributes / `appUserId`, then fall back
- * to `originalAppUserId` for the single-account path.
+ * Grant field: `userAttributes.firebaseUid` (or `firebase_uid`).
+ * `data.appUserId` / `originalAppUserId` are used only when they are
+ * already a Firebase uid. An iOS device UUID or `$SuperwallAlias:` id
+ * is never a grant target — StoreKit's `appAccountToken` must be a
+ * UUID, so Superwall keeps the device / anonymous alias as appUserId
+ * even when Flutter called `identify(firebaseUid)` and set
+ * `userAttributes.firebaseUid`.
+ *
+ * On a shared device, `originalAppUserId` can still be account A
+ * after B pays. If the current appUserId is a device / anonymous id
+ * and no Firebase uid is present, grant nobody (do not fall back to A).
  */
 export function resolveSuperwallUserId(
   data: SuperwallEventData | undefined,
@@ -433,10 +439,16 @@ export function resolveSuperwallUserId(
   if (!data) {
     return undefined;
   }
-  const attrs = asStringRecord(data.userAttributes);
-  const current = firstNonEmpty(
+  const attrs = parseUserAttributes(data.userAttributes);
+  const firebaseUid = firstNonEmpty(
     sanitizeAppUserId(attrs.firebaseUid),
     sanitizeAppUserId(attrs.firebase_uid),
+  );
+  if (firebaseUid) {
+    return firebaseUid;
+  }
+
+  const current = firstNonEmpty(
     sanitizeAppUserId(attrs.userId),
     sanitizeAppUserId(attrs.user_id),
     sanitizeAppUserId(data.appUserId),
@@ -446,6 +458,11 @@ export function resolveSuperwallUserId(
   if (current) {
     return current;
   }
+
+  if (isDeviceOrAnonymousAppUserId(data.appUserId)) {
+    return undefined;
+  }
+
   return sanitizeAppUserId(data.originalAppUserId);
 }
 
@@ -702,15 +719,59 @@ function fromDynamo(item: DynamoItem): StoredEntitlement {
   };
 }
 
+/**
+ * Superwall / StoreKit device and anonymous identities. Never grant
+ * `USER#{id}` Premium for these — they are not Firebase uids.
+ *
+ * - `$SuperwallAlias:` / `$SuperwallAnonymous:` (any case)
+ * - Raw iOS IDFV / Superwall alias UUID (StoreKit `appAccountToken`
+ *   fallback when `identify()` is not a UUID — Firebase uids are not)
+ */
+export function isDeviceOrAnonymousAppUserId(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('$superwallalias:') ||
+    lower.startsWith('$superwallanonymous:')
+  ) {
+    return true;
+  }
+  return IOS_DEVICE_OR_ALIAS_UUID.test(trimmed);
+}
+
+const IOS_DEVICE_OR_ALIAS_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function sanitizeAppUserId(value: unknown): string | undefined {
   if (typeof value !== 'string') {
     return undefined;
   }
   const trimmed = value.trim();
-  if (!trimmed || trimmed.startsWith('$SuperwallAlias:')) {
+  if (!trimmed || isDeviceOrAnonymousAppUserId(trimmed)) {
     return undefined;
   }
   return trimmed;
+}
+
+function parseUserAttributes(value: unknown): Record<string, string> {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return {};
+    }
+    try {
+      return asStringRecord(JSON.parse(trimmed) as unknown);
+    } catch {
+      return {};
+    }
+  }
+  return asStringRecord(value);
 }
 
 function inferPeriod(productId: string | undefined): EntitlementPeriod | undefined {
