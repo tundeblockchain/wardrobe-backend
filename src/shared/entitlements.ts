@@ -1,9 +1,9 @@
+import { createHash } from 'crypto';
 import { nanoid } from 'nanoid';
 import {
   getItem,
   keys,
   putItem,
-  putItemIfAttributeEquals,
   putItemIfNotExists,
   queryByPk,
 } from './dynamodb';
@@ -58,7 +58,7 @@ export interface SuperwallEventData {
   name?: unknown;
   productId?: unknown;
   newProductId?: unknown;
-  /** First id ever seen on the subscription. Never a grant target. */
+  /** StoreKit appAccountToken at first purchase. Must equal the derived id. */
   originalAppUserId?: unknown;
   /** Not part of Superwall's documented webhook `data`. Read only if a uid. */
   appUserId?: unknown;
@@ -420,40 +420,50 @@ function entitlementItem(
   return item;
 }
 
+/** Prefix hashed with the Firebase uid by Flutter (wardrobe_app#87). */
+export const SUPERWALL_APP_USER_ID_PREFIX = 'wardrobe:superwall:app-user-id:';
+
 /**
- * `userAttributes` keys that may hold the signed-in Firebase uid.
+ * Superwall `identify()` id for a Firebase uid (WARDROBE-167).
  *
- * Superwall webhook `data` has no `appUserId`. The only per-user
- * identity is `userAttributes` (the SDK's current attributes, which
- * include `appUserId` after `identify()` and `aliasId`) and
- * `originalAppUserId` (the first id ever seen on the subscription).
- * `aliasId` / `seed` are Superwall-generated and never a grant target.
+ * SuperwallKit only sends `appUserId` to StoreKit as `appAccountToken`
+ * (and so as the webhook's `originalAppUserId`) when it is a UUID, so
+ * Flutter identifies with SHA-256(prefix + uid), first 16 bytes, with
+ * the RFC 4122 version-4 and variant bits set. Must stay byte-identical
+ * to the app's derivation.
  */
-const IDENTITY_ATTRIBUTE_KEYS = [
-  'firebaseUid',
-  'firebase_uid',
-  'appUserId',
-  'app_user_id',
-  'userId',
-  'user_id',
-] as const;
+export function deriveSuperwallAppUserId(firebaseUid: string): string {
+  const bytes = createHash('sha256')
+    .update(`${SUPERWALL_APP_USER_ID_PREFIX}${firebaseUid}`, 'utf8')
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
 
 export type SuperwallIdentity =
   | { status: 'ok'; userId: string }
   | { status: 'unknown_user' }
-  | { status: 'ambiguous_user' };
+  | { status: 'ambiguous_user' }
+  | { status: 'app_user_id_mismatch' };
 
 /**
- * Firebase uid signed in when this Superwall event was produced
- * (WARDROBE-167).
+ * Firebase uid that paid for this Superwall event (WARDROBE-167).
  *
- * Reads `userAttributes` only. A device UUID, `$SuperwallAlias:` or any
- * other `$`-prefixed Superwall id is never a grant target. Two different
- * Firebase uids in the same payload grant nobody.
- *
- * `originalAppUserId` is never a grant target: on a shared device it is
- * still account A after B pays, and on iOS it is the alias UUID that
- * Superwall sent as the StoreKit `appAccountToken`.
+ * `userAttributes.firebaseUid` (or `firebase_uid`) is only the candidate
+ * to hash. The grant is proven by `originalAppUserId` — the StoreKit
+ * `appAccountToken` fixed at purchase — equalling that uid's derived
+ * Superwall id (case-insensitive). A device UUID, `$SuperwallAlias:` or
+ * a pre-derivation purchase never matches, so it grants nobody. There is
+ * no fallback to `userAttributes` alone, `appUserId` or the receipt owner.
  */
 export function resolveSuperwallIdentity(
   data: SuperwallEventData | undefined,
@@ -463,24 +473,25 @@ export function resolveSuperwallIdentity(
   }
   const attrs = parseUserAttributes(data.userAttributes);
   const candidates = new Set<string>();
-  for (const key of IDENTITY_ATTRIBUTE_KEYS) {
-    const uid = sanitizeAppUserId(attrs[key]);
+  for (const value of [attrs.firebaseUid, attrs.firebase_uid]) {
+    const uid = optionalString(value);
     if (uid) {
       candidates.add(uid);
     }
   }
-  const legacyAppUserId = sanitizeAppUserId(data.appUserId);
-  if (legacyAppUserId) {
-    candidates.add(legacyAppUserId);
-  }
-
   if (candidates.size === 0) {
     return { status: 'unknown_user' };
   }
   if (candidates.size > 1) {
     return { status: 'ambiguous_user' };
   }
-  return { status: 'ok', userId: [...candidates][0] };
+
+  const [uid] = [...candidates];
+  const original = optionalString(data.originalAppUserId)?.toLowerCase();
+  if (!original || original !== deriveSuperwallAppUserId(uid)) {
+    return { status: 'app_user_id_mismatch' };
+  }
+  return { status: 'ok', userId: uid };
 }
 
 export function resolveSuperwallUserId(
@@ -490,24 +501,26 @@ export function resolveSuperwallUserId(
   return identity.status === 'ok' ? identity.userId : undefined;
 }
 
-/** Which identity fields an event carried. Names only — never values. */
+/** Which identity fields an event carried. Shapes only — never values. */
 export function describeSuperwallIdentity(
   data: SuperwallEventData | undefined,
 ): Record<string, string> {
   const attrs = parseUserAttributes(data?.userAttributes);
-  const fields: Record<string, string> = {};
   const describe = (value: unknown) =>
     typeof value !== 'string' || !value.trim()
       ? 'absent'
-      : isDeviceOrAnonymousAppUserId(value)
-        ? 'device_or_alias'
-        : 'uid';
-  fields.originalAppUserId = describe(data?.originalAppUserId);
-  fields.appUserId = describe(data?.appUserId);
-  for (const key of [...IDENTITY_ATTRIBUTE_KEYS, 'aliasId']) {
-    fields[`userAttributes.${key}`] = describe(attrs[key]);
-  }
-  return fields;
+      : value.trim().startsWith('$')
+        ? 'superwall_alias'
+        : isDeviceOrAnonymousAppUserId(value)
+          ? 'uuid'
+          : 'other';
+  return {
+    originalAppUserId: describe(data?.originalAppUserId),
+    'userAttributes.firebaseUid': describe(attrs.firebaseUid),
+    'userAttributes.firebase_uid': describe(attrs.firebase_uid),
+    'userAttributes.appUserId': describe(attrs.appUserId),
+    'userAttributes.aliasId': describe(attrs.aliasId),
+  };
 }
 
 export type PurchaseTarget =
@@ -519,21 +532,18 @@ export type PurchaseTarget =
  * Decide which Firebase uid may receive this event.
  *
  * A receipt (`originalTransactionId`) is owned by the first account that
- * was granted from it. Later accounts on the same device do not inherit
- * that grant. A new transaction attributed to B grants B only.
- *
- * The receipt owner is never a fallback grant target (WARDROBE-167):
- * an event that carries no Firebase uid grants nobody, even when the
- * receipt is already bound. A legacy owner that is a device / alias id
- * counts as unbound.
+ * was bound to it — including a legacy device / alias binding, which is
+ * never rebound onto a new uid. Later accounts on the same device do
+ * not inherit that grant. The owner is never a fallback grant target:
+ * an event without a verified uid grants nobody.
  */
 export function resolvePurchaseTarget(options: {
   claimedUserId?: string;
   transactionOwnerUserId?: string;
   originalTransactionId?: string;
 }): PurchaseTarget {
-  const claimed = sanitizeAppUserId(options.claimedUserId);
-  const owner = sanitizeAppUserId(options.transactionOwnerUserId);
+  const claimed = options.claimedUserId?.trim() || undefined;
+  const owner = options.transactionOwnerUserId?.trim() || undefined;
   const transactionId = options.originalTransactionId?.trim() || undefined;
 
   if (!claimed) {
@@ -565,14 +575,11 @@ export async function loadTransactionOwner(
   if (!item || item.entityType !== 'ENTITLEMENT_TXN') {
     return undefined;
   }
-  return sanitizeAppUserId(item.userId);
+  const userId = typeof item.userId === 'string' ? item.userId.trim() : '';
+  return userId || undefined;
 }
 
-/**
- * First Firebase uid wins. Returns false when the receipt is already
- * bound to a Firebase uid. A legacy binding to a device / alias id
- * (written before WARDROBE-166) is replaced, never honoured.
- */
+/** First writer wins. Returns false when the receipt is already bound. */
 export async function bindTransactionOwner(
   originalTransactionId: string,
   userId: string,
@@ -582,22 +589,7 @@ export async function bindTransactionOwner(
   if (!id || !owner) {
     return false;
   }
-  if (await putItemIfNotExists(transactionOwnerItem(id, owner))) {
-    return true;
-  }
-  const existing = await getItem(
-    keys.transactionOwnerPk(id),
-    keys.transactionOwnerSk,
-  );
-  const legacy = typeof existing?.userId === 'string' ? existing.userId : '';
-  if (!legacy || !isDeviceOrAnonymousAppUserId(legacy)) {
-    return false;
-  }
-  return putItemIfAttributeEquals(
-    transactionOwnerItem(id, owner),
-    'userId',
-    legacy,
-  );
+  return putItemIfNotExists(transactionOwnerItem(id, owner));
 }
 
 function transactionOwnerItem(

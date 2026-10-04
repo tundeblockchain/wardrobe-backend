@@ -2,12 +2,12 @@
  * Superwall webhook bodies shaped like the documented production payload
  * (https://superwall.com/docs/integrations/webhooks).
  *
- * `data` has no `appUserId`. `originalAppUserId` is the first id seen on
- * the subscription — on iOS the `$SuperwallAlias:` UUID sent to StoreKit
- * as `appAccountToken` when the app user id is not a UUID. Per-user
- * identity only arrives in `userAttributes`: the SDK always sets
- * `aliasId` / `seed`, adds `appUserId` after `identify()`, and merges any
- * attributes the app set with `setUserAttributes`.
+ * `data` has no `appUserId`. `originalAppUserId` is the StoreKit
+ * `appAccountToken` of the first purchase: the derived app user id when
+ * the app identified with it, otherwise the `$SuperwallAlias:` UUID (the
+ * default here, i.e. a purchase from before that app build).
+ * `userAttributes` carries the SDK's `aliasId` / `seed`, `appUserId`
+ * after `identify()`, and app attributes such as `firebaseUid`.
  */
 export const IOS_DEVICE_ID = '7152E89E-60A6-4B2E-9C67-D7ED8F5BE372';
 export const IOS_ALIAS_ID = `$SuperwallAlias:${IOS_DEVICE_ID}`;

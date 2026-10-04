@@ -2,7 +2,6 @@ const mockQueryByPk = jest.fn();
 const mockPutItem = jest.fn();
 const mockPutItemIfNotExists = jest.fn();
 const mockGetItem = jest.fn();
-const mockPutItemIfAttributeEquals = jest.fn();
 
 jest.mock('../../src/shared/dynamodb', () => {
   const actual = jest.requireActual('../../src/shared/dynamodb') as typeof import('../../src/shared/dynamodb');
@@ -12,8 +11,6 @@ jest.mock('../../src/shared/dynamodb', () => {
     putItem: (...args: unknown[]) => mockPutItem(...args),
     putItemIfNotExists: (...args: unknown[]) => mockPutItemIfNotExists(...args),
     getItem: (...args: unknown[]) => mockGetItem(...args),
-    putItemIfAttributeEquals: (...args: unknown[]) =>
-      mockPutItemIfAttributeEquals(...args),
   };
 });
 
@@ -29,6 +26,7 @@ import {
   pickLatestEntitlement,
   resolveEntitlement,
   resolvePurchaseTarget,
+  deriveSuperwallAppUserId,
   resolveSuperwallIdentity,
   resolveSuperwallUserId,
   isDeviceOrAnonymousAppUserId,
@@ -68,104 +66,66 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     expect(mapProductToTier('com.unknown.sku', {})).toBeUndefined();
   });
 
-  it('resolves the Firebase UID from userAttributes, never originalAppUserId (WARDROBE-167)', () => {
-    expect(
-      resolveSuperwallUserId({ originalAppUserId: 'firebase-uid-owner' }),
-    ).toBeUndefined();
-    expect(
-      resolveSuperwallUserId({
-        originalAppUserId: '$SuperwallAlias:ABC',
-        userAttributes: { aliasId: '$SuperwallAlias:ABC', appUserId: 'firebase-sdk-identify' },
-      }),
-    ).toBe('firebase-sdk-identify');
-    expect(
-      resolveSuperwallIdentity({
-        userAttributes: { appUserId: 'firebase-uid-a', firebaseUid: 'firebase-uid-b' },
-      }),
-    ).toEqual({ status: 'ambiguous_user' });
-    expect(
-      resolveSuperwallIdentity({
-        userAttributes: { appUserId: 'firebase-uid-b', firebaseUid: 'firebase-uid-b' },
-      }),
-    ).toEqual({ status: 'ok', userId: 'firebase-uid-b' });
-    expect(
-      resolveSuperwallUserId({
-        originalAppUserId: '$SuperwallAlias:ABC',
-        userAttributes: { firebaseUid: 'firebase-from-attrs' },
-      }),
-    ).toBe('firebase-from-attrs');
-    expect(
-      resolveSuperwallUserId({ originalAppUserId: '$SuperwallAlias:ABC' }),
-    ).toBeUndefined();
-  });
-
-  it('prefers the current Firebase uid over a stale originalAppUserId', () => {
-    expect(
-      resolveSuperwallUserId({
-        originalAppUserId: 'firebase-uid-account-a',
-        appUserId: 'firebase-uid-account-b',
-        userAttributes: { firebaseUid: 'firebase-uid-account-b' },
-      }),
-    ).toBe('firebase-uid-account-b');
-    expect(
-      resolveSuperwallUserId({
-        originalAppUserId: 'firebase-uid-account-a',
-        userAttributes: { firebase_uid: 'firebase-uid-account-b' },
-      }),
-    ).toBe('firebase-uid-account-b');
-  });
-
   const DEVICE_ID = '7152E89E-60A6-4B2E-9C67-D7ED8F5BE372';
   const ANON_ID = `$SuperwallAlias:${DEVICE_ID}`;
+  const UID_A_APP_USER_ID = '87fd3c93-5175-41f0-9dda-2884927fbc28';
 
-  it('grants the Firebase uid when appUserId is a device or anonymous id (WARDROBE-166)', () => {
-    expect(isDeviceOrAnonymousAppUserId(DEVICE_ID)).toBe(true);
-    expect(isDeviceOrAnonymousAppUserId(ANON_ID)).toBe(true);
-    expect(isDeviceOrAnonymousAppUserId('$superwallAlias:abc')).toBe(true);
-    expect(isDeviceOrAnonymousAppUserId('firebase-uid-account-b')).toBe(false);
-
-    expect(
-      resolveSuperwallUserId({
-        originalAppUserId: 'firebase-uid-account-a',
-        appUserId: DEVICE_ID,
-        userAttributes: { firebaseUid: 'firebase-uid-account-b' },
-      }),
-    ).toBe('firebase-uid-account-b');
-    expect(
-      resolveSuperwallUserId({
-        originalAppUserId: ANON_ID,
-        appUserId: ANON_ID,
-        userAttributes: { firebase_uid: 'firebase-uid-account-b' },
-      }),
-    ).toBe('firebase-uid-account-b');
-    expect(
-      resolveSuperwallUserId({
-        originalAppUserId: ANON_ID,
-        appUserId: DEVICE_ID,
-        userAttributes: JSON.stringify({ firebaseUid: 'firebase-uid-account-b' }),
-      }),
-    ).toBe('firebase-uid-account-b');
+  it('derives the Superwall app user id from the Firebase uid (WARDROBE-167)', () => {
+    expect(deriveSuperwallAppUserId('uid-a')).toBe(UID_A_APP_USER_ID);
+    expect(deriveSuperwallAppUserId('uid-b')).not.toBe(UID_A_APP_USER_ID);
+    expect(deriveSuperwallAppUserId('uid-b')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
   });
 
-  it('does not treat a device or anonymous Superwall id as a grant uid (WARDROBE-166)', () => {
+  it('grants userAttributes.firebaseUid only when its derived id is originalAppUserId', () => {
+    for (const original of [UID_A_APP_USER_ID, UID_A_APP_USER_ID.toUpperCase()]) {
+      expect(
+        resolveSuperwallIdentity({
+          originalAppUserId: original,
+          userAttributes: { firebaseUid: 'uid-a' },
+        }),
+      ).toEqual({ status: 'ok', userId: 'uid-a' });
+    }
     expect(
       resolveSuperwallUserId({
-        appUserId: DEVICE_ID,
-        originalAppUserId: DEVICE_ID,
+        originalAppUserId: UID_A_APP_USER_ID,
+        userAttributes: JSON.stringify({ firebase_uid: 'uid-a' }),
       }),
-    ).toBeUndefined();
+    ).toBe('uid-a');
     expect(
-      resolveSuperwallUserId({
-        originalAppUserId: ANON_ID,
-        appUserId: ANON_ID,
+      resolveSuperwallIdentity({
+        originalAppUserId: UID_A_APP_USER_ID,
+        userAttributes: { firebaseUid: 'uid-b' },
       }),
-    ).toBeUndefined();
+    ).toEqual({ status: 'app_user_id_mismatch' });
+  });
+
+  it('grants nobody for a device id, alias, raw uid or missing firebaseUid', () => {
+    for (const original of [DEVICE_ID, DEVICE_ID.toLowerCase(), ANON_ID, 'uid-a', undefined]) {
+      expect(
+        resolveSuperwallIdentity({
+          originalAppUserId: original,
+          userAttributes: { firebaseUid: 'uid-a' },
+        }),
+      ).toEqual({ status: 'app_user_id_mismatch' });
+    }
     expect(
-      resolveSuperwallUserId({
-        originalAppUserId: 'firebase-uid-account-a',
-        appUserId: DEVICE_ID,
+      resolveSuperwallIdentity({
+        originalAppUserId: UID_A_APP_USER_ID,
+        appUserId: 'uid-a',
+        userAttributes: { appUserId: 'uid-a', aliasId: ANON_ID },
       }),
-    ).toBeUndefined();
+    ).toEqual({ status: 'unknown_user' });
+    expect(
+      resolveSuperwallIdentity({
+        originalAppUserId: UID_A_APP_USER_ID,
+        userAttributes: { firebaseUid: 'uid-a', firebase_uid: 'uid-b' },
+      }),
+    ).toEqual({ status: 'ambiguous_user' });
+    expect(isDeviceOrAnonymousAppUserId(DEVICE_ID)).toBe(true);
+    expect(isDeviceOrAnonymousAppUserId(ANON_ID)).toBe(true);
+    expect(isDeviceOrAnonymousAppUserId('firebase-uid-account-b')).toBe(false);
   });
 
   it('builds a new ACTIVE record when the user subscribes over Free', () => {
@@ -733,17 +693,8 @@ describe('purchase identity (WARDROBE-165)', () => {
   });
 
   const legacyDeviceId = '7152E89E-60A6-4B2E-9C67-D7ED8F5BE372';
-  const legacyOwnerRow = {
-    PK: `TXN#${txnA}`,
-    SK: 'OWNER',
-    entityType: 'ENTITLEMENT_TXN',
-    userId: legacyDeviceId,
-    originalTransactionId: txnA,
-    createdAt: '2026-10-01T00:00:00.000Z',
-    updatedAt: '2026-10-01T00:00:00.000Z',
-  };
 
-  it('never grants the receipt owner when the event has no uid (WARDROBE-167)', () => {
+  it('never grants the receipt owner when the event has no verified uid (WARDROBE-167)', () => {
     expect(
       resolvePurchaseTarget({
         claimedUserId: undefined,
@@ -751,42 +702,33 @@ describe('purchase identity (WARDROBE-165)', () => {
         originalTransactionId: txnA,
       }),
     ).toEqual({ status: 'unknown_user' });
-    expect(
-      resolvePurchaseTarget({
-        claimedUserId: legacyDeviceId,
-        transactionOwnerUserId: undefined,
-        originalTransactionId: txnA,
-      }),
-    ).toEqual({ status: 'unknown_user' });
   });
 
-  it('treats a legacy device-id receipt owner as unbound and replaces it', async () => {
-    mockGetItem.mockResolvedValue(legacyOwnerRow);
-    await expect(loadTransactionOwner(txnA)).resolves.toBeUndefined();
+  it('keeps a legacy device-alias receipt owner; a new uid is not rebound onto it', async () => {
+    mockGetItem.mockResolvedValue({
+      PK: `TXN#${txnA}`,
+      SK: 'OWNER',
+      entityType: 'ENTITLEMENT_TXN',
+      userId: legacyDeviceId,
+      originalTransactionId: txnA,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    });
+    await expect(loadTransactionOwner(txnA)).resolves.toBe(legacyDeviceId);
     expect(
       resolvePurchaseTarget({
         claimedUserId: accountB,
         transactionOwnerUserId: legacyDeviceId,
         originalTransactionId: txnA,
       }),
-    ).toEqual({ status: 'ok', userId: accountB, bindTransaction: true });
+    ).toEqual({ status: 'foreign_transaction', ownerUserId: legacyDeviceId });
 
+    mockPutItemIfNotExists.mockReset();
     mockPutItemIfNotExists.mockResolvedValue(false);
-    mockPutItemIfAttributeEquals.mockResolvedValue(true);
-    await expect(bindTransactionOwner(txnA, accountB)).resolves.toBe(true);
-    expect(mockPutItemIfAttributeEquals).toHaveBeenCalledWith(
-      expect.objectContaining({ PK: `TXN#${txnA}`, userId: accountB }),
-      'userId',
-      legacyDeviceId,
-    );
-  });
-
-  it('does not replace a receipt already bound to a Firebase uid', async () => {
-    mockPutItemIfNotExists.mockResolvedValue(false);
-    mockPutItemIfAttributeEquals.mockClear();
-    mockGetItem.mockResolvedValue({ ...legacyOwnerRow, userId: accountA });
+    mockPutItem.mockClear();
     await expect(bindTransactionOwner(txnA, accountB)).resolves.toBe(false);
-    expect(mockPutItemIfAttributeEquals).not.toHaveBeenCalled();
+    expect(mockPutItemIfNotExists).toHaveBeenCalledTimes(1);
+    expect(mockPutItem).not.toHaveBeenCalled();
   });
 
   it('never binds a receipt to a device or alias id', async () => {

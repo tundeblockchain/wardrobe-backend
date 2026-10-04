@@ -47,13 +47,13 @@ export interface SuperwallWebhookDeps {
  * history row (WARDROBE-159), and returns 200 even when the user cannot
  * be resolved so Superwall does not retry forever.
  *
- * Identity (WARDROBE-167) is the single Firebase uid in
- * data.userAttributes (firebaseUid / firebase_uid, or the SDK's own
- * appUserId set by identify()). originalAppUserId is never granted. An
- * iOS device UUID or $SuperwallAlias: id is never granted.
- * A store receipt is bound to the first granted Firebase uid and is
- * not attached to a later account on the same device; a bound receipt
- * never grants its owner from an event that carries no uid.
+ * Identity (WARDROBE-167): userAttributes.firebaseUid (or firebase_uid)
+ * is granted only when its derived Superwall id equals
+ * originalAppUserId (case-insensitive). A device UUID, $SuperwallAlias:
+ * or pre-derivation purchase never matches, so nobody is granted.
+ * A store receipt is bound to the first owner and is never rebound or
+ * attached to a later account; a bound receipt never grants its owner
+ * from an event without a verified uid.
  * There is no client confirm grant path; GET /me is read-only.
  */
 export async function handler(
@@ -104,7 +104,7 @@ export async function handleSuperwallWebhook(
 
     const identity = resolveSuperwallIdentity(inbound.data);
     if (identity.status !== 'ok') {
-      logger.info('Superwall webhook ignored; no single Firebase UID', {
+      logger.info('Superwall webhook ignored; no verified Firebase UID', {
         eventName,
         reason: identity.status,
         identityFields: describeSuperwallIdentity(inbound.data),
