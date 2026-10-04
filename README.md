@@ -345,7 +345,7 @@ Client Superwall gates are not enough. This API is the source of truth for Free 
 
 **Chosen path:** Superwall Svix webhook → verified Dynamo row `USER#{firebaseUid} / ENTITLEMENT`. Firebase custom claims are **not** written or read in this MVP. Firebase Admin is used only to delete the Auth user on `DELETE /me` (WARDROBE-154). A later ticket may copy `tier` onto claims; do not treat ID-token claims as access.
 
-Flutter must call Superwall `identify` with the **current Firebase UID** and set `userAttributes.firebaseUid` to that uid **before** purchase. The webhook grants `USER#{uid}` from the **current** event identity (`userAttributes.firebaseUid` / `appUserId`) first, then `originalAppUserId`. Superwall's `originalAppUserId` is the first alias on the subscription and can still be a previous account on the same device (WARDROBE-165). There is no client confirm grant path — `GET /me` is read-only after purchase. Store receipts (`originalTransactionId`) are bound to the first granted Firebase uid and are not copied to another account.
+Flutter must call Superwall `identify` with the **current Firebase UID** and set `userAttributes.firebaseUid` to that uid **before** purchase. The webhook grants `USER#{uid}` from **`userAttributes.firebaseUid`** (or `firebase_uid`). `data.appUserId` / `originalAppUserId` are used only when they are already a Firebase uid. An iOS device UUID or `$SuperwallAlias:` id is never a grant target — on iOS, StoreKit `appAccountToken` must be a UUID, so Superwall can still send the device / anonymous alias as `appUserId` even after `identify(firebaseUid)` (WARDROBE-166). Superwall's `originalAppUserId` is the first alias on the subscription and can still be a previous account on the same device (WARDROBE-165). There is no client confirm grant path — `GET /me` is read-only after purchase. Store receipts (`originalTransactionId`) are bound to the first granted Firebase uid and are not copied to another account.
 
 #### Product matrix
 
@@ -433,8 +433,8 @@ Flutter Superwall purchase or restore
         v
 Superwall  →  POST /webhooks/superwall  (Svix-signed, no Firebase auth)
         │  verify svix-id / svix-timestamp / svix-signature
-        │  current uid (attributes / appUserId), not a stale originalAppUserId
-        │  bind originalTransactionId to that uid (WARDROBE-165)
+        │  grant userAttributes.firebaseUid only — never a device / alias id
+        │  bind originalTransactionId to that uid (WARDROBE-166)
         │  map productId → BASIC | PREMIUM
         v
 DynamoDB USER#{uid} / ENTITLEMENT#{ts}#{eventId}   ← append history (WARDROBE-159)

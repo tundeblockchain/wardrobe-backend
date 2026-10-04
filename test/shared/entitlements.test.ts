@@ -27,6 +27,7 @@ import {
   resolveEntitlement,
   resolvePurchaseTarget,
   resolveSuperwallUserId,
+  isDeviceOrAnonymousAppUserId,
   StoredEntitlement,
   superwallEventName,
   toEntitlementDto,
@@ -92,6 +93,59 @@ describe('entitlement mapping (WARDROBE-91)', () => {
         userAttributes: { firebase_uid: 'firebase-uid-account-b' },
       }),
     ).toBe('firebase-uid-account-b');
+  });
+
+  const DEVICE_ID = '7152E89E-60A6-4B2E-9C67-D7ED8F5BE372';
+  const ANON_ID = `$SuperwallAlias:${DEVICE_ID}`;
+
+  it('grants the Firebase uid when appUserId is a device or anonymous id (WARDROBE-166)', () => {
+    expect(isDeviceOrAnonymousAppUserId(DEVICE_ID)).toBe(true);
+    expect(isDeviceOrAnonymousAppUserId(ANON_ID)).toBe(true);
+    expect(isDeviceOrAnonymousAppUserId('$superwallAlias:abc')).toBe(true);
+    expect(isDeviceOrAnonymousAppUserId('firebase-uid-account-b')).toBe(false);
+
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: 'firebase-uid-account-a',
+        appUserId: DEVICE_ID,
+        userAttributes: { firebaseUid: 'firebase-uid-account-b' },
+      }),
+    ).toBe('firebase-uid-account-b');
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: ANON_ID,
+        appUserId: ANON_ID,
+        userAttributes: { firebase_uid: 'firebase-uid-account-b' },
+      }),
+    ).toBe('firebase-uid-account-b');
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: ANON_ID,
+        appUserId: DEVICE_ID,
+        userAttributes: JSON.stringify({ firebaseUid: 'firebase-uid-account-b' }),
+      }),
+    ).toBe('firebase-uid-account-b');
+  });
+
+  it('does not treat a device or anonymous Superwall id as a grant uid (WARDROBE-166)', () => {
+    expect(
+      resolveSuperwallUserId({
+        appUserId: DEVICE_ID,
+        originalAppUserId: DEVICE_ID,
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: ANON_ID,
+        appUserId: ANON_ID,
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: 'firebase-uid-account-a',
+        appUserId: DEVICE_ID,
+      }),
+    ).toBeUndefined();
   });
 
   it('builds a new ACTIVE record when the user subscribes over Free', () => {
