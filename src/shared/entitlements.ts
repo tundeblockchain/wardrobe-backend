@@ -1,5 +1,11 @@
 import { nanoid } from 'nanoid';
-import { keys, putItem, putItemIfNotExists, queryByPk } from './dynamodb';
+import {
+  getItem,
+  keys,
+  putItem,
+  putItemIfNotExists,
+  queryByPk,
+} from './dynamodb';
 import { Errors } from './errors';
 import { nowIso } from './ids';
 import {
@@ -52,6 +58,8 @@ export interface SuperwallEventData {
   productId?: unknown;
   newProductId?: unknown;
   originalAppUserId?: unknown;
+  /** Current Superwall identity when the provider sends it. */
+  appUserId?: unknown;
   originalTransactionId?: unknown;
   store?: unknown;
   expirationAt?: unknown;
@@ -410,25 +418,119 @@ function entitlementItem(
   return item;
 }
 
+/**
+ * Firebase uid for this Superwall event (WARDROBE-165).
+ *
+ * Superwall's `originalAppUserId` is the first identified user on the
+ * alias / subscription, not necessarily the account that just paid.
+ * On a shared device that is often the previous Gmail user. Prefer the
+ * current identity from user attributes / `appUserId`, then fall back
+ * to `originalAppUserId` for the single-account path.
+ */
 export function resolveSuperwallUserId(
   data: SuperwallEventData | undefined,
 ): string | undefined {
   if (!data) {
     return undefined;
   }
-  const fromAlias = sanitizeAppUserId(data.originalAppUserId);
-  if (fromAlias) {
-    return fromAlias;
-  }
   const attrs = asStringRecord(data.userAttributes);
-  return firstNonEmpty(
-    attrs.firebaseUid,
-    attrs.firebase_uid,
-    attrs.userId,
-    attrs.user_id,
-    attrs.appUserId,
-    attrs.app_user_id,
+  const current = firstNonEmpty(
+    sanitizeAppUserId(attrs.firebaseUid),
+    sanitizeAppUserId(attrs.firebase_uid),
+    sanitizeAppUserId(attrs.userId),
+    sanitizeAppUserId(attrs.user_id),
+    sanitizeAppUserId(data.appUserId),
+    sanitizeAppUserId(attrs.appUserId),
+    sanitizeAppUserId(attrs.app_user_id),
   );
+  if (current) {
+    return current;
+  }
+  return sanitizeAppUserId(data.originalAppUserId);
+}
+
+export type PurchaseTarget =
+  | { status: 'unknown_user' }
+  | { status: 'foreign_transaction'; ownerUserId: string }
+  | { status: 'ok'; userId: string; bindTransaction: boolean };
+
+/**
+ * Decide which Firebase uid may receive this event.
+ *
+ * A receipt (`originalTransactionId`) is owned by the first account that
+ * was granted from it. Later accounts on the same device do not inherit
+ * that grant. A new transaction attributed to B grants B only.
+ */
+export function resolvePurchaseTarget(options: {
+  claimedUserId?: string;
+  transactionOwnerUserId?: string;
+  originalTransactionId?: string;
+}): PurchaseTarget {
+  const claimed = options.claimedUserId?.trim() || undefined;
+  const owner = options.transactionOwnerUserId?.trim() || undefined;
+  const transactionId = options.originalTransactionId?.trim() || undefined;
+
+  if (owner && claimed && owner !== claimed) {
+    return { status: 'foreign_transaction', ownerUserId: owner };
+  }
+
+  const userId = claimed ?? owner;
+  if (!userId) {
+    return { status: 'unknown_user' };
+  }
+
+  return {
+    status: 'ok',
+    userId,
+    bindTransaction: Boolean(transactionId && !owner && claimed),
+  };
+}
+
+export async function loadTransactionOwner(
+  originalTransactionId: string,
+): Promise<string | undefined> {
+  const id = originalTransactionId.trim();
+  if (!id) {
+    return undefined;
+  }
+  const item = await getItem(
+    keys.transactionOwnerPk(id),
+    keys.transactionOwnerSk,
+  );
+  if (!item || item.entityType !== 'ENTITLEMENT_TXN') {
+    return undefined;
+  }
+  const userId = typeof item.userId === 'string' ? item.userId.trim() : '';
+  return userId || undefined;
+}
+
+/** First writer wins. Returns false when the receipt is already bound. */
+export async function bindTransactionOwner(
+  originalTransactionId: string,
+  userId: string,
+): Promise<boolean> {
+  const id = originalTransactionId.trim();
+  const owner = userId.trim();
+  if (!id || !owner) {
+    return false;
+  }
+  return putItemIfNotExists(transactionOwnerItem(id, owner));
+}
+
+function transactionOwnerItem(
+  originalTransactionId: string,
+  userId: string,
+  timestamp = nowIso(),
+): DynamoItem {
+  return {
+    PK: keys.transactionOwnerPk(originalTransactionId),
+    SK: keys.transactionOwnerSk,
+    entityType: 'ENTITLEMENT_TXN',
+    userId,
+    originalTransactionId,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
 }
 
 export function superwallEventName(event: SuperwallWebhookEvent): string {

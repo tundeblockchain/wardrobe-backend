@@ -749,6 +749,7 @@ export type EntityType =
   | 'WORN_ON'
   | 'AIPROFILE'
   | 'ENTITLEMENT'
+  | 'ENTITLEMENT_TXN'
   | 'SHOPPING_CACHE'
   | 'JOB_EVENT'
   | 'DEVICE'

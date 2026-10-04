@@ -1,9 +1,13 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import {
   applySuperwallEvent,
+  bindTransactionOwner,
+  GRANTING_SUPERWALL_EVENTS,
   listStoredEntitlements,
+  loadTransactionOwner,
   persistEntitlement,
   pickLatestEntitlement,
+  resolvePurchaseTarget,
   resolveSuperwallUserId,
   StoredEntitlement,
   superwallEventName,
@@ -24,6 +28,13 @@ export interface SuperwallWebhookDeps {
   verify?: typeof verifySvixWebhookSignature;
   loadStored?: (userId: string) => Promise<StoredEntitlement | undefined>;
   save?: (stored: StoredEntitlement) => Promise<void>;
+  loadTransactionOwner?: (
+    originalTransactionId: string,
+  ) => Promise<string | undefined>;
+  bindTransactionOwner?: (
+    originalTransactionId: string,
+    userId: string,
+  ) => Promise<boolean>;
   nowSeconds?: number;
 }
 
@@ -33,8 +44,13 @@ export interface SuperwallWebhookDeps {
  *
  * Verifies Svix headers, appends a USER#{uid} / ENTITLEMENT#{ts}#{id}
  * history row (WARDROBE-159), and returns 200 even when the user cannot
- * be resolved so Superwall does not retry forever. Identity is the
- * Superwall app user id, which Flutter must set to the Firebase UID.
+ * be resolved so Superwall does not retry forever.
+ *
+ * Identity (WARDROBE-165) is the current Superwall / Firebase uid of
+ * this event — userAttributes.firebaseUid or appUserId first, then
+ * originalAppUserId. A store receipt is bound to the first granted
+ * uid and is not attached to a later account on the same device.
+ * There is no client confirm grant path; GET /me is read-only.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -82,12 +98,62 @@ export async function handleSuperwallWebhook(
       return json(200, { status: 'ignored', reason: 'missing_event_name' });
     }
 
-    const userId = resolveSuperwallUserId(inbound.data);
-    if (!userId) {
+    const claimedUserId = resolveSuperwallUserId(inbound.data);
+    const originalTransactionId = stringOrUndefined(
+      inbound.data?.originalTransactionId,
+    );
+    const transactionOwnerUserId = originalTransactionId
+      ? await (deps.loadTransactionOwner ?? loadTransactionOwner)(
+          originalTransactionId,
+        )
+      : undefined;
+    const target = resolvePurchaseTarget({
+      claimedUserId,
+      transactionOwnerUserId,
+      originalTransactionId,
+    });
+
+    if (target.status === 'unknown_user') {
       logger.info('Superwall webhook ignored; no Firebase UID', {
         eventName,
       });
       return json(200, { status: 'ignored', reason: 'unknown_user' });
+    }
+
+    if (target.status === 'foreign_transaction') {
+      logger.info('Superwall webhook ignored; receipt owned by another user', {
+        eventName,
+      });
+      return json(200, {
+        status: 'ignored',
+        reason: 'transaction_owned_by_other_user',
+      });
+    }
+
+    const userId = target.userId;
+    if (
+      target.bindTransaction &&
+      originalTransactionId &&
+      GRANTING_SUPERWALL_EVENTS.has(eventName)
+    ) {
+      const bound = await (deps.bindTransactionOwner ?? bindTransactionOwner)(
+        originalTransactionId,
+        userId,
+      );
+      if (!bound) {
+        const racedOwner = await (deps.loadTransactionOwner ??
+          loadTransactionOwner)(originalTransactionId);
+        if (racedOwner && racedOwner !== userId) {
+          logger.info(
+            'Superwall webhook ignored; receipt bound during grant race',
+            { eventName },
+          );
+          return json(200, {
+            status: 'ignored',
+            reason: 'transaction_owned_by_other_user',
+          });
+        }
+      }
     }
 
     const history = await loadHistory(userId, deps);
@@ -102,9 +168,7 @@ export async function handleSuperwallWebhook(
       productTiers: config.productTiers,
       store: stringOrUndefined(inbound.data?.store),
       expirationAtMs: numberOrUndefined(inbound.data?.expirationAt),
-      originalTransactionId: stringOrUndefined(
-        inbound.data?.originalTransactionId,
-      ),
+      originalTransactionId,
       eventId: stringOrUndefined(inbound.data?.id),
       eventAtMs: numberOrUndefined(inbound.data?.purchasedAt),
     });

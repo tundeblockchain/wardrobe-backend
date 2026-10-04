@@ -53,6 +53,14 @@ export const keys = {
   entitlementHistorySk: (updatedAt: string, unique: string) =>
     `ENTITLEMENT#${updatedAt}#${unique}`,
   /**
+   * Store receipt → first granted Firebase uid (WARDROBE-165).
+   * Same `originalTransactionId` must not grant a later account on the
+   * device. No GSI: webhook GetItem on this PK/SK.
+   */
+  transactionOwnerPk: (originalTransactionId: string) =>
+    `TXN#${originalTransactionId}`,
+  transactionOwnerSk: 'OWNER',
+  /**
    * Transient DELETE /me marker (WARDROBE-154). Written after AWS data is
    * gone and removed after Firebase Auth delete succeeds.
    */
