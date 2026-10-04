@@ -345,7 +345,7 @@ Client Superwall gates are not enough. This API is the source of truth for Free 
 
 **Chosen path:** Superwall Svix webhook → verified Dynamo row `USER#{firebaseUid} / ENTITLEMENT`. Firebase custom claims are **not** written or read in this MVP. Firebase Admin is used only to delete the Auth user on `DELETE /me` (WARDROBE-154). A later ticket may copy `tier` onto claims; do not treat ID-token claims as access.
 
-Flutter must call Superwall `identify` with the **Firebase UID** so webhook `originalAppUserId` (or `userAttributes.firebaseUid`) maps to `USER#{uid}`.
+Flutter must call Superwall `identify` with the **current Firebase UID** and set `userAttributes.firebaseUid` to that uid **before** purchase. The webhook grants `USER#{uid}` from the **current** event identity (`userAttributes.firebaseUid` / `appUserId`) first, then `originalAppUserId`. Superwall's `originalAppUserId` is the first alias on the subscription and can still be a previous account on the same device (WARDROBE-165). There is no client confirm grant path — `GET /me` is read-only after purchase. Store receipts (`originalTransactionId`) are bound to the first granted Firebase uid and are not copied to another account.
 
 #### Product matrix
 
@@ -429,13 +429,15 @@ Flutter launch
 GET /me  →  DynamoDB USER#{uid} / ENTITLEMENT (FREE / NONE if missing)
 
 Flutter Superwall purchase or restore
-        │  identify(firebaseUid)
+        │  identify(currentFirebaseUid) + userAttributes.firebaseUid
         v
 Superwall  →  POST /webhooks/superwall  (Svix-signed, no Firebase auth)
         │  verify svix-id / svix-timestamp / svix-signature
+        │  current uid (attributes / appUserId), not a stale originalAppUserId
+        │  bind originalTransactionId to that uid (WARDROBE-165)
         │  map productId → BASIC | PREMIUM
         v
-DynamoDB USER#{uid} / ENTITLEMENT   ← overwrites the Free row
+DynamoDB USER#{uid} / ENTITLEMENT#{ts}#{eventId}   ← append history (WARDROBE-159)
         │
         v
 Flutter GET /me   ← refresh after restore / purchase
@@ -447,7 +449,7 @@ Public webhook (configure this URL in the Superwall dashboard → Integrations �
 POST /webhooks/superwall
 ```
 
-Same Svix scheme as Resend. Invalid signatures return `403 UNAUTHORIZED`. Unknown users return `200 { "status": "ignored", "reason": "unknown_user" }` so Superwall does not retry forever. Duplicate `data.id` returns `200 { "status": "duplicate" }`.
+Same Svix scheme as Resend. Invalid signatures return `403 UNAUTHORIZED`. Unknown users return `200 { "status": "ignored", "reason": "unknown_user" }` so Superwall does not retry forever. A receipt already bound to another Firebase uid returns `200 { "status": "ignored", "reason": "transaction_owned_by_other_user" }`. Duplicate `data.id` returns `200 { "status": "duplicate" }`.
 
 Granting events (`initial_purchase`, `renewal`, `uncancellation`, `product_change`, `non_renewing_purchase`) set `ACTIVE` and map the product. `expiration` sets `FREE`. `cancellation` / `billing_issue` / `subscription_paused` keep the current tier until `expiresAt`. `GET /me` re-evaluates expiry.
 

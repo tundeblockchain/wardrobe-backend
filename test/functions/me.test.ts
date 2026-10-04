@@ -1220,6 +1220,83 @@ describe('me handler (WARDROBE-36)', () => {
       );
     });
 
+    it('returns Premium for B after B\'s own grant without inheriting A', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ENTITLEMENT'
+        ) {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OTHER_ID}`) {
+            return {
+              Items: [
+                {
+                  PK: `USER#${OTHER_ID}`,
+                  SK: 'ENTITLEMENT#2026-10-04T00:00:00.000Z#evt_b',
+                  entityType: 'ENTITLEMENT',
+                  userId: OTHER_ID,
+                  tier: 'PREMIUM',
+                  status: 'ACTIVE',
+                  originalTransactionId: 'txn_account_b',
+                  lastEventId: 'evt_b',
+                  expiresAt: '2026-11-04T00:00:00.000Z',
+                  createdAt: '2026-10-04T00:00:00.000Z',
+                  updatedAt: '2026-10-04T00:00:00.000Z',
+                },
+              ],
+            };
+          }
+          if (pk === `USER#${OWNER_ID}`) {
+            return {
+              Items: [
+                {
+                  PK: `USER#${OWNER_ID}`,
+                  SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_a',
+                  entityType: 'ENTITLEMENT',
+                  userId: OWNER_ID,
+                  tier: 'PREMIUM',
+                  status: 'ACTIVE',
+                  originalTransactionId: 'txn_account_a',
+                  lastEventId: 'evt_a',
+                  expiresAt: '2026-11-01T00:00:00.000Z',
+                  createdAt: '2026-10-01T00:00:00.000Z',
+                  updatedAt: '2026-10-01T00:00:00.000Z',
+                },
+              ],
+            };
+          }
+          return { Items: [] };
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const asB = asResult(
+        await handler(event({ path: '/me', method: 'GET', sub: OTHER_ID })),
+      );
+      expect(asB.statusCode).toBe(200);
+      expect(bodyOf(asB)).toEqual(
+        expect.objectContaining({
+          userId: OTHER_ID,
+          tier: 'PREMIUM',
+          status: 'ACTIVE',
+        }),
+      );
+
+      const asA = asResult(
+        await handler(event({ path: '/me', method: 'GET', sub: OWNER_ID })),
+      );
+      expect(bodyOf(asA)).toEqual(
+        expect.objectContaining({
+          userId: OWNER_ID,
+          tier: 'PREMIUM',
+          status: 'ACTIVE',
+        }),
+      );
+    });
+
     it('treats an expired Premium row as Free', async () => {
       mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
         if (

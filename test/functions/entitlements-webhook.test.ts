@@ -90,10 +90,17 @@ function purchasePayload(overrides: Record<string, unknown> = {}) {
   });
 }
 
+const ACCOUNT_A = 'firebase-uid-account-a';
+const ACCOUNT_B = 'firebase-uid-account-b';
+const TXN_A = 'txn_account_a';
+const TXN_B = 'txn_account_b';
+
 describe('Superwall entitlements webhook (WARDROBE-91)', () => {
   const loadConfig = jest.fn();
   const loadStored = jest.fn();
   const save = jest.fn();
+  const loadTransactionOwner = jest.fn();
+  const bindOwner = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -103,16 +110,24 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
     });
     loadStored.mockResolvedValue(undefined);
     save.mockResolvedValue(undefined);
+    loadTransactionOwner.mockResolvedValue(undefined);
+    bindOwner.mockResolvedValue(true);
   });
+
+  function deps() {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+    };
+  }
 
   it('verifies Svix and stores PREMIUM for the Firebase UID', async () => {
     const result = asResult(
-      await handleSuperwallWebhook(webhookEvent({ payload: purchasePayload() }), {
-        loadConfig,
-        loadStored,
-        save,
-        nowSeconds: Number(TIMESTAMP),
-      }),
+      await handleSuperwallWebhook(webhookEvent({ payload: purchasePayload() }), deps()),
     );
 
     expect(result.statusCode).toBe(200);
@@ -137,12 +152,7 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
       originalAppUserId: '$SuperwallAlias:unknown',
     });
     const result = asResult(
-      await handleSuperwallWebhook(webhookEvent({ payload }), {
-        loadConfig,
-        loadStored,
-        save,
-        nowSeconds: Number(TIMESTAMP),
-      }),
+      await handleSuperwallWebhook(webhookEvent({ payload }), deps()),
     );
 
     expect(result.statusCode).toBe(200);
@@ -165,12 +175,7 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
     loadStored.mockResolvedValue(existing);
 
     const result = asResult(
-      await handleSuperwallWebhook(webhookEvent({ payload: purchasePayload() }), {
-        loadConfig,
-        loadStored,
-        save,
-        nowSeconds: Number(TIMESTAMP),
-      }),
+      await handleSuperwallWebhook(webhookEvent({ payload: purchasePayload() }), deps()),
     );
 
     expect(bodyOf(result)).toEqual({
@@ -188,12 +193,7 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
           payload: purchasePayload(),
           signature: 'v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
         }),
-        {
-          loadConfig,
-          loadStored,
-          save,
-          nowSeconds: Number(TIMESTAMP),
-        },
+        deps(),
       ),
     );
 
@@ -212,12 +212,7 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
     const result = asResult(
       await handleSuperwallWebhook(
         webhookEvent({ payload: purchasePayload(), omitHeaders: true }),
-        {
-          loadConfig,
-          loadStored,
-          save,
-          nowSeconds: Number(TIMESTAMP),
-        },
+        deps(),
       ),
     );
 
@@ -228,5 +223,166 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
         message: 'Missing webhook signature headers.',
       },
     });
+  });
+});
+
+describe('Superwall purchase identity (WARDROBE-165)', () => {
+  const loadConfig = jest.fn();
+  const loadStored = jest.fn();
+  const save = jest.fn();
+  const loadTransactionOwner = jest.fn();
+  const bindOwner = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    loadConfig.mockResolvedValue({
+      webhookSecret: SECRET,
+      productTiers: {},
+    });
+    loadStored.mockResolvedValue(undefined);
+    save.mockResolvedValue(undefined);
+    loadTransactionOwner.mockResolvedValue(undefined);
+    bindOwner.mockResolvedValue(true);
+  });
+
+  function deps() {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+    };
+  }
+
+  it('grants B only when A already subscribed and B has a new purchase', async () => {
+    loadTransactionOwner.mockImplementation(async (txnId: string) =>
+      txnId === TXN_A ? ACCOUNT_A : undefined,
+    );
+
+    const payload = purchasePayload({
+      id: 'evt_purchase_b',
+      originalAppUserId: ACCOUNT_A,
+      originalTransactionId: TXN_B,
+      userAttributes: { firebaseUid: ACCOUNT_B },
+    });
+
+    const result = asResult(
+      await handleSuperwallWebhook(webhookEvent({ payload }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: ACCOUNT_B,
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        originalTransactionId: TXN_B,
+      }),
+    );
+    expect(save).not.toHaveBeenCalledWith(
+      expect.objectContaining({ userId: ACCOUNT_A }),
+    );
+    expect(bindOwner).toHaveBeenCalledWith(TXN_B, ACCOUNT_B);
+    expect(loadStored).toHaveBeenCalledWith(ACCOUNT_B);
+    expect(loadStored).not.toHaveBeenCalledWith(ACCOUNT_A);
+  });
+
+  it('does not grant B A\'s receipt after an account switch', async () => {
+    loadTransactionOwner.mockResolvedValue(ACCOUNT_A);
+
+    const payload = purchasePayload({
+      id: 'evt_restore_a_on_b',
+      originalAppUserId: ACCOUNT_A,
+      originalTransactionId: TXN_A,
+      userAttributes: { firebaseUid: ACCOUNT_B },
+    });
+
+    const result = asResult(
+      await handleSuperwallWebhook(webhookEvent({ payload }), deps()),
+    );
+
+    expect(bodyOf(result)).toEqual({
+      status: 'ignored',
+      reason: 'transaction_owned_by_other_user',
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(bindOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not flip B to Premium on cancel or billing failure', async () => {
+    const cancelPayload = purchasePayload({
+      id: 'evt_cancel_b',
+      name: 'cancellation',
+      originalAppUserId: ACCOUNT_B,
+      originalTransactionId: TXN_B,
+      userAttributes: { firebaseUid: ACCOUNT_B },
+    });
+    const cancelBody = JSON.parse(cancelPayload) as {
+      type: string;
+      data: Record<string, unknown>;
+    };
+    cancelBody.type = 'cancellation';
+
+    const canceled = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: JSON.stringify(cancelBody) }),
+        deps(),
+      ),
+    );
+
+    expect(canceled.statusCode).toBe(200);
+    expect(bodyOf(canceled)).toEqual({
+      status: 'applied',
+      eventName: 'cancellation',
+      tier: 'FREE',
+    });
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: ACCOUNT_B,
+        tier: 'FREE',
+        status: 'CANCELED',
+      }),
+    );
+    expect(bindOwner).not.toHaveBeenCalled();
+
+    save.mockClear();
+    bindOwner.mockClear();
+
+    const failBody = JSON.parse(purchasePayload({
+      id: 'evt_fail_b',
+      name: 'billing_issue',
+      originalAppUserId: ACCOUNT_B,
+      userAttributes: { firebaseUid: ACCOUNT_B },
+    })) as { type: string; data: Record<string, unknown> };
+    failBody.type = 'billing_issue';
+
+    const failed = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: JSON.stringify(failBody) }),
+        deps(),
+      ),
+    );
+
+    expect(bodyOf(failed)).toEqual({
+      status: 'applied',
+      eventName: 'billing_issue',
+      tier: 'FREE',
+    });
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: ACCOUNT_B,
+        tier: 'FREE',
+        status: 'BILLING_ISSUE',
+      }),
+    );
+    expect(bindOwner).not.toHaveBeenCalled();
   });
 });

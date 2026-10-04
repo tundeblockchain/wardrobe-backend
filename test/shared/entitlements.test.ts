@@ -1,6 +1,7 @@
 const mockQueryByPk = jest.fn();
 const mockPutItem = jest.fn();
 const mockPutItemIfNotExists = jest.fn();
+const mockGetItem = jest.fn();
 
 jest.mock('../../src/shared/dynamodb', () => {
   const actual = jest.requireActual('../../src/shared/dynamodb') as typeof import('../../src/shared/dynamodb');
@@ -9,6 +10,7 @@ jest.mock('../../src/shared/dynamodb', () => {
     queryByPk: (...args: unknown[]) => mockQueryByPk(...args),
     putItem: (...args: unknown[]) => mockPutItem(...args),
     putItemIfNotExists: (...args: unknown[]) => mockPutItemIfNotExists(...args),
+    getItem: (...args: unknown[]) => mockGetItem(...args),
   };
 });
 
@@ -23,10 +25,13 @@ import {
   persistEntitlement,
   pickLatestEntitlement,
   resolveEntitlement,
+  resolvePurchaseTarget,
   resolveSuperwallUserId,
   StoredEntitlement,
   superwallEventName,
   toEntitlementDto,
+  bindTransactionOwner,
+  loadTransactionOwner,
 } from '../../src/shared/entitlements';
 import { DynamoItem, FREE_CATALOG_LIMITS } from '../../src/shared/types';
 
@@ -71,6 +76,22 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     expect(
       resolveSuperwallUserId({ originalAppUserId: '$SuperwallAlias:ABC' }),
     ).toBeUndefined();
+  });
+
+  it('prefers the current Firebase uid over a stale originalAppUserId', () => {
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: 'firebase-uid-account-a',
+        appUserId: 'firebase-uid-account-b',
+        userAttributes: { firebaseUid: 'firebase-uid-account-b' },
+      }),
+    ).toBe('firebase-uid-account-b');
+    expect(
+      resolveSuperwallUserId({
+        originalAppUserId: 'firebase-uid-account-a',
+        userAttributes: { firebase_uid: 'firebase-uid-account-b' },
+      }),
+    ).toBe('firebase-uid-account-b');
   });
 
   it('builds a new ACTIVE record when the user subscribes over Free', () => {
@@ -442,5 +463,198 @@ describe('entitlement history (WARDROBE-159)', () => {
     );
     expect(mockQueryByPk).toHaveBeenCalledWith('USER#uid', 'ENTITLEMENT');
     expect(mockQueryByPk).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('purchase identity (WARDROBE-165)', () => {
+  const accountA = 'firebase-uid-account-a';
+  const accountB = 'firebase-uid-account-b';
+  const txnA = 'txn_account_a';
+  const txnB = 'txn_account_b';
+
+  beforeEach(() => {
+    mockGetItem.mockReset();
+    mockPutItemIfNotExists.mockReset();
+    mockQueryByPk.mockReset();
+    mockGetItem.mockResolvedValue(undefined);
+    mockPutItemIfNotExists.mockResolvedValue(true);
+    mockQueryByPk.mockResolvedValue([]);
+  });
+
+  it('attributes a new purchase to B after A already subscribed', () => {
+    expect(
+      resolvePurchaseTarget({
+        claimedUserId: accountB,
+        transactionOwnerUserId: undefined,
+        originalTransactionId: txnB,
+      }),
+    ).toEqual({
+      status: 'ok',
+      userId: accountB,
+      bindTransaction: true,
+    });
+
+    const grantedB = applySuperwallEvent({
+      userId: accountB,
+      eventName: 'initial_purchase',
+      productId: 'premium_monthly',
+      productTiers: {},
+      originalTransactionId: txnB,
+      eventId: 'evt_b',
+      nowIso: '2026-10-04T00:00:00.000Z',
+    }).stored;
+
+    expect(grantedB.userId).toBe(accountB);
+    expect(grantedB.tier).toBe('PREMIUM');
+    expect(grantedB.status).toBe('ACTIVE');
+    expect(grantedB.originalTransactionId).toBe(txnB);
+  });
+
+  it('does not let B inherit A\'s receipt', () => {
+    expect(
+      resolvePurchaseTarget({
+        claimedUserId: accountB,
+        transactionOwnerUserId: accountA,
+        originalTransactionId: txnA,
+      }),
+    ).toEqual({
+      status: 'foreign_transaction',
+      ownerUserId: accountA,
+    });
+  });
+
+  it('does not grant Premium on cancel or billing failure', () => {
+    const canceled = applySuperwallEvent({
+      userId: accountB,
+      eventName: 'cancellation',
+      productId: 'premium_monthly',
+      productTiers: {},
+      originalTransactionId: txnB,
+      eventId: 'evt_cancel',
+      nowIso: '2026-10-04T00:00:00.000Z',
+    }).stored;
+    expect(canceled.userId).toBe(accountB);
+    expect(canceled.tier).toBe('FREE');
+    expect(canceled.status).toBe('CANCELED');
+
+    const failed = applySuperwallEvent({
+      userId: accountB,
+      eventName: 'billing_issue',
+      productId: 'premium_monthly',
+      productTiers: {},
+      eventId: 'evt_fail',
+      nowIso: '2026-10-04T00:00:00.000Z',
+    }).stored;
+    expect(failed.tier).toBe('FREE');
+    expect(failed.status).toBe('BILLING_ISSUE');
+  });
+
+  it('resolves GET /me Premium for B only after B\'s own grant', async () => {
+    const nowMs = Date.parse('2026-10-04T12:00:00.000Z');
+    mockQueryByPk.mockImplementation(async (pk: string) => {
+      if (pk === `USER#${accountA}`) {
+        return [
+          {
+            PK: `USER#${accountA}`,
+            SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_a',
+            entityType: 'ENTITLEMENT',
+            userId: accountA,
+            tier: 'PREMIUM',
+            status: 'ACTIVE',
+            originalTransactionId: txnA,
+            lastEventId: 'evt_a',
+            expiresAt: '2026-11-01T00:00:00.000Z',
+            createdAt: '2026-10-01T00:00:00.000Z',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          },
+        ];
+      }
+      if (pk === `USER#${accountB}`) {
+        return [
+          {
+            PK: `USER#${accountB}`,
+            SK: 'ENTITLEMENT#2026-10-04T00:00:00.000Z#evt_b',
+            entityType: 'ENTITLEMENT',
+            userId: accountB,
+            tier: 'PREMIUM',
+            status: 'ACTIVE',
+            originalTransactionId: txnB,
+            lastEventId: 'evt_b',
+            expiresAt: '2026-11-04T00:00:00.000Z',
+            createdAt: '2026-10-04T00:00:00.000Z',
+            updatedAt: '2026-10-04T00:00:00.000Z',
+          },
+        ];
+      }
+      return [];
+    });
+
+    await expect(resolveEntitlement(accountA, nowMs)).resolves.toEqual(
+      expect.objectContaining({
+        userId: accountA,
+        tier: 'PREMIUM',
+        originalTransactionId: txnA,
+      }),
+    );
+    await expect(resolveEntitlement(accountB, nowMs)).resolves.toEqual(
+      expect.objectContaining({
+        userId: accountB,
+        tier: 'PREMIUM',
+        originalTransactionId: txnB,
+      }),
+    );
+  });
+
+  it('keeps B Free when only A has a grant on the device', async () => {
+    const nowMs = Date.parse('2026-10-04T12:00:00.000Z');
+    mockQueryByPk.mockImplementation(async (pk: string) => {
+      if (pk === `USER#${accountA}`) {
+        return [
+          {
+            PK: `USER#${accountA}`,
+            SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_a',
+            entityType: 'ENTITLEMENT',
+            userId: accountA,
+            tier: 'PREMIUM',
+            status: 'ACTIVE',
+            originalTransactionId: txnA,
+            lastEventId: 'evt_a',
+            expiresAt: '2026-11-01T00:00:00.000Z',
+            createdAt: '2026-10-01T00:00:00.000Z',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          },
+        ];
+      }
+      return [];
+    });
+
+    await expect(resolveEntitlement(accountB, nowMs)).resolves.toEqual(
+      expect.objectContaining({ userId: accountB, tier: 'FREE', status: 'NONE' }),
+    );
+  });
+
+  it('binds a new receipt to the granting Firebase uid', async () => {
+    mockPutItemIfNotExists.mockResolvedValue(true);
+    await expect(bindTransactionOwner(txnB, accountB)).resolves.toBe(true);
+    expect(mockPutItemIfNotExists).toHaveBeenCalledWith(
+      expect.objectContaining({
+        PK: `TXN#${txnB}`,
+        SK: 'OWNER',
+        entityType: 'ENTITLEMENT_TXN',
+        userId: accountB,
+        originalTransactionId: txnB,
+      }),
+    );
+
+    mockGetItem.mockResolvedValue({
+      PK: `TXN#${txnA}`,
+      SK: 'OWNER',
+      entityType: 'ENTITLEMENT_TXN',
+      userId: accountA,
+      originalTransactionId: txnA,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    });
+    await expect(loadTransactionOwner(txnA)).resolves.toBe(accountA);
   });
 });
