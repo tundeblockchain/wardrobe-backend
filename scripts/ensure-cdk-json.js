@@ -34,6 +34,7 @@ const envToContext = {
   SUPPORT_CONTACT_ALLOWED_ORIGINS: 'supportContactAllowedOrigins',
   SUPPORT_CONTACT_RATE_LIMIT: 'supportContactRateLimit',
   SUPPORT_CONTACT_RATE_WINDOW_SECONDS: 'supportContactRateWindowSeconds',
+  UPLOAD_ALLOWED_ORIGINS: 'uploadAllowedOrigins',
 };
 
 for (const [envName, contextKey] of Object.entries(envToContext)) {

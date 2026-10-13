@@ -23,6 +23,7 @@ import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
 import { addEntitlements } from './entitlements';
 import { addSupportMail } from './support-mail';
+import { resolveUploadAllowedOrigins } from './upload-cors';
 
 export interface WardrobeStackProps extends cdk.StackProps {
   stage?: string;
@@ -79,6 +80,10 @@ export class WardrobeStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // WARDROBE-176: browsers PUT to this bucket via POST /uploads and
+    // POST /ai-profiles/{id}/uploads presigned URLs. Origins are explicit
+    // (never '*'); override with CDK context uploadAllowedOrigins or
+    // UPLOAD_ALLOWED_ORIGINS. API Gateway CORS stays allowOrigins ['*'].
     const mediaBucket = new s3.Bucket(this, 'MediaBucket', {
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -87,9 +92,9 @@ export class WardrobeStack extends cdk.Stack {
       versioned: false,
       cors: [
         {
-          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET],
-          allowedOrigins: ['*'],
-          allowedHeaders: ['*'],
+          allowedMethods: [s3.HttpMethods.PUT],
+          allowedOrigins: resolveUploadAllowedOrigins(this),
+          allowedHeaders: ['Content-Type'],
           exposedHeaders: ['ETag'],
           maxAge: 3000,
         },

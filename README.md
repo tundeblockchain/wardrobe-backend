@@ -548,6 +548,8 @@ Identity always comes from the Firebase token. A body `userId` is ignored.
 
 The client then `PUT`s the image directly to `uploadUrl` with the same `Content-Type` (and `Content-Length` when it was declared). The media bucket stays private; the URL is time-limited.
 
+Browser `PUT`s (WARDROBE-176) need S3 bucket CORS on this media bucket only. The rule is `PUT`, `Content-Type`, `ETag`, `maxAge` 3000, and these origins by default: `https://wende-wardrobe.netlify.app`, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173`. Override with CDK context `uploadAllowedOrigins` or env `UPLOAD_ALLOWED_ORIGINS` (comma-separated). Never `*`. API Gateway CORS stays `allowOrigins: ['*']`. The presign body, response fields, and Flutter contract are unchanged. The same rule covers `POST /ai-profiles/{aiProfileId}/uploads`.
+
 ### Clothing items
 
 Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must belong to that user before any item operation. Body or query `userId` is ignored.
@@ -2111,7 +2113,7 @@ POST /ai-profiles/{aiProfileId}/uploads
 }
 ```
 
-Flutter then `PUT`s the bytes to `uploadUrl` with the same `Content-Type` (and `Content-Length` when declared).
+Flutter then `PUT`s the bytes to `uploadUrl` with the same `Content-Type` (and `Content-Length` when declared). Browser PUTs use the same MediaBucket CORS rule as `POST /uploads` (WARDROBE-176).
 
 Confirm / attach (`objectKey` and/or `objectKeys`; at least one required):
 
@@ -2422,13 +2424,22 @@ npm run deploy -- \
 
 Or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` before `npm run synth` / `npm run deploy`. Optional: `SUPPORT_CONTACT_RATE_LIMIT` (default 5) and `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` (default 3600). For production via CodePipeline, pass the same values to `npm run deploy:pipeline` (see CI/CD below). A direct `npm run deploy` of `WardrobeStack-prod` is overwritten by the next pipeline run.
 
+Browser upload CORS (WARDROBE-176) defaults to the Netlify site, Netlify deploy-preview pattern, and `http://localhost:5173`. To override at synth/deploy:
+
+```bash
+npm run deploy -- \
+  -c uploadAllowedOrigins="https://wende-wardrobe.netlify.app,https://deploy-preview-*--wende-wardrobe.netlify.app,http://localhost:5173"
+```
+
+Or export `UPLOAD_ALLOWED_ORIGINS`. Empty / unset uses the default list. Never set `*`. For production via CodePipeline, pass the same value to `npm run deploy:pipeline` so the Synth CodeBuild step keeps it (see CI/CD below). The next pipeline run of `WardrobeStack-prod` applies the S3 CORS rule; this repo change does not deploy by itself.
+
 Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. Staging and production retain data.
 
 ## CI/CD pipeline
 
 Pushes to `master` trigger an AWS CodePipeline that synths and deploys `WardrobeStack-prod`.
 
-`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings, and any non-empty `SUPPORT_CONTACT_*` values). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID stays in Secrets Manager.
+`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings, and any non-empty `SUPPORT_CONTACT_*` or `UPLOAD_ALLOWED_ORIGINS` values). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID stays in Secrets Manager.
 
 ### One-time setup
 
@@ -2447,7 +2458,7 @@ Pushes to `master` trigger an AWS CodePipeline that synths and deploys `Wardrobe
 }
 ```
 
-4. Deploy the pipeline once from your machine. `githubBranch` defaults to `master`; set it to `main` if that is the tracked branch. To apply the public website contact allowlist (WARDROBE-143) in prod, pass it here so the Synth CodeBuild step keeps it on every subsequent run (including self-mutation):
+4. Deploy the pipeline once from your machine. `githubBranch` defaults to `master`; set it to `main` if that is the tracked branch. To apply the public website contact allowlist (WARDROBE-143) or a non-default browser upload origin list (WARDROBE-176) in prod, pass them here so the Synth CodeBuild step keeps them on every subsequent run (including self-mutation):
 
 ```bash
 npm run deploy:pipeline -- \
@@ -2455,10 +2466,11 @@ npm run deploy:pipeline -- \
   -c githubRepo=wardrobe-backend \
   -c githubBranch=main \
   -c connectionArn=arn:aws:codeconnections:REGION:ACCOUNT:connection/xxxxxxxx \
-  -c supportContactAllowedOrigins="https://a.example,https://*--b.netlify.app"
+  -c supportContactAllowedOrigins="https://a.example,https://*--b.netlify.app" \
+  -c uploadAllowedOrigins="https://wende-wardrobe.netlify.app,https://deploy-preview-*--wende-wardrobe.netlify.app,http://localhost:5173"
 ```
 
-Optional: `-c supportContactRateLimit=5` and `-c supportContactRateWindowSeconds=3600`, or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` / `SUPPORT_CONTACT_RATE_LIMIT` / `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` before `npm run deploy:pipeline`. Empty values are not baked into the Synth step.
+Optional: `-c supportContactRateLimit=5` and `-c supportContactRateWindowSeconds=3600`, or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` / `SUPPORT_CONTACT_RATE_LIMIT` / `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `UPLOAD_ALLOWED_ORIGINS` before `npm run deploy:pipeline`. Empty values are not baked into the Synth step. If `UPLOAD_ALLOWED_ORIGINS` is omitted, `WardrobeStack-prod` uses the default upload origin list from code. After a merge to `master` / `main`, the pipeline deploys the MediaBucket CORS change; a pipeline self-mutation is only required when changing the baked origin override.
 
 A direct `npm run deploy` of `WardrobeStack-prod` is overwritten by the next pipeline run.
 
@@ -2658,6 +2670,7 @@ Public website contact (WARDROBE-143) — CDK context / env, empty-origins defau
 | `SUPPORT_CONTACT_ALLOWED_ORIGINS` / `supportContactAllowedOrigins` | `""` | Comma-separated exact origins and one-`*` preview patterns |
 | `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
 | `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
+| `UPLOAD_ALLOWED_ORIGINS` / `uploadAllowedOrigins` | Netlify site, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173` | S3 media-bucket CORS origins for browser presigned PUTs. Never `*` |
 
 Conceptual keys (loaded from those secrets; env overrides win — useful in unit tests only):
 
