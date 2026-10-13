@@ -1387,6 +1387,8 @@ No AWS application API is required before authentication.
 GET /wardrobes
 ```
 
+Each wardrobe may include optional `coverImageUrl` (WARDROBE-178): a short-lived signed read URL for the wardrobe’s own image, or else its first clothing-item photo (earliest `createdAt`, then `itemId`). Omit the field when there is no image. Existing list fields stay unchanged. S3 keys are never returned.
+
 If no wardrobes exist, display the create-wardrobe option.
 
 ---

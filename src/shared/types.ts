@@ -362,6 +362,13 @@ export interface Wardrobe {
   name: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Short-lived presigned GET for the wardrobe cover (WARDROBE-178).
+   * Present only on `GET /wardrobes`. Soft-omitted when the wardrobe has
+   * no own image and no clothing-item photo. Never persist; never expose
+   * the S3 key.
+   */
+  coverImageUrl?: string;
 }
 
 /**

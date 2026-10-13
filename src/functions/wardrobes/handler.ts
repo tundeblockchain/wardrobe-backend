@@ -20,6 +20,7 @@ import {
 import { newWardrobeId, nowIso } from '../../shared/ids';
 import { DynamoItem, Wardrobe } from '../../shared/types';
 import { requireNonEmptyString } from '../../shared/validation';
+import { resolveCoverObjectKeys, signCoverImageUrls } from './cover';
 
 interface CreateWardrobeBody {
   name?: unknown;
@@ -68,9 +69,14 @@ export async function handler(
 
 async function listWardrobes(userId: string): Promise<Wardrobe[]> {
   const items = await queryByPk(keys.userPk(userId), 'WARDROBE#');
-  return items
-    .filter((item) => item.entityType === 'WARDROBE')
-    .map(toWardrobe);
+  const wardrobes = items.filter((item) => item.entityType === 'WARDROBE');
+  const objectKeys = await resolveCoverObjectKeys(userId, wardrobes);
+  const coverUrls = await signCoverImageUrls(objectKeys);
+  return wardrobes.map((item, index) => {
+    const wardrobe = toWardrobe(item);
+    const coverImageUrl = coverUrls[index];
+    return coverImageUrl ? { ...wardrobe, coverImageUrl } : wardrobe;
+  });
 }
 
 async function createWardrobe(
