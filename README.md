@@ -518,6 +518,32 @@ Create / update body (`name` required, trimmed, 1–100 characters):
 
 Create returns `201` with the Flutter DTO (`wardrobeId`, `name`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "wardrobes": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Delete returns `204`.
 
+`GET /wardrobes` also adds optional `coverImageUrl` per wardrobe (WARDROBE-178). Create / PATCH / GET-by-id are unchanged — existing fields are not renamed or removed. Flutter parses this list.
+
+**`coverImageUrl` contract**
+
+- Short-lived S3 **presigned GET** via `createPresignedGetUrl` (`expiresIn` **900**, same as clothing-item `originalImageUrl` / `processedImageUrl`). Never persist the URL.
+- Never expose the S3 object key (`coverImageKey`, `imageKey`, `originalKey`, `processedKey`, `image.*` stay off this payload).
+- Source, in order:
+  1. The wardrobe row’s own image, when present (`coverImageKey`, then `imageKey`, then processed, then original — including a nested `image` map). Create / PATCH do not write a wardrobe photo today.
+  2. Else the **first clothing item** that has a photo. **First** means earliest `createdAt`, then `itemId` (both ascending). That item’s display photo is `processedKey` when stored, otherwise `originalKey`.
+- Soft-omitted when the wardrobe has no own image and no item photo (empty wardrobe, or every item lacks a key, or every presign fails). Never JSON `null`.
+- Item queries run in parallel, and only for listed wardrobes that have no own image (one `ITEM#` query per such wardrobe — not per item).
+
+```json
+{
+  "wardrobes": [
+    {
+      "wardrobeId": "wd_abc123xyz0",
+      "name": "Summer Clothes",
+      "createdAt": "2026-09-03T18:35:00.000Z",
+      "updatedAt": "2026-09-03T18:35:00.000Z",
+      "coverImageUrl": "https://...presigned GetObject..."
+    }
+  ]
+}
+```
+
 ### Uploads
 
 ```http
@@ -607,7 +633,7 @@ Create body (`name`, `category`, and `imageKey` required):
 
 Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand` / `acquiredAt`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). Empty `subcategory` is soft-omitted on create (`null` / `""` are not stored). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Same-user move / copy of a terminal item (`READY` / `FAILED`) is WARDROBE-118 — see **Move / copy across wardrobes** below.
 
-`GET /items/{itemId}` (WARDROBE-173) is a Firebase-authorized read for the web item page. It walks only the caller's wardrobes and returns the same Flutter `ClothingItem` DTO as the nested get (`originalImageUrl` / `processedImageUrl` / `image.*` unchanged). Another user's item id is `404` `ITEM_NOT_FOUND`. There is no list pagination (`nextCursor` is still later).
+`GET /items/{itemId}` (WARDROBE-173) is a Firebase-authorized read for the web item page. It walks only the caller's wardrobes and returns the same Flutter `ClothingItem` DTO as the nested get (`originalImageUrl` / `processedImageUrl` / `image.*` unchanged). Another user's item id is `404` `ITEM_NOT_FOUND`. There is no list pagination (`nextCursor` is still later). Virtual Try On photos are already signed on this DTO: `renderImageUrls[]`, `renderHistory[].imageUrl` (with `createdAt`), and `render.imageUrl`. `imageKey` is for `DELETE .../items/{itemId}/renders` only.
 
 PATCH may include `name`, `category`, `subcategory`, `colours`, `brand`, `acquiredAt`, and `imageKey`. Omitted fields are left unchanged. For `subcategory` (WARDROBE-87): `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `subcategory`). A non-empty string sets it (trimmed; not restricted to the list-filter enum). Clearing `subcategory` alone is a soft success. `acquiredAt` uses the same omit / clear pattern (WARDROBE-92). Replacing `imageKey` is WARDROBE-153 — see **Replace a clothing-item photo** below.
 
@@ -1129,7 +1155,7 @@ Create body (`name` and `items` required):
 
 Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render` / `renderHistory` / `renderImageUrls`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204` and also deletes that outfit’s worn-on dates. Create / PATCH never accept a client-supplied `render` or `renderHistory` object.
 
-`GET /outfits` (WARDROBE-173) is a Firebase-authorized read for the web outfits page. It lists the caller's outfits across every owned wardrobe with the same `{ "outfits": [...] }` wrapper and Outfit DTO as the nested list (`render.imageUrl` / `renderImageUrls` unchanged). Another user's outfits are never returned. There is no list pagination.
+`GET /outfits` (WARDROBE-173) is a Firebase-authorized read for the web outfits page. It lists the caller's outfits across every owned wardrobe with the same `{ "outfits": [...] }` wrapper and Outfit DTO as the nested list (`render.imageUrl` / `renderImageUrls` unchanged). Another user's outfits are never returned. There is no list pagination. Same signed try-on fields as the nested outfit get: `renderImageUrls[]`, `renderHistory[].imageUrl` (with `createdAt`), and `render.imageUrl`. `imageKey` is for `DELETE .../outfits/{outfitId}/renders` only.
 
 ### Share links (WARDROBE-126) — Flutter WARDROBE-128 / Frontend WARDROBE-127 contract
 

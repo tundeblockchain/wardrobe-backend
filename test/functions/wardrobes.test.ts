@@ -2,9 +2,25 @@ import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-l
 import { DynamoItem, Wardrobe } from '../../src/shared/types';
 
 const mockSend = jest.fn();
+const mockGetSignedUrl = jest.fn();
 
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({})),
+}));
+
+jest.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
+}));
+
+jest.mock('@aws-sdk/client-s3', () => ({
+  S3Client: jest.fn(() => ({})),
+  GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'GetObject',
+    input,
+  })),
+  PutObjectCommand: jest.fn(),
+  ListObjectsV2Command: jest.fn(),
+  DeleteObjectsCommand: jest.fn(),
 }));
 
 jest.mock('@aws-sdk/lib-dynamodb', () => ({
@@ -39,6 +55,13 @@ const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
 const WARDROBE_ID = 'wd_abc123xyz0';
+const COVER_ORIGINAL_KEY = `users/${OWNER_ID}/uploads/cover.jpg`;
+const COVER_PROCESSED_KEY = `users/${OWNER_ID}/items/item_first00001/processed.png`;
+const WARDROBE_OWN_KEY = `users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/cover.jpg`;
+
+function signedUrl(key: string): string {
+  return `https://signed.example/${key}`;
+}
 
 interface Command {
   _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
@@ -168,14 +191,62 @@ function expectEnvelope(
   });
 }
 
+function dynamoItem(
+  userId: string,
+  overrides: Partial<DynamoItem> = {},
+): DynamoItem {
+  const itemId = String(overrides.itemId ?? 'item_first00001');
+  return {
+    PK: `WARDROBE#${WARDROBE_ID}`,
+    SK: `ITEM#${itemId}`,
+    entityType: 'ITEM',
+    userId,
+    wardrobeId: WARDROBE_ID,
+    itemId,
+    name: 'Black T-Shirt',
+    category: 'TOP',
+    originalKey: COVER_ORIGINAL_KEY,
+    createdAt: '2026-09-03T18:45:00.000Z',
+    updatedAt: '2026-09-03T18:45:00.000Z',
+    ...overrides,
+  };
+}
+
+function mockListWardrobes(options: {
+  wardrobes: DynamoItem[];
+  itemsByWardrobe?: Record<string, DynamoItem[]>;
+}): void {
+  mockSend.mockImplementation(async (command: Command) => {
+    if (command._op !== 'Query') {
+      throw new Error(`unexpected op ${command._op}`);
+    }
+    const pk = String(command.input.ExpressionAttributeValues?.[':pk'] ?? '');
+    const sk = String(command.input.ExpressionAttributeValues?.[':sk'] ?? '');
+    if (pk === `USER#${OWNER_ID}` && sk === 'WARDROBE#') {
+      return { Items: options.wardrobes };
+    }
+    if (pk.startsWith('WARDROBE#') && sk === 'ITEM#') {
+      const wardrobeId = pk.slice('WARDROBE#'.length);
+      return { Items: options.itemsByWardrobe?.[wardrobeId] ?? [] };
+    }
+    throw new Error(`unexpected query ${pk} ${sk}`);
+  });
+}
+
 describe('wardrobes handler (WARDROBE-5)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
+    process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
+    mockGetSignedUrl.mockImplementation(
+      async (_client: unknown, command: { input?: { Key?: string } }) =>
+        signedUrl(command.input?.Key ?? 'missing'),
+    );
   });
 
   afterEach(() => {
     delete process.env.TABLE_NAME;
+    delete process.env.MEDIA_BUCKET_NAME;
   });
 
   describe('POST /wardrobes', () => {
@@ -301,8 +372,8 @@ describe('wardrobes handler (WARDROBE-5)', () => {
   describe('GET /wardrobes', () => {
     it('lists only the owner wardrobes under a wardrobes key', async () => {
       const owned = dynamoWardrobe(OWNER_ID);
-      mockSend.mockResolvedValue({
-        Items: [
+      mockListWardrobes({
+        wardrobes: [
           owned,
           {
             ...owned,
@@ -329,12 +400,125 @@ describe('wardrobes handler (WARDROBE-5)', () => {
     });
 
     it('returns an empty wardrobes array when the owner has none', async () => {
-      mockSend.mockResolvedValue({ Items: [] });
+      mockListWardrobes({ wardrobes: [] });
 
       const result = asResult(await handler(event({ method: 'GET' })));
 
       expect(result.statusCode).toBe(200);
       expect(bodyOf(result)).toEqual({ wardrobes: [] });
+    });
+
+    it('adds coverImageUrl from the wardrobe own image without scanning items', async () => {
+      mockListWardrobes({
+        wardrobes: [
+          dynamoWardrobe(OWNER_ID, { coverImageKey: WARDROBE_OWN_KEY }),
+        ],
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+      const body = bodyOf(result) as { wardrobes: Wardrobe[] };
+
+      expect(result.statusCode).toBe(200);
+      expect(body).toEqual({
+        wardrobes: [
+          wardrobeDto({ coverImageUrl: signedUrl(WARDROBE_OWN_KEY) }),
+        ],
+      });
+      expect(body.wardrobes[0]).toEqual({
+        wardrobeId: WARDROBE_ID,
+        name: 'Summer Clothes',
+        createdAt: '2026-09-03T18:35:00.000Z',
+        updatedAt: '2026-09-03T18:35:00.000Z',
+        coverImageUrl: signedUrl(WARDROBE_OWN_KEY),
+      });
+      expect(JSON.stringify(body)).not.toContain(WARDROBE_OWN_KEY);
+      expect(body.wardrobes[0]).not.toHaveProperty('coverImageKey');
+      expect(body.wardrobes[0]).not.toHaveProperty('imageKey');
+      expect(body.wardrobes[0]).not.toHaveProperty('originalKey');
+      expect(
+        mockSend.mock.calls.some((call) => {
+          const command = call[0] as Command;
+          return (
+            command._op === 'Query' &&
+            command.input.ExpressionAttributeValues?.[':sk'] === 'ITEM#'
+          );
+        }),
+      ).toBe(false);
+    });
+
+    it('falls back to the first item image (earliest createdAt)', async () => {
+      const later = dynamoItem(OWNER_ID, {
+        itemId: 'item_later00002',
+        createdAt: '2026-09-04T10:00:00.000Z',
+        originalKey: `users/${OWNER_ID}/uploads/later.jpg`,
+      });
+      const earlier = dynamoItem(OWNER_ID, {
+        itemId: 'item_early00001',
+        createdAt: '2026-09-03T08:00:00.000Z',
+        processedKey: COVER_PROCESSED_KEY,
+        originalKey: COVER_ORIGINAL_KEY,
+      });
+      mockListWardrobes({
+        wardrobes: [dynamoWardrobe(OWNER_ID)],
+        itemsByWardrobe: {
+          [WARDROBE_ID]: [later, earlier],
+        },
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+      const body = bodyOf(result) as { wardrobes: Wardrobe[] };
+
+      expect(result.statusCode).toBe(200);
+      expect(body.wardrobes[0]).toEqual({
+        wardrobeId: WARDROBE_ID,
+        name: 'Summer Clothes',
+        createdAt: '2026-09-03T18:35:00.000Z',
+        updatedAt: '2026-09-03T18:35:00.000Z',
+        coverImageUrl: signedUrl(COVER_PROCESSED_KEY),
+      });
+      expect(JSON.stringify(body)).not.toContain(COVER_PROCESSED_KEY);
+      expect(JSON.stringify(body)).not.toContain(COVER_ORIGINAL_KEY);
+      expect(body.wardrobes[0]).not.toHaveProperty('image');
+      expect(body.wardrobes[0]).not.toHaveProperty('originalKey');
+      expect(body.wardrobes[0]).not.toHaveProperty('processedKey');
+    });
+
+    it('omits coverImageUrl for an empty wardrobe', async () => {
+      mockListWardrobes({
+        wardrobes: [dynamoWardrobe(OWNER_ID)],
+        itemsByWardrobe: { [WARDROBE_ID]: [] },
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+      const body = bodyOf(result) as { wardrobes: Wardrobe[] };
+
+      expect(result.statusCode).toBe(200);
+      expect(body).toEqual({
+        wardrobes: [wardrobeDto()],
+      });
+      expect(body.wardrobes[0]).not.toHaveProperty('coverImageUrl');
+      expect(Object.keys(body.wardrobes[0]).sort()).toEqual([
+        'createdAt',
+        'name',
+        'updatedAt',
+        'wardrobeId',
+      ]);
+    });
+
+    it('leaves existing list fields unchanged when coverImageUrl is present', async () => {
+      mockListWardrobes({
+        wardrobes: [dynamoWardrobe(OWNER_ID)],
+        itemsByWardrobe: {
+          [WARDROBE_ID]: [dynamoItem(OWNER_ID)],
+        },
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+      const listed = (bodyOf(result) as { wardrobes: Wardrobe[] }).wardrobes[0];
+      const { coverImageUrl, ...existing } = listed;
+
+      expect(coverImageUrl).toBe(signedUrl(COVER_ORIGINAL_KEY));
+      expect(existing).toEqual(wardrobeDto());
     });
   });
 
