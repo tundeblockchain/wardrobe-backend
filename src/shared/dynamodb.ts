@@ -447,6 +447,13 @@ export async function getOwnedWardrobe(
   return item;
 }
 
+export async function listOwnedWardrobes(userId: string): Promise<DynamoItem[]> {
+  const items = await queryByPk(keys.userPk(userId), 'WARDROBE#');
+  return items.filter(
+    (item) => item.entityType === 'WARDROBE' && item.userId === userId,
+  );
+}
+
 export async function getOwnedItem(
   userId: string,
   wardrobeId: string,
@@ -464,6 +471,33 @@ export async function getOwnedItem(
     throw Errors.itemNotFound();
   }
   return item;
+}
+
+/**
+ * Owner-only clothing-item lookup without a wardrobeId (WARDROBE-173).
+ * Walks the caller's wardrobe partition only — never another user's.
+ */
+export async function getOwnedItemById(
+  userId: string,
+  itemId: string,
+): Promise<DynamoItem> {
+  const wardrobes = await listOwnedWardrobes(userId);
+  for (const wardrobe of wardrobes) {
+    const wardrobeId = String(wardrobe.wardrobeId ?? '');
+    if (!wardrobeId) {
+      continue;
+    }
+    const item = await getItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
+    if (
+      item &&
+      item.entityType === 'ITEM' &&
+      item.userId === userId &&
+      item.wardrobeId === wardrobeId
+    ) {
+      return item;
+    }
+  }
+  throw Errors.itemNotFound();
 }
 
 export async function getOwnedOutfit(

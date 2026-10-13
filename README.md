@@ -24,9 +24,9 @@ Working in this first cut:
 - `DELETE /me` (cancel subscription when possible, revoke entitlement, delete AWS data + Firebase Auth user; Flutter WARDROBE-154)
 - `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
 - Wardrobe CRUD
-- Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`; `POST .../items/{itemId}/reprocess` re-enqueues a `FAILED` item (WARDROBE-123)
+- Clothing item CRUD (nested under a wardrobe); create enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`; `POST .../items/{itemId}/reprocess` re-enqueues a `FAILED` item (WARDROBE-123). `GET /items/{itemId}` is the web by-id read (WARDROBE-173).
 - Move / copy a clothing item to another owned wardrobe (WARDROBE-118; Flutter WARDROBE-119)
-- Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`)
+- Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`). `GET /outfits` lists across the caller's wardrobes (WARDROBE-173).
 - Outfit worn-on log (date-only entries for calendar / habit; Flutter WARDROBE-121)
 - Owner-only outfit recommendations (derived, never auto-saved)
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
@@ -556,6 +556,7 @@ Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must bel
 POST   /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items/{itemId}
+GET    /items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
@@ -603,6 +604,8 @@ Create body (`name`, `category`, and `imageKey` required):
 `category` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `imageKey` must be under `users/{uid}/uploads/` or another path owned by the authenticated user. `acquiredAt` is optional — see **Acquired date** below.
 
 Create writes the DynamoDB item first, then sends `PROCESS_WARDROBE_ITEM` to the processing queue (`{ jobType, userId, wardrobeId, itemId, originalImageKey }`). Identity in that message comes from the Firebase authorizer, never from a body `userId`. Create returns `201` with the Flutter `ClothingItem` DTO (`itemId`, `wardrobeId`, `name`, `category`, optional `subcategory` / `colours` / `brand` / `acquiredAt`, `image.originalKey`, short-lived `originalImageUrl`, `processingStatus: PENDING`, ISO 8601 timestamps). Empty `subcategory` is soft-omitted on create (`null` / `""` are not stored). If enqueue fails, the request fails with `500 INTERNAL_ERROR` and the item is rolled back so the client can retry. List and get use the same DTO (Flutter `ItemListResponse` is `{ "items": [...] }`), including `processingStatus` and optional `processingError` on `FAILED` (WARDROBE-59). Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing items return `404` `ITEM_NOT_FOUND`. Delete returns `204`. Same-user move / copy of a terminal item (`READY` / `FAILED`) is WARDROBE-118 — see **Move / copy across wardrobes** below.
+
+`GET /items/{itemId}` (WARDROBE-173) is a Firebase-authorized read for the web item page. It walks only the caller's wardrobes and returns the same Flutter `ClothingItem` DTO as the nested get (`originalImageUrl` / `processedImageUrl` / `image.*` unchanged). Another user's item id is `404` `ITEM_NOT_FOUND`. There is no list pagination (`nextCursor` is still later).
 
 PATCH may include `name`, `category`, `subcategory`, `colours`, `brand`, `acquiredAt`, and `imageKey`. Omitted fields are left unchanged. For `subcategory` (WARDROBE-87): `null`, `""`, or whitespace-only **clears** the stored DynamoDB attribute (`REMOVE`; the response omits `subcategory`). A non-empty string sets it (trimmed; not restricted to the list-filter enum). Clearing `subcategory` alone is a soft success. `acquiredAt` uses the same omit / clear pattern (WARDROBE-92). Replacing `imageKey` is WARDROBE-153 — see **Replace a clothing-item photo** below.
 
@@ -1094,6 +1097,7 @@ Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must bel
 ```http
 POST   /wardrobes/{wardrobeId}/outfits
 GET    /wardrobes/{wardrobeId}/outfits
+GET    /outfits
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}
 PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
@@ -1122,6 +1126,8 @@ Create body (`name` and `items` required):
 `name` is trimmed, 1–100 characters. `items` must contain at least one entry. `slot` must be one of `TOP`, `BOTTOM`, `DRESS`, `OUTERWEAR`, `SHOES`, `ACCESSORY`, `BAG`. `ACCESSORY` may appear more than once; other slots may appear only once. Duplicate `itemId` values are rejected.
 
 Create returns `201` with the Flutter `Outfit` DTO (`outfitId`, `wardrobeId`, `name`, `items[{itemId, slot}]`, optional `render` / `renderHistory` / `renderImageUrls`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "outfits": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Missing outfits return `404` `OUTFIT_NOT_FOUND`. Referenced items that are not in the wardrobe return `404` `ITEM_NOT_FOUND`. Delete returns `204` and also deletes that outfit’s worn-on dates. Create / PATCH never accept a client-supplied `render` or `renderHistory` object.
+
+`GET /outfits` (WARDROBE-173) is a Firebase-authorized read for the web outfits page. It lists the caller's outfits across every owned wardrobe with the same `{ "outfits": [...] }` wrapper and Outfit DTO as the nested list (`render.imageUrl` / `renderImageUrls` unchanged). Another user's outfits are never returned. There is no list pagination.
 
 ### Share links (WARDROBE-126) — Flutter WARDROBE-128 / Frontend WARDROBE-127 contract
 

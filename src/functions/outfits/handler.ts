@@ -6,6 +6,7 @@ import {
   getOwnedOutfit,
   getOwnedWardrobe,
   keys,
+  listOwnedWardrobes,
   putItem,
   queryByPk,
   updateAttributes,
@@ -84,6 +85,10 @@ export async function handler(
     const outfitId = event.pathParameters?.outfitId?.trim();
 
     if (!wardrobeId) {
+      // WARDROBE-173: web `/app/outfits` lists across the caller's wardrobes.
+      if (method === 'GET' && !outfitId) {
+        return ok({ outfits: await listAllOutfits(userId) });
+      }
       throw Errors.validation('wardrobeId is required.');
     }
 
@@ -189,6 +194,26 @@ async function listOutfits(
   wardrobeId: string,
 ): Promise<Outfit[]> {
   await getOwnedWardrobe(userId, wardrobeId);
+  return listOutfitsInWardrobe(userId, wardrobeId);
+}
+
+async function listAllOutfits(userId: string): Promise<Outfit[]> {
+  const wardrobes = await listOwnedWardrobes(userId);
+  const outfits: Outfit[] = [];
+  for (const wardrobe of wardrobes) {
+    const wardrobeId = String(wardrobe.wardrobeId ?? '');
+    if (!wardrobeId) {
+      continue;
+    }
+    outfits.push(...(await listOutfitsInWardrobe(userId, wardrobeId)));
+  }
+  return outfits;
+}
+
+async function listOutfitsInWardrobe(
+  userId: string,
+  wardrobeId: string,
+): Promise<Outfit[]> {
   const items = await queryByPk(keys.wardrobePk(wardrobeId), 'OUTFIT#');
   const outfits = items.filter(
     (item) =>
