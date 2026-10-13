@@ -86,6 +86,7 @@ const ITEM_ORIGINAL_KEY = `users/${OWNER_ID}/uploads/photo.jpg`;
 const ITEM_PROCESSED_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/processed.png`;
 const ITEM_RENDER_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/renders/rnd_1.png`;
 const OUTFIT_RENDER_KEY = `users/${OWNER_ID}/outfits/${OUTFIT_ID}/renders/rnd_2.png`;
+const CROSS_RENDER_KEY = `users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/renders/rnd_3.png`;
 const OTHER_ITEM_ORIGINAL_KEY = `users/${OWNER_ID}/uploads/keep.jpg`;
 const OTHER_USER_KEY = `users/${OTHER_ID}/uploads/theirs.jpg`;
 
@@ -441,8 +442,12 @@ function mockDeleteCascade(options: {
       }
       return { Items: [] };
     }
-    if (command._op === 'BatchWrite' || command._op === 'Delete') {
-      return {};
+    if (
+      command._op === 'BatchWrite' ||
+      command._op === 'Delete' ||
+      command._op === 'Update'
+    ) {
+      return { Attributes: {} };
     }
     throw new Error(`unexpected op ${command._op}`);
   });
@@ -501,6 +506,12 @@ function deletedS3Keys(): string[] {
     }
   }
   return keys;
+}
+
+function outfitUpdates(): Command[] {
+  return mockSend.mock.calls
+    .map((call) => call[0] as Command)
+    .filter((command) => command._op === 'Update');
 }
 
 describe('wardrobes handler (WARDROBE-5)', () => {
@@ -936,25 +947,11 @@ describe('wardrobes handler (WARDROBE-5)', () => {
       const outfit = dynamoOutfit(OWNER_ID);
       const wornOn = dynamoWornOn(OWNER_ID);
       const shopping = dynamoShopping(OWNER_ID);
-      const otherWardrobe = dynamoWardrobe(OWNER_ID, {
-        wardrobeId: OTHER_WARDROBE_ID,
-        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
-        name: 'Keep Me',
-      });
-      const crossOutfit = dynamoOutfit(OWNER_ID, {
-        wardrobeId: OTHER_WARDROBE_ID,
-        outfitId: CROSS_OUTFIT_ID,
-        items: [{ itemId: ITEM_ID, slot: 'TOP' }],
-        render: undefined,
-        renderHistory: undefined,
-      });
       const share = dynamoShare(OWNER_ID);
 
       mockDeleteCascade({
         wardrobe,
         children: [item, outfit, wornOn, shopping],
-        otherWardrobes: [otherWardrobe],
-        otherChildren: { [OTHER_WARDROBE_ID]: [crossOutfit] },
         shares: [share],
         s3ByPrefix: {
           [`users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`]: [WARDROBE_OWN_KEY],
@@ -963,7 +960,6 @@ describe('wardrobes handler (WARDROBE-5)', () => {
             ITEM_RENDER_KEY,
           ],
           [`users/${OWNER_ID}/outfits/${OUTFIT_ID}/`]: [OUTFIT_RENDER_KEY],
-          [`users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`]: [],
         },
       });
 
@@ -985,10 +981,6 @@ describe('wardrobes handler (WARDROBE-5)', () => {
             SK: `OUTFIT#${OUTFIT_ID}#WORN#${WORN_ON}`,
           },
           { PK: `WARDROBE#${WARDROBE_ID}`, SK: `SHOPPING#${ITEM_ID}` },
-          {
-            PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
-            SK: `OUTFIT#${CROSS_OUTFIT_ID}`,
-          },
           { PK: `SHARE#${SHARE_TOKEN}`, SK: 'SHARE' },
         ]),
       );
@@ -1002,7 +994,6 @@ describe('wardrobes handler (WARDROBE-5)', () => {
           `users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`,
           `users/${OWNER_ID}/items/${ITEM_ID}/`,
           `users/${OWNER_ID}/outfits/${OUTFIT_ID}/`,
-          `users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`,
         ]),
       );
       expect(listedS3Prefixes()).not.toContain(`users/${OWNER_ID}/`);
@@ -1112,6 +1103,199 @@ describe('wardrobes handler (WARDROBE-5)', () => {
       );
       expect(deletedS3Keys()).not.toContain(OTHER_ITEM_ORIGINAL_KEY);
       expect(deletedS3Keys()).not.toContain(OTHER_USER_KEY);
+    });
+
+    it('strips deleted item ids from another wardrobe outfit and keeps it', async () => {
+      const otherWardrobe = dynamoWardrobe(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        name: 'Keep Me',
+      });
+      const keptOutfit = dynamoOutfit(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        outfitId: CROSS_OUTFIT_ID,
+        items: [
+          { itemId: ITEM_ID, slot: 'TOP' },
+          { itemId: OTHER_ITEM_ID, slot: 'BOTTOM' },
+        ],
+        render: {
+          status: 'READY',
+          imageKey: CROSS_RENDER_KEY,
+          aiProfileId: 'ap_1',
+        },
+        renderHistory: [
+          {
+            imageKey: CROSS_RENDER_KEY,
+            createdAt: '2026-09-18T19:00:00.000Z',
+            aiProfileId: 'ap_1',
+          },
+        ],
+      });
+
+      mockDeleteCascade({
+        children: [cascadeItem()],
+        otherWardrobes: [otherWardrobe],
+        otherChildren: { [OTHER_WARDROBE_ID]: [keptOutfit] },
+        s3ByPrefix: {
+          [`users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`]: [],
+          [`users/${OWNER_ID}/items/${ITEM_ID}/`]: [ITEM_PROCESSED_KEY],
+          [`users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`]: [CROSS_RENDER_KEY],
+        },
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'DELETE', wardrobeId: WARDROBE_ID })),
+      );
+
+      expect(result.statusCode).toBe(204);
+      expect(result.body).toBe('');
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        SK: `OUTFIT#${CROSS_OUTFIT_ID}`,
+      });
+      expect(deletedKeys()).toEqual(
+        expect.arrayContaining([
+          { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
+        ]),
+      );
+
+      const updates = outfitUpdates();
+      expect(updates).toHaveLength(1);
+      expect(updates[0]?.input.Key).toEqual({
+        PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        SK: `OUTFIT#${CROSS_OUTFIT_ID}`,
+      });
+      expect(updates[0]?.input.ExpressionAttributeValues?.[':items']).toEqual([
+        { itemId: OTHER_ITEM_ID, slot: 'BOTTOM' },
+      ]);
+      expect(updates[0]?.input.UpdateExpression).toContain('REMOVE');
+      expect(updates[0]?.input.ExpressionAttributeNames).toEqual(
+        expect.objectContaining({
+          '#render': 'render',
+          '#renderHistory': 'renderHistory',
+          '#renderImageUrls': 'renderImageUrls',
+        }),
+      );
+    });
+
+    it('clears try-on renders on a kept outfit that referenced deleted items', async () => {
+      const otherWardrobe = dynamoWardrobe(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        name: 'Keep Me',
+      });
+      const keptOutfit = dynamoOutfit(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        outfitId: CROSS_OUTFIT_ID,
+        items: [
+          { itemId: ITEM_ID, slot: 'TOP' },
+          { itemId: OTHER_ITEM_ID, slot: 'BOTTOM' },
+        ],
+        render: {
+          status: 'READY',
+          imageKey: CROSS_RENDER_KEY,
+          aiProfileId: 'ap_1',
+        },
+        renderHistory: [
+          {
+            imageKey: CROSS_RENDER_KEY,
+            createdAt: '2026-09-18T19:00:00.000Z',
+            aiProfileId: 'ap_1',
+          },
+        ],
+        renderImageUrls: ['https://signed.example/stale'],
+      });
+
+      mockDeleteCascade({
+        children: [cascadeItem()],
+        otherWardrobes: [otherWardrobe],
+        otherChildren: { [OTHER_WARDROBE_ID]: [keptOutfit] },
+        s3ByPrefix: {
+          [`users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`]: [],
+          [`users/${OWNER_ID}/items/${ITEM_ID}/`]: [ITEM_PROCESSED_KEY],
+          [`users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`]: [CROSS_RENDER_KEY],
+        },
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'DELETE', wardrobeId: WARDROBE_ID })),
+      );
+
+      expect(result.statusCode).toBe(204);
+      expect(listedS3Prefixes()).toContain(
+        `users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`,
+      );
+      expect(deletedS3Keys()).toContain(CROSS_RENDER_KEY);
+      expect(outfitUpdates()[0]?.input.UpdateExpression).toEqual(
+        expect.stringMatching(/REMOVE.*#render/),
+      );
+      expect(outfitUpdates()[0]?.input.ExpressionAttributeValues).not.toEqual(
+        expect.objectContaining({
+          ':render': expect.anything(),
+          ':renderHistory': expect.anything(),
+          ':renderImageUrls': expect.anything(),
+        }),
+      );
+    });
+
+    it('deletes another wardrobe outfit when stripping leaves zero items', async () => {
+      const otherWardrobe = dynamoWardrobe(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        name: 'Keep Me',
+      });
+      const emptiedOutfit = dynamoOutfit(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        outfitId: CROSS_OUTFIT_ID,
+        items: [{ itemId: ITEM_ID, slot: 'TOP' }],
+        render: {
+          status: 'READY',
+          imageKey: CROSS_RENDER_KEY,
+          aiProfileId: 'ap_1',
+        },
+      });
+      const emptiedWornOn = dynamoWornOn(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        outfitId: CROSS_OUTFIT_ID,
+      });
+
+      mockDeleteCascade({
+        children: [cascadeItem()],
+        otherWardrobes: [otherWardrobe],
+        otherChildren: {
+          [OTHER_WARDROBE_ID]: [emptiedOutfit, emptiedWornOn],
+        },
+        s3ByPrefix: {
+          [`users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`]: [],
+          [`users/${OWNER_ID}/items/${ITEM_ID}/`]: [ITEM_PROCESSED_KEY],
+          [`users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`]: [CROSS_RENDER_KEY],
+        },
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'DELETE', wardrobeId: WARDROBE_ID })),
+      );
+
+      expect(result.statusCode).toBe(204);
+      expect(outfitUpdates()).toEqual([]);
+      expect(deletedKeys()).toEqual(
+        expect.arrayContaining([
+          {
+            PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+            SK: `OUTFIT#${CROSS_OUTFIT_ID}`,
+          },
+          {
+            PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+            SK: `OUTFIT#${CROSS_OUTFIT_ID}#WORN#${WORN_ON}`,
+          },
+        ]),
+      );
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+      });
+      expect(deletedS3Keys()).toContain(CROSS_RENDER_KEY);
     });
 
     it('pages Dynamo children so a large wardrobe is fully deleted', async () => {

@@ -5,8 +5,10 @@ import {
   listOwnedWardrobes,
   queryByGsi1,
   queryByPk,
+  updateAttributes,
 } from './dynamodb';
 import { Errors } from './errors';
+import { nowIso } from './ids';
 import {
   deleteObjectsByKeys,
   deleteObjectsUnderPrefix,
@@ -71,19 +73,31 @@ export async function wipeUser(
 /**
  * Owner-only wardrobe cascade (WARDROBE-183). Same Dynamo batch-delete and
  * S3 list/delete helpers as `wipeUser`, scoped to one wardrobe: its row,
- * items, outfits that reference those items or the wardrobe, worn-on rows,
- * shopping-cache rows, share tokens for that wardrobe, and related
- * original / processed / cover / render objects. Other wardrobes and users
- * are not collected.
+ * items, outfits in that wardrobe, worn-on rows, shopping-cache rows,
+ * share tokens for that wardrobe, and related original / processed / cover
+ * / render objects.
+ *
+ * Outfits in other owned wardrobes that reference the deleted items are
+ * not deleted: the deleted item ids are stripped, try-on render fields
+ * (`render`, `renderHistory`, leftover `renderImageUrls`) and their S3
+ * render objects are cleared, and the outfit is deleted only when it
+ * would have zero items left. Other users are not collected.
  */
 export async function wipeOwnedWardrobe(
   userId: string,
   wardrobeId: string,
 ): Promise<void> {
   const wardrobe = await getOwnedWardrobe(userId, wardrobeId);
-  const rows = await collectWardrobeCascadeRows(userId, wardrobe);
-  await deleteManyBatched(rows.map((row) => ({ pk: row.PK, sk: row.SK })));
-  await deleteWardrobeMedia(userId, String(wardrobe.wardrobeId), rows);
+  const { deleteRows, stripOutfits, deletedItemIds } =
+    await collectWardrobeCascade(userId, wardrobe);
+  await stripReferencedOutfits(stripOutfits, deletedItemIds);
+  await deleteManyBatched(
+    deleteRows.map((row) => ({ pk: row.PK, sk: row.SK })),
+  );
+  await deleteWardrobeMedia(userId, String(wardrobe.wardrobeId), [
+    ...deleteRows,
+    ...stripOutfits,
+  ]);
 }
 
 async function collectOwnedRows(
@@ -142,31 +156,36 @@ async function collectOwnedRows(
   return rows;
 }
 
-async function collectWardrobeCascadeRows(
+async function collectWardrobeCascade(
   userId: string,
   wardrobe: DynamoItem,
-): Promise<DynamoItem[]> {
-  const rows: DynamoItem[] = [];
+): Promise<{
+  deleteRows: DynamoItem[];
+  stripOutfits: DynamoItem[];
+  deletedItemIds: Set<string>;
+}> {
+  const deleteRows: DynamoItem[] = [];
+  const stripOutfits: DynamoItem[] = [];
   const seen = new Set<string>();
 
-  const add = (item: DynamoItem): void => {
+  const addDelete = (item: DynamoItem): void => {
     const id = `${item.PK}\0${item.SK}`;
     if (seen.has(id)) {
       return;
     }
     seen.add(id);
-    rows.push(item);
+    deleteRows.push(item);
   };
 
-  add(wardrobe);
+  addDelete(wardrobe);
 
   const wardrobeId = String(wardrobe.wardrobeId);
   const children = await collectWardrobePartitionRows(userId, wardrobeId);
   for (const child of children) {
-    add(child);
+    addDelete(child);
   }
 
-  const itemIds = new Set(
+  const deletedItemIds = new Set(
     children
       .filter((child) => child.entityType === 'ITEM')
       .map((child) => String(child.itemId ?? ''))
@@ -182,24 +201,32 @@ async function collectWardrobeCascadeRows(
       userId,
       String(other.wardrobeId),
     );
-    const matchingOutfitIds = new Set(
-      otherChildren
-        .filter(
-          (child) =>
-            child.entityType === 'OUTFIT' &&
-            (String(child.wardrobeId) === wardrobeId ||
-              outfitReferencesItemIds(child, itemIds)),
-        )
-        .map((child) => String(child.outfitId ?? ''))
-        .filter((outfitId) => outfitId.length > 0),
+    const referencedOutfits = otherChildren.filter(
+      (child) =>
+        child.entityType === 'OUTFIT' &&
+        outfitReferencesItemIds(child, deletedItemIds),
     );
+    const emptiedOutfitIds = new Set<string>();
+
+    for (const outfit of referencedOutfits) {
+      const remaining = remainingOutfitItems(outfit, deletedItemIds);
+      if (remaining.length === 0) {
+        addDelete(outfit);
+        const outfitId = String(outfit.outfitId ?? '');
+        if (outfitId) {
+          emptiedOutfitIds.add(outfitId);
+        }
+      } else {
+        stripOutfits.push(outfit);
+      }
+    }
 
     for (const child of otherChildren) {
       if (
-        (child.entityType === 'OUTFIT' || child.entityType === 'WORN_ON') &&
-        matchingOutfitIds.has(String(child.outfitId ?? ''))
+        child.entityType === 'WORN_ON' &&
+        emptiedOutfitIds.has(String(child.outfitId ?? ''))
       ) {
-        add(child);
+        addDelete(child);
       }
     }
   }
@@ -215,10 +242,27 @@ async function collectWardrobeCascadeRows(
       String(item.wardrobeId ?? '') === wardrobeId,
   );
   for (const share of shares) {
-    add(share);
+    addDelete(share);
   }
 
-  return rows;
+  return { deleteRows, stripOutfits, deletedItemIds };
+}
+
+async function stripReferencedOutfits(
+  outfits: DynamoItem[],
+  deletedItemIds: Set<string>,
+): Promise<void> {
+  for (const outfit of outfits) {
+    await updateAttributes(
+      outfit.PK,
+      outfit.SK,
+      {
+        items: remainingOutfitItems(outfit, deletedItemIds),
+        updatedAt: nowIso(),
+      },
+      { remove: ['render', 'renderHistory', 'renderImageUrls'] },
+    );
+  }
 }
 
 async function collectWardrobePartitionRows(
@@ -322,6 +366,22 @@ function tryMediaPrefix(build: () => string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function remainingOutfitItems(
+  outfit: DynamoItem,
+  deletedItemIds: Set<string>,
+): unknown[] {
+  if (!Array.isArray(outfit.items)) {
+    return [];
+  }
+  return outfit.items.filter((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    const itemId = (entry as { itemId?: unknown }).itemId;
+    return typeof itemId === 'string' && itemId.length > 0 && !deletedItemIds.has(itemId);
+  });
 }
 
 function outfitReferencesItemIds(
