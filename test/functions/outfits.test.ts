@@ -185,6 +185,8 @@ function event(options: {
   body?: unknown;
   rawBody?: string;
   sub?: string | null;
+  /** WARDROBE-173 GET /outfits — all wardrobes for the caller. */
+  allOutfits?: boolean;
 }): APIGatewayProxyEventV2 {
   const wardrobeId = options.wardrobeId ?? WARDROBE_ID;
   const authorizer =
@@ -194,16 +196,20 @@ function event(options: {
           lambda: { sub: options.sub ?? OWNER_ID },
         };
 
-  const rawPath = options.render && options.outfitId
-    ? `/wardrobes/${wardrobeId}/outfits/${options.outfitId}/render`
-    : options.outfitId
-      ? `/wardrobes/${wardrobeId}/outfits/${options.outfitId}`
-      : `/wardrobes/${wardrobeId}/outfits`;
-  const routeKey = options.render && options.outfitId
-    ? `${options.method} /wardrobes/{wardrobeId}/outfits/{outfitId}/render`
-    : options.outfitId
-      ? `${options.method} /wardrobes/{wardrobeId}/outfits/{outfitId}`
-      : `${options.method} /wardrobes/{wardrobeId}/outfits`;
+  const rawPath = options.allOutfits
+    ? '/outfits'
+    : options.render && options.outfitId
+      ? `/wardrobes/${wardrobeId}/outfits/${options.outfitId}/render`
+      : options.outfitId
+        ? `/wardrobes/${wardrobeId}/outfits/${options.outfitId}`
+        : `/wardrobes/${wardrobeId}/outfits`;
+  const routeKey = options.allOutfits
+    ? `${options.method} /outfits`
+    : options.render && options.outfitId
+      ? `${options.method} /wardrobes/{wardrobeId}/outfits/{outfitId}/render`
+      : options.outfitId
+        ? `${options.method} /wardrobes/{wardrobeId}/outfits/{outfitId}`
+        : `${options.method} /wardrobes/{wardrobeId}/outfits`;
 
   return {
     version: '2.0',
@@ -217,10 +223,12 @@ function event(options: {
         : options.body !== undefined
           ? JSON.stringify(options.body)
           : undefined,
-    pathParameters: {
-      wardrobeId,
-      ...(options.outfitId ? { outfitId: options.outfitId } : {}),
-    },
+    pathParameters: options.allOutfits
+      ? undefined
+      : {
+          wardrobeId,
+          ...(options.outfitId ? { outfitId: options.outfitId } : {}),
+        },
     requestContext: {
       accountId: '123',
       apiId: 'api',
@@ -720,6 +728,144 @@ describe('outfits handler (WARDROBE-7)', () => {
       );
 
       expectEnvelope(result, 404, 'OUTFIT_NOT_FOUND');
+    });
+
+    it('returns 404 OUTFIT_NOT_FOUND when the outfit belongs to another user', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('OUTFIT#')) {
+          return { Item: dynamoOutfit(OTHER_ID) };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', outfitId: OUTFIT_ID })),
+      );
+
+      expectEnvelope(result, 404, 'OUTFIT_NOT_FOUND');
+    });
+  });
+
+  describe('GET /outfits (WARDROBE-173)', () => {
+    it('lists owner outfits across wardrobes under an outfits key', async () => {
+      const secondOutfit = dynamoOutfit(OWNER_ID, {
+        PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        SK: 'OUTFIT#outfit_other12ab',
+        wardrobeId: OTHER_WARDROBE_ID,
+        outfitId: 'outfit_other12ab',
+        name: 'Office',
+      });
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Query' && command.input.KeyConditionExpression?.includes('begins_with(SK')) {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OWNER_ID}`) {
+            return {
+              Items: [
+                dynamoWardrobe(),
+                {
+                  ...dynamoWardrobe(),
+                  SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+                  wardrobeId: OTHER_WARDROBE_ID,
+                  name: 'Work',
+                },
+              ],
+            };
+          }
+          if (pk === `WARDROBE#${WARDROBE_ID}`) {
+            return {
+              Items: [
+                dynamoOutfit(),
+                {
+                  ...dynamoOutfit(),
+                  SK: `OUTFIT#${OUTFIT_ID}#WORN#2026-09-18`,
+                  entityType: 'WORN_ON',
+                  wornOn: '2026-09-18',
+                },
+              ],
+            };
+          }
+          if (pk === `WARDROBE#${OTHER_WARDROBE_ID}`) {
+            return { Items: [secondOutfit] };
+          }
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', allOutfits: true })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        outfits: [
+          outfitDto(),
+          outfitDto({
+            outfitId: 'outfit_other12ab',
+            wardrobeId: OTHER_WARDROBE_ID,
+            name: 'Office',
+          }),
+        ],
+      });
+      const body = bodyOf(result) as { outfits: Outfit[] };
+      expect(body.outfits[0]).not.toHaveProperty('PK');
+      expect(body.outfits[0]).not.toHaveProperty('SK');
+      expect(body.outfits[0]).not.toHaveProperty('userId');
+      expect(body.outfits[0]).not.toHaveProperty('uploadUrl');
+    });
+
+    it('returns an empty outfits array when the owner has none', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OWNER_ID}`) {
+            return { Items: [dynamoWardrobe()] };
+          }
+          return { Items: [] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', allOutfits: true })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ outfits: [] });
+    });
+
+    it('does not return another user outfit even if it shares a wardrobe PK', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OWNER_ID}`) {
+            return { Items: [dynamoWardrobe()] };
+          }
+          if (pk === `WARDROBE#${WARDROBE_ID}`) {
+            return { Items: [dynamoOutfit(OTHER_ID)] };
+          }
+          return { Items: [] };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', allOutfits: true })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ outfits: [] });
+    });
+
+    it('returns 401 UNAUTHENTICATED when the authorizer context is missing', async () => {
+      const result = asResult(
+        await handler(event({ method: 'GET', allOutfits: true, sub: null })),
+      );
+
+      expectEnvelope(result, 401, 'UNAUTHENTICATED');
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

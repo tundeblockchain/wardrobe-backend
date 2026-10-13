@@ -3,6 +3,7 @@ import { getUserId } from '../../shared/auth';
 import {
   deleteItem,
   getOwnedItem,
+  getOwnedItemById,
   getOwnedWardrobe,
   isConditionalCheckFailed,
   keys,
@@ -121,6 +122,10 @@ export async function handler(
     const itemId = event.pathParameters?.itemId?.trim();
 
     if (!wardrobeId) {
+      // WARDROBE-173: web `/app/items/:id` has no wardrobeId.
+      if (method === 'GET' && itemId) {
+        return ok(await toClothingItem(await getOwnedItemById(userId, itemId)));
+      }
       throw Errors.validation('wardrobeId is required.');
     }
 

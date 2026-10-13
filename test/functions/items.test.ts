@@ -180,6 +180,8 @@ function event(options: {
   body?: unknown;
   rawBody?: string;
   sub?: string | null;
+  /** WARDROBE-173 GET /items/{itemId} — no wardrobeId in the path. */
+  itemById?: boolean;
 }): APIGatewayProxyEventV2 {
   const wardrobeId = options.wardrobeId ?? WARDROBE_ID;
   const authorizer =
@@ -190,14 +192,18 @@ function event(options: {
         };
 
   const suffix = options.suffix ? `/${options.suffix}` : '';
-  const rawPath = options.itemId
-    ? `/wardrobes/${wardrobeId}/items/${options.itemId}${suffix}`
-    : `/wardrobes/${wardrobeId}/items`;
-  const routeKey = options.itemId
-    ? options.suffix
-      ? `${options.method} /wardrobes/{wardrobeId}/items/{itemId}/${options.suffix}`
-      : `${options.method} /wardrobes/{wardrobeId}/items/{itemId}`
-    : `${options.method} /wardrobes/{wardrobeId}/items`;
+  const rawPath = options.itemById
+    ? `/items/${options.itemId}`
+    : options.itemId
+      ? `/wardrobes/${wardrobeId}/items/${options.itemId}${suffix}`
+      : `/wardrobes/${wardrobeId}/items`;
+  const routeKey = options.itemById
+    ? `${options.method} /items/{itemId}`
+    : options.itemId
+      ? options.suffix
+        ? `${options.method} /wardrobes/{wardrobeId}/items/{itemId}/${options.suffix}`
+        : `${options.method} /wardrobes/{wardrobeId}/items/{itemId}`
+      : `${options.method} /wardrobes/{wardrobeId}/items`;
 
   const queryEntries = Object.entries(options.query ?? {}).filter(
     (entry): entry is [string, string] => typeof entry[1] === 'string',
@@ -219,10 +225,12 @@ function event(options: {
         : options.body !== undefined
           ? JSON.stringify(options.body)
           : undefined,
-    pathParameters: {
-      wardrobeId,
-      ...(options.itemId ? { itemId: options.itemId } : {}),
-    },
+    pathParameters: options.itemById
+      ? { itemId: options.itemId }
+      : {
+          wardrobeId,
+          ...(options.itemId ? { itemId: options.itemId } : {}),
+        },
     requestContext: {
       accountId: '123',
       apiId: 'api',
@@ -1442,6 +1450,147 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       );
 
       expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
+    });
+
+    it('returns 404 ITEM_NOT_FOUND when the item belongs to another user', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: dynamoItem(OTHER_ID) };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID })),
+      );
+
+      expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
+    });
+  });
+
+  describe('GET /items/{itemId} (WARDROBE-173)', () => {
+    function mockOwnedItemById(item: DynamoItem | undefined): void {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Query') {
+          return { Items: [dynamoWardrobe()] };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return item ? { Item: item } : {};
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+    }
+
+    it('returns the owned ClothingItem DTO without a wardrobeId', async () => {
+      mockOwnedItemById(dynamoItem());
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID, itemById: true })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(itemDto());
+      expect(bodyOf(result)).not.toHaveProperty('PK');
+      expect(bodyOf(result)).not.toHaveProperty('SK');
+      expect(bodyOf(result)).not.toHaveProperty('userId');
+      expect(bodyOf(result)).not.toHaveProperty('uploadUrl');
+      expect((bodyOf(result) as ClothingItem).originalImageUrl).toBe(
+        ORIGINAL_IMAGE_URL,
+      );
+
+      const query = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Query',
+      )?.[0] as Command;
+      expect(query.input.ExpressionAttributeValues).toEqual({
+        ':pk': `USER#${OWNER_ID}`,
+        ':sk': 'WARDROBE#',
+      });
+    });
+
+    it('finds the item in a later owned wardrobe', async () => {
+      const otherWardrobeId = 'wd_second00000';
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [
+              dynamoWardrobe(),
+              {
+                ...dynamoWardrobe(),
+                SK: `WARDROBE#${otherWardrobeId}`,
+                wardrobeId: otherWardrobeId,
+                name: 'Work',
+              },
+            ],
+          };
+        }
+        if (command._op === 'Get' && command.input.Key?.PK === `WARDROBE#${WARDROBE_ID}`) {
+          return {};
+        }
+        if (
+          command._op === 'Get' &&
+          command.input.Key?.PK === `WARDROBE#${otherWardrobeId}`
+        ) {
+          return {
+            Item: dynamoItem(OWNER_ID, {
+              PK: `WARDROBE#${otherWardrobeId}`,
+              wardrobeId: otherWardrobeId,
+            }),
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID, itemById: true })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(itemDto({ wardrobeId: otherWardrobeId }));
+    });
+
+    it('returns 404 ITEM_NOT_FOUND when the item is missing', async () => {
+      mockOwnedItemById(undefined);
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID, itemById: true })),
+      );
+
+      expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
+    });
+
+    it('returns 404 ITEM_NOT_FOUND for another user item id', async () => {
+      mockOwnedItemById(dynamoItem(OTHER_ID));
+
+      const result = asResult(
+        await handler(event({ method: 'GET', itemId: ITEM_ID, itemById: true })),
+      );
+
+      expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
+      const query = mockSend.mock.calls.find(
+        (call) => (call[0] as Command)._op === 'Query',
+      )?.[0] as Command;
+      expect(query.input.ExpressionAttributeValues?.[':pk']).toBe(
+        `USER#${OWNER_ID}`,
+      );
+    });
+
+    it('returns 401 UNAUTHENTICATED when the authorizer context is missing', async () => {
+      const result = asResult(
+        await handler(
+          event({
+            method: 'GET',
+            itemId: ITEM_ID,
+            itemById: true,
+            sub: null,
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 401, 'UNAUTHENTICATED');
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

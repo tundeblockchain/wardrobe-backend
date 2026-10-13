@@ -857,6 +857,15 @@ export class WardrobeStack extends cdk.Stack {
       authorizer: firebaseAuthorizer,
     });
 
+    // WARDROBE-173: web `/app/items/:id` has no wardrobeId. Same ClothingItem
+    // DTO as the nested GET — Flutter fields are unchanged.
+    httpApi.addRoutes({
+      path: '/items/{itemId}',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: itemsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/items/{itemId}/share',
       methods: [apigwv2.HttpMethod.POST],
@@ -867,6 +876,15 @@ export class WardrobeStack extends cdk.Stack {
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/outfits',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: outfitsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    // WARDROBE-173: web `/app/outfits` lists across the caller's wardrobes.
+    // Same `{ outfits }` wrapper and Outfit DTO as the nested list.
+    httpApi.addRoutes({
+      path: '/outfits',
+      methods: [apigwv2.HttpMethod.GET],
       integration: outfitsIntegration,
       authorizer: firebaseAuthorizer,
     });

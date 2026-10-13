@@ -365,6 +365,7 @@ A controlled category system will improve:
 POST   /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items/{itemId}
+GET    /items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
@@ -372,7 +373,7 @@ POST   /wardrobes/{wardrobeId}/items/{itemId}/move
 POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 ```
 
-Same-user move / copy (WARDROBE-118). See README “Move / copy across wardrobes (WARDROBE-118)” for the Flutter WARDROBE-119 contract. Move re-keys the Dynamo row from `WARDROBE#{source}` to `WARDROBE#{target}` (same `itemId`; S3 keys are user-scoped and stay attached). Copy writes a new `itemId` and **shares** the source image keys. `POST .../reprocess` retries a `FAILED` item (WARDROBE-123).
+`GET /items/{itemId}` is the web by-id read (WARDROBE-173); same ClothingItem DTO as the nested get. Same-user move / copy (WARDROBE-118). See README “Move / copy across wardrobes (WARDROBE-118)” for the Flutter WARDROBE-119 contract. Move re-keys the Dynamo row from `WARDROBE#{source}` to `WARDROBE#{target}` (same `itemId`; S3 keys are user-scoped and stay attached). Copy writes a new `itemId` and **shares** the source image keys. `POST .../reprocess` retries a `FAILED` item (WARDROBE-123).
 
 WARDROBE-153 replaces a clothing-item photo on the existing `PATCH /wardrobes/{wardrobeId}/items/{itemId}` body field `imageKey` (same owned-key rules as create). A new key updates `originalKey`, removes `processedKey` / `ai.processedImageKey` / `ai.backgroundRemoved`, and leaves other metadata, membership, and try-on renders untouched. The previous original and processed S3 objects are deleted best-effort after the write succeeds. The same key is a no-op `200`. Classify / colour are never re-run. When the caller is Premium and `BACKGROUND_REMOVAL_ENABLED` is on, a `PROCESS_WARDROBE_ITEM` job with `mode: "BACKGROUND_REMOVAL_ONLY"` is enqueued (`PENDING`, rolled back on enqueue failure). Outfit and share records resolve the live item image; they do not copy clothing-item photo keys. See README “Replace a clothing-item photo (WARDROBE-153)”.
 
@@ -579,6 +580,7 @@ Save Outfit
 ```http
 POST   /wardrobes/{wardrobeId}/outfits
 GET    /wardrobes/{wardrobeId}/outfits
+GET    /outfits
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}
 PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
@@ -1125,6 +1127,7 @@ DELETE /wardrobes/{wardrobeId}
 POST   /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items
 GET    /wardrobes/{wardrobeId}/items/{itemId}
+GET    /items/{itemId}
 PATCH  /wardrobes/{wardrobeId}/items/{itemId}
 DELETE /wardrobes/{wardrobeId}/items/{itemId}
 POST   /wardrobes/{wardrobeId}/items/{itemId}/reprocess
@@ -1132,13 +1135,14 @@ POST   /wardrobes/{wardrobeId}/items/{itemId}/move
 POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 ```
 
-Same-user move / copy (WARDROBE-118 / Flutter WARDROBE-119). See README. `POST .../reprocess` is WARDROBE-123.
+Same-user move / copy (WARDROBE-118 / Flutter WARDROBE-119). See README. `POST .../reprocess` is WARDROBE-123. `GET /items/{itemId}` is the web by-id read (WARDROBE-173); same ClothingItem DTO as the nested get.
 
 ### Outfits
 
 ```http
 POST   /wardrobes/{wardrobeId}/outfits
 GET    /wardrobes/{wardrobeId}/outfits
+GET    /outfits
 GET    /wardrobes/{wardrobeId}/outfits/{outfitId}
 PATCH  /wardrobes/{wardrobeId}/outfits/{outfitId}
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}
