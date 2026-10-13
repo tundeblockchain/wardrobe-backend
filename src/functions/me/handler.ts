@@ -1,13 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
-import {
-  deleteItem,
-  deleteManyBatched,
-  keys,
-  putItem,
-  queryByGsi1,
-  queryByPk,
-} from '../../shared/dynamodb';
+import { deleteItem, keys, putItem } from '../../shared/dynamodb';
 import {
   countUsage,
   ensureFreeEntitlement,
@@ -20,14 +13,11 @@ import { deleteFirebaseAuthUser } from '../../shared/firebase-admin-auth';
 import { errorResponse, ok, routeKey } from '../../shared/http';
 import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
-import { deleteObjectsUnderUserPrefix } from '../../shared/s3';
 import {
   AccountDeleteResult,
-  DynamoItem,
-  EntityType,
   SubscriptionCancelResult,
-  UserWipeResult,
 } from '../../shared/types';
+import { wipeUser } from '../../shared/wipe';
 import {
   CancelSubscriptionInput,
   cancelUserSubscription,
@@ -198,105 +188,6 @@ function isAccountRoute(key: string, rawPath: string): boolean {
   );
 }
 
-async function wipeUser(
-  userId: string,
-  options: {
-    keepAccount: boolean;
-    includeEntitlement?: boolean;
-    requireS3Success?: boolean;
-  },
-): Promise<UserWipeResult> {
-  const includeEntitlement =
-    options.includeEntitlement ?? !options.keepAccount;
-
-  const rows = await collectOwnedRows(userId, {
-    includeProfile: !options.keepAccount,
-    includeEntitlement,
-  });
-
-  await deleteManyBatched(rows.map(({ pk, sk }) => ({ pk, sk })));
-
-  const s3 = await deleteObjectsUnderUserPrefix(userId);
-  if (options.requireS3Success && s3.failed > 0) {
-    throw Errors.accountDeletionFailed(
-      'Account media could not be deleted. Please try again.',
-    );
-  }
-
-  return {
-    keepAccount: options.keepAccount,
-    deletedWardrobes: countEntity(rows, 'WARDROBE'),
-    deletedItems: countEntity(rows, 'ITEM'),
-    deletedOutfits: countEntity(rows, 'OUTFIT'),
-    deletedAiProfiles: countEntity(rows, 'AIPROFILE'),
-    deletedS3Objects: s3.deleted,
-    s3Failures: s3.failed,
-  };
-}
-
-interface RowKey {
-  pk: string;
-  sk: string;
-  entityType: EntityType;
-}
-
-async function collectOwnedRows(
-  userId: string,
-  options: { includeProfile: boolean; includeEntitlement: boolean },
-): Promise<RowKey[]> {
-  const rows: RowKey[] = [];
-  const seen = new Set<string>();
-
-  const add = (pk: string, sk: string, entityType: EntityType): void => {
-    const id = `${pk}\0${sk}`;
-    if (seen.has(id)) {
-      return;
-    }
-    seen.add(id);
-    rows.push({ pk, sk, entityType });
-  };
-
-  const userRows = await queryByPk(keys.userPk(userId));
-  for (const item of userRows) {
-    if (!ownedUserPartitionRow(item, userId)) {
-      continue;
-    }
-    if (!options.includeProfile && isProfileRow(item)) {
-      continue;
-    }
-    if (!options.includeEntitlement && isEntitlementRow(item)) {
-      continue;
-    }
-    add(item.PK, item.SK, item.entityType);
-  }
-
-  const shares = (
-    await queryByGsi1(keys.gsi1ShareUserPk(userId), {
-      skPrefix: keys.gsi1ShareSkPrefix,
-    })
-  ).filter((item) => item.entityType === 'SHARE' && item.userId === userId);
-  for (const share of shares) {
-    add(share.PK, share.SK, 'SHARE');
-  }
-
-  const wardrobes = userRows.filter(
-    (item) => item.entityType === 'WARDROBE' && item.userId === userId,
-  );
-
-  for (const wardrobe of wardrobes) {
-    const wardrobeId = String(wardrobe.wardrobeId);
-    const children = await queryByPk(keys.wardrobePk(wardrobeId));
-    for (const child of children) {
-      if (child.userId !== userId) {
-        continue;
-      }
-      add(child.PK, child.SK, child.entityType);
-    }
-  }
-
-  return rows;
-}
-
 async function writeDeletionMarker(userId: string): Promise<void> {
   const now = nowIso();
   await putItem({
@@ -310,32 +201,6 @@ async function writeDeletionMarker(userId: string): Promise<void> {
   });
 }
 
-function ownedUserPartitionRow(item: DynamoItem, userId: string): boolean {
-  if (item.PK !== keys.userPk(userId)) {
-    return false;
-  }
-  if (typeof item.userId === 'string' && item.userId !== userId) {
-    return false;
-  }
-  return true;
-}
-
-function isEntitlementRow(item: DynamoItem): boolean {
-  return (
-    item.entityType === 'ENTITLEMENT' ||
-    item.SK === keys.entitlementSk ||
-    item.SK.startsWith(`${keys.entitlementSkPrefix}#`)
-  );
-}
-
-function isProfileRow(item: DynamoItem): boolean {
-  return item.entityType === 'PROFILE' || item.SK === keys.profileSk;
-}
-
 function isAppErrorCode(error: unknown, code: AppError['code']): boolean {
   return error instanceof AppError && error.code === code;
-}
-
-function countEntity(rows: RowKey[], entityType: EntityType): number {
-  return rows.filter((row) => row.entityType === entityType).length;
 }

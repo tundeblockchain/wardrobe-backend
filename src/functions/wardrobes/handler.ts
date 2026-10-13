@@ -1,7 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
 import {
-  deleteItem,
   getOwnedWardrobe,
   keys,
   putItem,
@@ -20,6 +19,7 @@ import {
 import { newWardrobeId, nowIso } from '../../shared/ids';
 import { DynamoItem, Wardrobe } from '../../shared/types';
 import { requireNonEmptyString } from '../../shared/validation';
+import { wipeOwnedWardrobe } from '../../shared/wipe';
 import { resolveCoverObjectKeys, signCoverImageUrls } from './cover';
 
 interface CreateWardrobeBody {
@@ -120,9 +120,9 @@ async function updateWardrobe(
   return toWardrobe(updated);
 }
 
+/** WARDROBE-183: cascade items, outfits, renders, and related S3 objects. */
 async function deleteWardrobe(userId: string, wardrobeId: string): Promise<void> {
-  await getOwnedWardrobe(userId, wardrobeId);
-  await deleteItem(keys.userPk(userId), keys.wardrobeSk(wardrobeId));
+  await wipeOwnedWardrobe(userId, wardrobeId);
 }
 
 function toWardrobe(item: DynamoItem): Wardrobe {
