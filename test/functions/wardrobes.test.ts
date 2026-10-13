@@ -59,8 +59,14 @@ const COVER_ORIGINAL_KEY = `users/${OWNER_ID}/uploads/cover.jpg`;
 const COVER_PROCESSED_KEY = `users/${OWNER_ID}/items/item_first00001/processed.png`;
 const WARDROBE_OWN_KEY = `users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/cover.jpg`;
 
+const SIGNED_URLS: Record<string, string> = {
+  [WARDROBE_OWN_KEY]: 'https://signed.example/wardrobe-cover',
+  [COVER_PROCESSED_KEY]: 'https://signed.example/item-processed',
+  [COVER_ORIGINAL_KEY]: 'https://signed.example/item-original',
+};
+
 function signedUrl(key: string): string {
-  return `https://signed.example/${key}`;
+  return SIGNED_URLS[key] ?? 'https://signed.example/other';
 }
 
 interface Command {
@@ -431,7 +437,8 @@ describe('wardrobes handler (WARDROBE-5)', () => {
         updatedAt: '2026-09-03T18:35:00.000Z',
         coverImageUrl: signedUrl(WARDROBE_OWN_KEY),
       });
-      expect(JSON.stringify(body)).not.toContain(WARDROBE_OWN_KEY);
+      expect(JSON.stringify(body)).not.toContain('users/');
+      expect(body.wardrobes[0].coverImageUrl).not.toBe(WARDROBE_OWN_KEY);
       expect(body.wardrobes[0]).not.toHaveProperty('coverImageKey');
       expect(body.wardrobes[0]).not.toHaveProperty('imageKey');
       expect(body.wardrobes[0]).not.toHaveProperty('originalKey');
@@ -476,8 +483,9 @@ describe('wardrobes handler (WARDROBE-5)', () => {
         updatedAt: '2026-09-03T18:35:00.000Z',
         coverImageUrl: signedUrl(COVER_PROCESSED_KEY),
       });
-      expect(JSON.stringify(body)).not.toContain(COVER_PROCESSED_KEY);
-      expect(JSON.stringify(body)).not.toContain(COVER_ORIGINAL_KEY);
+      expect(JSON.stringify(body)).not.toContain('users/');
+      expect(body.wardrobes[0].coverImageUrl).not.toBe(COVER_PROCESSED_KEY);
+      expect(body.wardrobes[0].coverImageUrl).not.toBe(COVER_ORIGINAL_KEY);
       expect(body.wardrobes[0]).not.toHaveProperty('image');
       expect(body.wardrobes[0]).not.toHaveProperty('originalKey');
       expect(body.wardrobes[0]).not.toHaveProperty('processedKey');
