@@ -89,3 +89,28 @@ describe('WardrobePipelineStack support-contact synth env (WARDROBE-144)', () =>
     }
   });
 });
+
+describe('WardrobePipelineStack upload CORS synth env (WARDROBE-176)', () => {
+  test('bakes non-empty uploadAllowedOrigins into the Synth project', () => {
+    const template = synthPipeline({
+      ...pipelineSource,
+      uploadAllowedOrigins:
+        'https://wende-wardrobe.netlify.app,http://localhost:5173',
+    });
+
+    const env = synthStepEnv(template);
+    expect(env.UPLOAD_ALLOWED_ORIGINS).toBe(
+      'https://wende-wardrobe.netlify.app,http://localhost:5173',
+    );
+  });
+
+  test('omits UPLOAD_ALLOWED_ORIGINS when config does not set it', () => {
+    const template = synthPipeline(pipelineSource);
+    const env = synthStepEnv(template);
+
+    expect(env).not.toHaveProperty('UPLOAD_ALLOWED_ORIGINS');
+    for (const vars of codeBuildEnvMaps(template)) {
+      expect(vars).not.toHaveProperty('UPLOAD_ALLOWED_ORIGINS');
+    }
+  });
+});

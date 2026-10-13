@@ -77,6 +77,37 @@ describe('resolveAppConfig', () => {
     expect(config.supportContactRateLimit).toBeUndefined();
     expect(config.supportContactRateWindowSeconds).toBeUndefined();
   });
+
+  it('prefers CDK context over env for uploadAllowedOrigins', () => {
+    process.env.UPLOAD_ALLOWED_ORIGINS = 'https://env.example';
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'uploadAllowedOrigins'
+          ? 'https://ctx.example,https://deploy-preview-*--ctx.netlify.app'
+          : undefined,
+    });
+    expect(config.uploadAllowedOrigins).toBe(
+      'https://ctx.example,https://deploy-preview-*--ctx.netlify.app',
+    );
+  });
+
+  it('reads uploadAllowedOrigins from env when context is empty', () => {
+    process.env.UPLOAD_ALLOWED_ORIGINS =
+      'https://env.example,http://localhost:5173';
+    const config = resolveAppConfig({ tryGetContext: () => undefined });
+    expect(config.uploadAllowedOrigins).toBe(
+      'https://env.example,http://localhost:5173',
+    );
+  });
+
+  it('leaves uploadAllowedOrigins undefined when context and env are empty', () => {
+    delete process.env.UPLOAD_ALLOWED_ORIGINS;
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'uploadAllowedOrigins' ? '  ' : undefined,
+    });
+    expect(config.uploadAllowedOrigins).toBeUndefined();
+  });
 });
 
 describe('pipeline / CI helpers', () => {

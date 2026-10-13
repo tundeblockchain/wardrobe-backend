@@ -23,6 +23,7 @@
     "supportContactAllowedOrigins": "",
     "supportContactRateLimit": "5",
     "supportContactRateWindowSeconds": "3600",
+    "uploadAllowedOrigins": "",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/core:target-partitions": ["aws"],

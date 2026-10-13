@@ -53,6 +53,9 @@ export class WardrobePipelineStack extends cdk.Stack {
       synthEnv.SUPPORT_CONTACT_RATE_WINDOW_SECONDS =
         config.supportContactRateWindowSeconds;
     }
+    if (config.uploadAllowedOrigins) {
+      synthEnv.UPLOAD_ALLOWED_ORIGINS = config.uploadAllowedOrigins;
+    }
 
     const synth = new CodeBuildStep('Synth', {
       input: source,

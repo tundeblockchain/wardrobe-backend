@@ -7,6 +7,7 @@ export interface AppConfig {
   supportContactAllowedOrigins?: string;
   supportContactRateLimit?: string;
   supportContactRateWindowSeconds?: string;
+  uploadAllowedOrigins?: string;
 }
 
 interface ContextReader {
@@ -56,6 +57,11 @@ export function resolveAppConfig(node: ContextReader): AppConfig {
       node,
       'supportContactRateWindowSeconds',
       process.env.SUPPORT_CONTACT_RATE_WINDOW_SECONDS,
+    ),
+    uploadAllowedOrigins: readString(
+      node,
+      'uploadAllowedOrigins',
+      process.env.UPLOAD_ALLOWED_ORIGINS,
     ),
   };
 }

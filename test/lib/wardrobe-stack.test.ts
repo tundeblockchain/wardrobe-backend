@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { GENERIC_MODEL_CATALOG_VERSION } from '../../src/functions/ai-profiles/catalog';
+import { DEFAULT_UPLOAD_ALLOWED_ORIGINS } from '../../lib/upload-cors';
 import { WardrobeStack } from '../../lib/wardrobe-stack';
 
 jest.setTimeout(180_000);
@@ -113,6 +114,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
   test('HTTP API CORS exposes Retry-After on 429 RATE_LIMITED', () => {
     template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
       CorsConfiguration: Match.objectLike({
+        AllowOrigins: ['*'],
         ExposeHeaders: ['Retry-After'],
       }),
     });
@@ -1101,7 +1103,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     );
   });
 
-  test('media bucket CORS stays PUT/GET only and is not a public website', () => {
+  test('media bucket CORS is PUT-only for configured origins and is not a public website', () => {
     template.hasResourceProperties('AWS::S3::Bucket', {
       PublicAccessBlockConfiguration: {
         BlockPublicAcls: true,
@@ -1113,9 +1115,9 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       CorsConfiguration: {
         CorsRules: [
           Match.objectLike({
-            AllowedMethods: ['PUT', 'GET'],
-            AllowedOrigins: ['*'],
-            AllowedHeaders: ['*'],
+            AllowedMethods: ['PUT'],
+            AllowedOrigins: [...DEFAULT_UPLOAD_ALLOWED_ORIGINS],
+            AllowedHeaders: ['Content-Type'],
             ExposedHeaders: ['ETag'],
             MaxAge: 3000,
           }),
@@ -1129,6 +1131,88 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     for (const bucket of buckets) {
       expect(bucket.Properties?.AccessControl).toBeUndefined();
     }
+  });
+
+  test('upload buckets allow only the configured browser origins over PUT (WARDROBE-176)', () => {
+    const uploadCors = {
+      AllowedMethods: ['PUT'],
+      AllowedOrigins: [...DEFAULT_UPLOAD_ALLOWED_ORIGINS],
+      AllowedHeaders: ['Content-Type'],
+      ExposedHeaders: ['ETag'],
+      MaxAge: 3000,
+    };
+
+    const buckets = Object.values(
+      template.findResources('AWS::S3::Bucket'),
+    ) as Array<{
+      Properties?: {
+        CorsConfiguration?: { CorsRules?: Array<Record<string, unknown>> };
+      };
+    }>;
+    const uploadBuckets = buckets.filter((bucket) =>
+      bucket.Properties?.CorsConfiguration?.CorsRules?.some(
+        (rule) =>
+          Array.isArray(rule.AllowedMethods) &&
+          (rule.AllowedMethods as string[]).includes('PUT'),
+      ),
+    );
+
+    expect(uploadBuckets).toHaveLength(1);
+    expect(uploadBuckets[0]?.Properties?.CorsConfiguration?.CorsRules).toEqual([
+      uploadCors,
+    ]);
+
+    for (const bucket of uploadBuckets) {
+      const rules = bucket.Properties?.CorsConfiguration?.CorsRules ?? [];
+      for (const rule of rules) {
+        expect(rule.AllowedMethods).toEqual(['PUT']);
+        expect(rule.AllowedOrigins).toEqual([...DEFAULT_UPLOAD_ALLOWED_ORIGINS]);
+        expect(rule.AllowedOrigins).not.toContain('*');
+      }
+    }
+
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: Match.objectLike({
+        AllowOrigins: ['*'],
+      }),
+    });
+  });
+
+  test('upload CORS origins come from CDK context uploadAllowedOrigins', () => {
+    const custom = synthTemplate('dev-upload-origins', {
+      uploadAllowedOrigins:
+        'https://custom.example,https://deploy-preview-*--custom.netlify.app',
+    });
+
+    const buckets = Object.values(
+      custom.findResources('AWS::S3::Bucket'),
+    ) as Array<{
+      Properties?: {
+        CorsConfiguration?: { CorsRules?: Array<Record<string, unknown>> };
+      };
+    }>;
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]?.Properties?.CorsConfiguration?.CorsRules).toEqual([
+      {
+        AllowedMethods: ['PUT'],
+        AllowedOrigins: [
+          'https://custom.example',
+          'https://deploy-preview-*--custom.netlify.app',
+        ],
+        AllowedHeaders: ['Content-Type'],
+        ExposedHeaders: ['ETag'],
+        MaxAge: 3000,
+      },
+    ]);
+    expect(
+      buckets[0]?.Properties?.CorsConfiguration?.CorsRules?.[0]?.AllowedOrigins,
+    ).not.toContain('*');
+  });
+
+  test('upload CORS rejects a wildcard-all origin', () => {
+    expect(() =>
+      synthTemplate('dev-upload-star', { uploadAllowedOrigins: '*' }),
+    ).toThrow(/uploadAllowedOrigins must not include "\*"/);
   });
 
   test('MeFn is owner-auth and can delete Dynamo rows plus S3 under users/{uid}/', () => {
