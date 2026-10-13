@@ -2,6 +2,7 @@ import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-l
 import { DynamoItem, Wardrobe } from '../../src/shared/types';
 
 const mockSend = jest.fn();
+const mockS3Send = jest.fn();
 const mockGetSignedUrl = jest.fn();
 
 jest.mock('@aws-sdk/client-dynamodb', () => ({
@@ -13,14 +14,24 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 jest.mock('@aws-sdk/client-s3', () => ({
-  S3Client: jest.fn(() => ({})),
+  S3Client: jest.fn(() => ({ send: mockS3Send })),
   GetObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
     _op: 'GetObject',
     input,
   })),
   PutObjectCommand: jest.fn(),
-  ListObjectsV2Command: jest.fn(),
-  DeleteObjectsCommand: jest.fn(),
+  ListObjectsV2Command: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'ListObjectsV2',
+    input,
+  })),
+  DeleteObjectsCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'DeleteObjects',
+    input,
+  })),
+  DeleteObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'DeleteObject',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/lib-dynamodb', () => ({
@@ -47,6 +58,10 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
     _op: 'Delete',
     input,
   })),
+  BatchWriteCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'BatchWrite',
+    input,
+  })),
 }));
 
 import { handler } from '../../src/functions/wardrobes/handler';
@@ -55,9 +70,24 @@ const ISO8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
 const WARDROBE_ID = 'wd_abc123xyz0';
+const OTHER_WARDROBE_ID = 'wd_other000001';
+const ITEM_ID = 'item_xyz123abcd';
+const OTHER_ITEM_ID = 'item_keep000001';
+const OUTFIT_ID = 'outfit_qwerty12';
+const OTHER_OUTFIT_ID = 'outfit_keep0001';
+const CROSS_OUTFIT_ID = 'outfit_cross001';
+const WORN_ON = '2026-09-18';
+const SHARE_TOKEN = 'shr_cascade000000000001';
+const OTHER_SHARE_TOKEN = 'shr_keep00000000000001';
 const COVER_ORIGINAL_KEY = `users/${OWNER_ID}/uploads/cover.jpg`;
 const COVER_PROCESSED_KEY = `users/${OWNER_ID}/items/item_first00001/processed.png`;
 const WARDROBE_OWN_KEY = `users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/cover.jpg`;
+const ITEM_ORIGINAL_KEY = `users/${OWNER_ID}/uploads/photo.jpg`;
+const ITEM_PROCESSED_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/processed.png`;
+const ITEM_RENDER_KEY = `users/${OWNER_ID}/items/${ITEM_ID}/renders/rnd_1.png`;
+const OUTFIT_RENDER_KEY = `users/${OWNER_ID}/outfits/${OUTFIT_ID}/renders/rnd_2.png`;
+const OTHER_ITEM_ORIGINAL_KEY = `users/${OWNER_ID}/uploads/keep.jpg`;
+const OTHER_USER_KEY = `users/${OTHER_ID}/uploads/theirs.jpg`;
 
 const SIGNED_URLS: Record<string, string> = {
   [WARDROBE_OWN_KEY]: 'https://signed.example/wardrobe-cover',
@@ -70,15 +100,31 @@ function signedUrl(key: string): string {
 }
 
 interface Command {
-  _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete';
+  _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete' | 'BatchWrite';
   input: {
     TableName?: string;
     Item?: DynamoItem;
     Key?: { PK: string; SK: string };
     KeyConditionExpression?: string;
     ExpressionAttributeValues?: Record<string, unknown>;
+    ExclusiveStartKey?: Record<string, unknown>;
+    IndexName?: string;
     UpdateExpression?: string;
     ExpressionAttributeNames?: Record<string, string>;
+    RequestItems?: Record<
+      string,
+      Array<{ DeleteRequest?: { Key?: { PK: string; SK: string } } }>
+    >;
+  };
+}
+
+interface S3Command {
+  _op: 'ListObjectsV2' | 'DeleteObjects';
+  input: {
+    Bucket?: string;
+    Prefix?: string;
+    ContinuationToken?: string;
+    Delete?: { Objects?: Array<{ Key: string }> };
   };
 }
 
@@ -218,6 +264,106 @@ function dynamoItem(
   };
 }
 
+function dynamoOutfit(
+  userId: string,
+  overrides: Partial<DynamoItem> = {},
+): DynamoItem {
+  const wardrobeId = String(overrides.wardrobeId ?? WARDROBE_ID);
+  const outfitId = String(overrides.outfitId ?? OUTFIT_ID);
+  return {
+    PK: `WARDROBE#${wardrobeId}`,
+    SK: `OUTFIT#${outfitId}`,
+    entityType: 'OUTFIT',
+    userId,
+    wardrobeId,
+    outfitId,
+    name: 'Friday Night',
+    items: [{ itemId: ITEM_ID, slot: 'TOP' }],
+    render: { status: 'READY', imageKey: OUTFIT_RENDER_KEY, aiProfileId: 'ap_1' },
+    renderHistory: [
+      {
+        imageKey: OUTFIT_RENDER_KEY,
+        createdAt: '2026-09-18T19:00:00.000Z',
+        aiProfileId: 'ap_1',
+      },
+    ],
+    createdAt: '2026-09-03T18:50:00.000Z',
+    updatedAt: '2026-09-03T18:50:00.000Z',
+    ...overrides,
+  };
+}
+
+function dynamoWornOn(
+  userId: string,
+  overrides: Partial<DynamoItem> = {},
+): DynamoItem {
+  const wardrobeId = String(overrides.wardrobeId ?? WARDROBE_ID);
+  const outfitId = String(overrides.outfitId ?? OUTFIT_ID);
+  const wornOn = String(overrides.wornOn ?? WORN_ON);
+  return {
+    PK: `WARDROBE#${wardrobeId}`,
+    SK: `OUTFIT#${outfitId}#WORN#${wornOn}`,
+    entityType: 'WORN_ON',
+    userId,
+    wardrobeId,
+    outfitId,
+    wornOn,
+    createdAt: '2026-09-18T19:10:00.000Z',
+    updatedAt: '2026-09-18T19:10:00.000Z',
+    ...overrides,
+  };
+}
+
+function dynamoShopping(userId: string): DynamoItem {
+  return {
+    PK: `WARDROBE#${WARDROBE_ID}`,
+    SK: `SHOPPING#${ITEM_ID}`,
+    entityType: 'SHOPPING_CACHE',
+    userId,
+    wardrobeId: WARDROBE_ID,
+    itemId: ITEM_ID,
+    createdAt: '2026-09-19T00:00:00.000Z',
+    updatedAt: '2026-09-19T00:00:00.000Z',
+  };
+}
+
+function dynamoShare(
+  userId: string,
+  overrides: Partial<DynamoItem> = {},
+): DynamoItem {
+  const token = String(overrides.token ?? SHARE_TOKEN);
+  return {
+    PK: `SHARE#${token}`,
+    SK: 'SHARE',
+    GSI1PK: `SHARE#USER#${userId}`,
+    GSI1SK: `SHARE#${token}`,
+    entityType: 'SHARE',
+    userId,
+    wardrobeId: WARDROBE_ID,
+    resourceType: 'ITEM',
+    itemId: ITEM_ID,
+    token,
+    createdAt: '2026-09-19T12:00:00.000Z',
+    updatedAt: '2026-09-19T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function cascadeItem(userId = OWNER_ID): DynamoItem {
+  return dynamoItem(userId, {
+    itemId: ITEM_ID,
+    originalKey: ITEM_ORIGINAL_KEY,
+    processedKey: ITEM_PROCESSED_KEY,
+    renderHistory: [
+      {
+        imageKey: ITEM_RENDER_KEY,
+        createdAt: '2026-09-18T18:00:00.000Z',
+        aiProfileId: 'ap_1',
+      },
+    ],
+  });
+}
+
 function mockListWardrobes(options: {
   wardrobes: DynamoItem[];
   itemsByWardrobe?: Record<string, DynamoItem[]>;
@@ -237,6 +383,124 @@ function mockListWardrobes(options: {
     }
     throw new Error(`unexpected query ${pk} ${sk}`);
   });
+}
+
+function mockDeleteCascade(options: {
+  wardrobe?: DynamoItem;
+  children?: DynamoItem[];
+  otherWardrobes?: DynamoItem[];
+  otherChildren?: Record<string, DynamoItem[]>;
+  shares?: DynamoItem[];
+  s3ByPrefix?: Record<string, string[]>;
+  paginateChildren?: boolean;
+}): void {
+  const wardrobe = options.wardrobe ?? dynamoWardrobe(OWNER_ID);
+  const children = options.children ?? [];
+  const otherWardrobes = options.otherWardrobes ?? [];
+  const otherChildren = options.otherChildren ?? {};
+  const shares = options.shares ?? [];
+  const s3ByPrefix = options.s3ByPrefix ?? {};
+
+  mockSend.mockImplementation(async (command: Command) => {
+    if (command._op === 'Get') {
+      if (
+        command.input.Key?.PK === `USER#${OWNER_ID}` &&
+        command.input.Key?.SK === `WARDROBE#${WARDROBE_ID}`
+      ) {
+        return { Item: wardrobe };
+      }
+      return {};
+    }
+    if (command._op === 'Query') {
+      const pk = String(command.input.ExpressionAttributeValues?.[':pk'] ?? '');
+      const sk = String(command.input.ExpressionAttributeValues?.[':sk'] ?? '');
+      if (command.input.IndexName === 'GSI1') {
+        return { Items: shares };
+      }
+      if (pk === `USER#${OWNER_ID}` && sk === 'WARDROBE#') {
+        return { Items: [wardrobe, ...otherWardrobes] };
+      }
+      if (pk === `WARDROBE#${WARDROBE_ID}`) {
+        if (options.paginateChildren && children.length > 1) {
+          if (!command.input.ExclusiveStartKey) {
+            return {
+              Items: [children[0]],
+              LastEvaluatedKey: {
+                PK: children[0].PK,
+                SK: children[0].SK,
+              },
+            };
+          }
+          return { Items: children.slice(1) };
+        }
+        return { Items: children };
+      }
+      if (pk.startsWith('WARDROBE#') && !sk) {
+        const wardrobeId = pk.slice('WARDROBE#'.length);
+        return { Items: otherChildren[wardrobeId] ?? [] };
+      }
+      return { Items: [] };
+    }
+    if (command._op === 'BatchWrite' || command._op === 'Delete') {
+      return {};
+    }
+    throw new Error(`unexpected op ${command._op}`);
+  });
+
+  mockS3Send.mockImplementation(async (command: S3Command) => {
+    if (command._op === 'ListObjectsV2') {
+      const prefix = command.input.Prefix ?? '';
+      const keys = (s3ByPrefix[prefix] ?? []).filter(
+        (key) => key.startsWith(prefix) && key.length > prefix.length,
+      );
+      return { Contents: keys.map((Key) => ({ Key })), IsTruncated: false };
+    }
+    if (command._op === 'DeleteObjects') {
+      return { Deleted: command.input.Delete?.Objects ?? [] };
+    }
+    throw new Error(`unexpected S3 op ${command._op}`);
+  });
+}
+
+function deletedKeys(): Array<{ PK: string; SK: string }> {
+  const keys: Array<{ PK: string; SK: string }> = [];
+  for (const call of mockSend.mock.calls) {
+    const command = call[0] as Command;
+    if (command._op === 'Delete' && command.input.Key) {
+      keys.push(command.input.Key);
+    }
+    if (command._op === 'BatchWrite') {
+      for (const requests of Object.values(command.input.RequestItems ?? {})) {
+        for (const request of requests) {
+          const key = request.DeleteRequest?.Key;
+          if (key) {
+            keys.push(key);
+          }
+        }
+      }
+    }
+  }
+  return keys;
+}
+
+function listedS3Prefixes(): string[] {
+  return mockS3Send.mock.calls
+    .map((call) => call[0] as S3Command)
+    .filter((command) => command._op === 'ListObjectsV2')
+    .map((command) => command.input.Prefix ?? '');
+}
+
+function deletedS3Keys(): string[] {
+  const keys: string[] = [];
+  for (const call of mockS3Send.mock.calls) {
+    const command = call[0] as S3Command;
+    if (command._op === 'DeleteObjects') {
+      keys.push(
+        ...(command.input.Delete?.Objects ?? []).map((object) => object.Key),
+      );
+    }
+  }
+  return keys;
 }
 
 describe('wardrobes handler (WARDROBE-5)', () => {
@@ -664,15 +928,43 @@ describe('wardrobes handler (WARDROBE-5)', () => {
   });
 
   describe('DELETE /wardrobes/{wardrobeId}', () => {
-    it('deletes an owned wardrobe and returns 204', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
-        if (command._op === 'Get') {
-          return { Item: dynamoWardrobe(OWNER_ID) };
-        }
-        if (command._op === 'Delete') {
-          return {};
-        }
-        throw new Error(`unexpected op ${command._op}`);
+    it('cascades items, outfits, renders, and S3 objects and returns 204', async () => {
+      const wardrobe = dynamoWardrobe(OWNER_ID, {
+        coverImageKey: WARDROBE_OWN_KEY,
+      });
+      const item = cascadeItem();
+      const outfit = dynamoOutfit(OWNER_ID);
+      const wornOn = dynamoWornOn(OWNER_ID);
+      const shopping = dynamoShopping(OWNER_ID);
+      const otherWardrobe = dynamoWardrobe(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        name: 'Keep Me',
+      });
+      const crossOutfit = dynamoOutfit(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        outfitId: CROSS_OUTFIT_ID,
+        items: [{ itemId: ITEM_ID, slot: 'TOP' }],
+        render: undefined,
+        renderHistory: undefined,
+      });
+      const share = dynamoShare(OWNER_ID);
+
+      mockDeleteCascade({
+        wardrobe,
+        children: [item, outfit, wornOn, shopping],
+        otherWardrobes: [otherWardrobe],
+        otherChildren: { [OTHER_WARDROBE_ID]: [crossOutfit] },
+        shares: [share],
+        s3ByPrefix: {
+          [`users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`]: [WARDROBE_OWN_KEY],
+          [`users/${OWNER_ID}/items/${ITEM_ID}/`]: [
+            ITEM_PROCESSED_KEY,
+            ITEM_RENDER_KEY,
+          ],
+          [`users/${OWNER_ID}/outfits/${OUTFIT_ID}/`]: [OUTFIT_RENDER_KEY],
+          [`users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`]: [],
+        },
       });
 
       const result = asResult(
@@ -681,14 +973,241 @@ describe('wardrobes handler (WARDROBE-5)', () => {
 
       expect(result.statusCode).toBe(204);
       expect(result.body).toBe('');
+      expect(result.body).not.toContain('{');
 
-      const del = mockSend.mock.calls.find(
-        (call) => (call[0] as Command)._op === 'Delete',
-      )?.[0] as Command;
-      expect(del.input.Key).toEqual({
+      expect(deletedKeys()).toEqual(
+        expect.arrayContaining([
+          { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `OUTFIT#${OUTFIT_ID}` },
+          {
+            PK: `WARDROBE#${WARDROBE_ID}`,
+            SK: `OUTFIT#${OUTFIT_ID}#WORN#${WORN_ON}`,
+          },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `SHOPPING#${ITEM_ID}` },
+          {
+            PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+            SK: `OUTFIT#${CROSS_OUTFIT_ID}`,
+          },
+          { PK: `SHARE#${SHARE_TOKEN}`, SK: 'SHARE' },
+        ]),
+      );
+      expect(deletedKeys()).not.toContainEqual({
         PK: `USER#${OWNER_ID}`,
-        SK: `WARDROBE#${WARDROBE_ID}`,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
       });
+
+      expect(listedS3Prefixes()).toEqual(
+        expect.arrayContaining([
+          `users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`,
+          `users/${OWNER_ID}/items/${ITEM_ID}/`,
+          `users/${OWNER_ID}/outfits/${OUTFIT_ID}/`,
+          `users/${OWNER_ID}/outfits/${CROSS_OUTFIT_ID}/`,
+        ]),
+      );
+      expect(listedS3Prefixes()).not.toContain(`users/${OWNER_ID}/`);
+      expect(listedS3Prefixes().some((prefix) => prefix.includes(OTHER_ID))).toBe(
+        false,
+      );
+
+      expect(deletedS3Keys()).toEqual(
+        expect.arrayContaining([
+          WARDROBE_OWN_KEY,
+          ITEM_PROCESSED_KEY,
+          ITEM_RENDER_KEY,
+          OUTFIT_RENDER_KEY,
+          ITEM_ORIGINAL_KEY,
+        ]),
+      );
+      expect(deletedS3Keys()).not.toContain(OTHER_ITEM_ORIGINAL_KEY);
+      expect(deletedS3Keys()).not.toContain(OTHER_USER_KEY);
+    });
+
+    it('leaves other wardrobes and other users untouched', async () => {
+      const otherWardrobe = dynamoWardrobe(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        name: 'Keep Me',
+      });
+      const otherItem = dynamoItem(OWNER_ID, {
+        itemId: OTHER_ITEM_ID,
+        wardrobeId: OTHER_WARDROBE_ID,
+        PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        originalKey: OTHER_ITEM_ORIGINAL_KEY,
+      });
+      const otherOutfit = dynamoOutfit(OWNER_ID, {
+        wardrobeId: OTHER_WARDROBE_ID,
+        outfitId: OTHER_OUTFIT_ID,
+        items: [{ itemId: OTHER_ITEM_ID, slot: 'TOP' }],
+        render: undefined,
+        renderHistory: undefined,
+      });
+      const otherShare = dynamoShare(OWNER_ID, {
+        token: OTHER_SHARE_TOKEN,
+        wardrobeId: OTHER_WARDROBE_ID,
+        itemId: OTHER_ITEM_ID,
+      });
+
+      mockDeleteCascade({
+        wardrobe: dynamoWardrobe(OWNER_ID),
+        children: [cascadeItem(), dynamoOutfit(OWNER_ID)],
+        otherWardrobes: [otherWardrobe],
+        otherChildren: { [OTHER_WARDROBE_ID]: [otherItem, otherOutfit] },
+        shares: [otherShare],
+        s3ByPrefix: {
+          [`users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`]: [],
+          [`users/${OWNER_ID}/items/${ITEM_ID}/`]: [ITEM_PROCESSED_KEY],
+          [`users/${OWNER_ID}/outfits/${OUTFIT_ID}/`]: [OUTFIT_RENDER_KEY],
+        },
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'DELETE', wardrobeId: WARDROBE_ID })),
+      );
+
+      expect(result.statusCode).toBe(204);
+      expect(deletedKeys()).toEqual(
+        expect.arrayContaining([
+          { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `OUTFIT#${OUTFIT_ID}` },
+        ]),
+      );
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+      });
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        SK: `ITEM#${OTHER_ITEM_ID}`,
+      });
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `WARDROBE#${OTHER_WARDROBE_ID}`,
+        SK: `OUTFIT#${OTHER_OUTFIT_ID}`,
+      });
+      expect(deletedKeys()).not.toContainEqual({
+        PK: `SHARE#${OTHER_SHARE_TOKEN}`,
+        SK: 'SHARE',
+      });
+      expect(
+        deletedKeys().some(
+          (key) => key.PK.includes(OTHER_ID) || key.SK.includes(OTHER_ID),
+        ),
+      ).toBe(false);
+
+      const queriedPks = mockSend.mock.calls
+        .map((call) => call[0] as Command)
+        .filter((command) => command._op === 'Query')
+        .map(
+          (command) =>
+            command.input.ExpressionAttributeValues?.[':pk'] ??
+            command.input.Key?.PK,
+        );
+      expect(queriedPks).not.toContain(`USER#${OTHER_ID}`);
+      expect(listedS3Prefixes()).not.toContain(
+        `users/${OWNER_ID}/items/${OTHER_ITEM_ID}/`,
+      );
+      expect(listedS3Prefixes()).not.toContain(
+        `users/${OWNER_ID}/outfits/${OTHER_OUTFIT_ID}/`,
+      );
+      expect(deletedS3Keys()).not.toContain(OTHER_ITEM_ORIGINAL_KEY);
+      expect(deletedS3Keys()).not.toContain(OTHER_USER_KEY);
+    });
+
+    it('pages Dynamo children so a large wardrobe is fully deleted', async () => {
+      const first = cascadeItem();
+      const second = dynamoOutfit(OWNER_ID);
+      mockDeleteCascade({
+        children: [first, second],
+        paginateChildren: true,
+        s3ByPrefix: {
+          [`users/${OWNER_ID}/wardrobes/${WARDROBE_ID}/`]: [],
+          [`users/${OWNER_ID}/items/${ITEM_ID}/`]: [ITEM_PROCESSED_KEY],
+          [`users/${OWNER_ID}/outfits/${OUTFIT_ID}/`]: [OUTFIT_RENDER_KEY],
+        },
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'DELETE', wardrobeId: WARDROBE_ID })),
+      );
+
+      expect(result.statusCode).toBe(204);
+      expect(deletedKeys()).toEqual(
+        expect.arrayContaining([
+          { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `ITEM#${ITEM_ID}` },
+          { PK: `WARDROBE#${WARDROBE_ID}`, SK: `OUTFIT#${OUTFIT_ID}` },
+        ]),
+      );
+      const childQueries = mockSend.mock.calls
+        .map((call) => call[0] as Command)
+        .filter(
+          (command) =>
+            command._op === 'Query' &&
+            command.input.ExpressionAttributeValues?.[':pk'] ===
+              `WARDROBE#${WARDROBE_ID}`,
+        );
+      expect(childQueries).toHaveLength(2);
+      expect(childQueries[1]?.input.ExclusiveStartKey).toEqual({
+        PK: first.PK,
+        SK: first.SK,
+      });
+    });
+
+    it('chunks Dynamo deletes at the BatchWriteItem limit', async () => {
+      const manyItems = Array.from({ length: 26 }, (_, index) =>
+        dynamoItem(OWNER_ID, {
+          itemId: `item_batch${String(index).padStart(7, '0')}`,
+          originalKey: `users/${OWNER_ID}/uploads/batch-${index}.jpg`,
+        }),
+      );
+      mockDeleteCascade({
+        children: manyItems,
+        s3ByPrefix: {},
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'DELETE', wardrobeId: WARDROBE_ID })),
+      );
+
+      expect(result.statusCode).toBe(204);
+      const batches = mockSend.mock.calls
+        .map((call) => call[0] as Command)
+        .filter((command) => command._op === 'BatchWrite');
+      expect(batches.length).toBeGreaterThanOrEqual(2);
+      expect(
+        batches.every((batch) => {
+          const requests = Object.values(batch.input.RequestItems ?? {})[0] ?? [];
+          return requests.length <= 25;
+        }),
+      ).toBe(true);
+      expect(deletedKeys()).toHaveLength(27);
+    });
+
+    it('returns 204 with an empty body when the wardrobe has no children', async () => {
+      mockDeleteCascade({ children: [] });
+
+      const result = asResult(
+        await handler(event({ method: 'DELETE', wardrobeId: WARDROBE_ID })),
+      );
+
+      expect(result.statusCode).toBe(204);
+      expect(result.body).toBe('');
+      expect(deletedKeys()).toEqual([
+        { PK: `USER#${OWNER_ID}`, SK: `WARDROBE#${WARDROBE_ID}` },
+      ]);
+    });
+
+    it('returns 401 UNAUTHENTICATED when deleting without an authorizer', async () => {
+      const result = asResult(
+        await handler(
+          event({ method: 'DELETE', wardrobeId: WARDROBE_ID, sub: null }),
+        ),
+      );
+
+      expectEnvelope(result, 401, 'UNAUTHENTICATED');
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockS3Send).not.toHaveBeenCalled();
     });
 
     it('returns 404 WARDROBE_NOT_FOUND when deleting a missing wardrobe', async () => {
@@ -700,8 +1219,37 @@ describe('wardrobes handler (WARDROBE-5)', () => {
 
       expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
       expect(
-        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Delete'),
+        mockSend.mock.calls.some(
+          (call) =>
+            (call[0] as Command)._op === 'Delete' ||
+            (call[0] as Command)._op === 'BatchWrite',
+        ),
       ).toBe(false);
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 WARDROBE_NOT_FOUND when deleting another user wardrobe', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'DELETE',
+            wardrobeId: WARDROBE_ID,
+            sub: OTHER_ID,
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
+      const get = mockSend.mock.calls[0][0] as Command;
+      expect(get.input.Key?.PK).toBe(`USER#${OTHER_ID}`);
+      expect(
+        mockSend.mock.calls.some(
+          (call) => (call[0] as Command)._op === 'BatchWrite',
+        ),
+      ).toBe(false);
+      expect(mockS3Send).not.toHaveBeenCalled();
     });
   });
 

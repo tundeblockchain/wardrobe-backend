@@ -93,16 +93,37 @@ export function processedImageObjectKey(userId: string, itemId: string): string 
 }
 
 /**
- * Unique Virtual Try On photos for a clothing item (WARDROBE-149 / 150).
- * `users/{uid}/items/{itemId}/renders/` — not `processed.png`.
+ * Owner-scoped prefix for a clothing item's processed image and try-ons.
+ * `users/{uid}/items/{itemId}/` — includes `processed.png` and `renders/`.
  */
-export function itemRenderPrefix(userId: string, itemId: string): string {
+export function itemMediaPrefix(userId: string, itemId: string): string {
   const uid = userId.trim();
   const id = itemId.trim();
   if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
     throw Errors.validation('itemId is not a valid object-key segment.');
   }
-  return `users/${uid}/items/${id}/renders/`;
+  return `users/${uid}/items/${id}/`;
+}
+
+/**
+ * Unique Virtual Try On photos for a clothing item (WARDROBE-149 / 150).
+ * `users/{uid}/items/{itemId}/renders/` — not `processed.png`.
+ */
+export function itemRenderPrefix(userId: string, itemId: string): string {
+  return `${itemMediaPrefix(userId, itemId)}renders/`;
+}
+
+/**
+ * Owner-scoped prefix for a wardrobe cover photo (WARDROBE-178 / 183).
+ * `users/{uid}/wardrobes/{wardrobeId}/`.
+ */
+export function wardrobeMediaPrefix(userId: string, wardrobeId: string): string {
+  const uid = userId.trim();
+  const id = wardrobeId.trim();
+  if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
+    throw Errors.validation('wardrobeId is not a valid object-key segment.');
+  }
+  return `users/${uid}/wardrobes/${id}/`;
 }
 
 /**
@@ -297,6 +318,9 @@ export interface DeleteUserPrefixResult {
   failed: number;
 }
 
+/** S3 DeleteObjects limit. */
+export const S3_DELETE_OBJECTS_LIMIT = 1000;
+
 /**
  * Best-effort delete of every object under users/{uid}/.
  * Logs and continues on individual object or list failures.
@@ -364,9 +388,8 @@ export async function deleteObjectsUnderPrefix(
       return { deleted, failed: failed + 1 };
     }
 
-    const chunkSize = 1000;
-    for (let i = 0; i < keys.length; i += chunkSize) {
-      const chunk = keys.slice(i, i + chunkSize);
+    for (let i = 0; i < keys.length; i += S3_DELETE_OBJECTS_LIMIT) {
+      const chunk = keys.slice(i, i + S3_DELETE_OBJECTS_LIMIT);
       try {
         const result = await s3.send(
           new DeleteObjectsCommand({
@@ -396,6 +419,58 @@ export async function deleteObjectsUnderPrefix(
       }
     }
   } while (continuationToken);
+
+  return { deleted, failed };
+}
+
+/**
+ * Best-effort batched DeleteObjects for explicit keys (uploads, leftover
+ * cover keys). Dedupes, skips blanks, and chunks at the S3 1000-key limit.
+ */
+export async function deleteObjectsByKeys(
+  objectKeys: string[],
+  logContext = 'object wipe',
+): Promise<DeleteUserPrefixResult> {
+  const unique = [
+    ...new Set(
+      objectKeys
+        .map((key) => key.trim())
+        .filter((key) => key.length > 0),
+    ),
+  ];
+
+  let deleted = 0;
+  let failed = 0;
+
+  for (let i = 0; i < unique.length; i += S3_DELETE_OBJECTS_LIMIT) {
+    const chunk = unique.slice(i, i + S3_DELETE_OBJECTS_LIMIT);
+    try {
+      const result = await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: bucketName(),
+          Delete: {
+            Objects: chunk.map((Key) => ({ Key })),
+            Quiet: false,
+          },
+        }),
+      );
+      deleted += result.Deleted?.length ?? 0;
+      for (const objectError of result.Errors ?? []) {
+        failed += 1;
+        logger.warn('S3 object delete failed', {
+          key: objectError.Key,
+          code: objectError.Code,
+          message: objectError.Message,
+        });
+      }
+    } catch (error) {
+      failed += chunk.length;
+      logger.warn(`S3 delete batch failed during ${logContext}`, {
+        count: chunk.length,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+    }
+  }
 
   return { deleted, failed };
 }

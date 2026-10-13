@@ -38,9 +38,11 @@ import {
   createPresignedPutUrl,
   deleteObjectsUnderAiProfilePrefix,
   deleteObjectBestEffort,
+  deleteObjectsByKeys,
   deleteObjectsUnderUserPrefix,
   extensionForContentType,
   getObjectBytes,
+  itemMediaPrefix,
   itemRenderObjectKey,
   itemRenderPrefix,
   MAX_UPLOAD_BYTES,
@@ -49,7 +51,9 @@ import {
   PRESIGNED_URL_EXPIRES_IN,
   processedImageObjectKey,
   putObjectBytes,
+  S3_DELETE_OBJECTS_LIMIT,
   userMediaPrefix,
+  wardrobeMediaPrefix,
 } from '../../src/shared/s3';
 
 describe('s3 helpers (WARDROBE-8)', () => {
@@ -222,11 +226,35 @@ describe('s3 helpers (WARDROBE-8)', () => {
     });
   });
 
+  describe('itemMediaPrefix', () => {
+    it('builds users/{uid}/items/{itemId}/', () => {
+      expect(itemMediaPrefix('uid-1', 'item_abc')).toBe(
+        'users/uid-1/items/item_abc/',
+      );
+    });
+
+    it('rejects path-like ids', () => {
+      expect(() => itemMediaPrefix('uid-1', '../secret')).toThrow(AppError);
+    });
+  });
+
   describe('itemRenderPrefix', () => {
     it('builds users/{uid}/items/{itemId}/renders/', () => {
       expect(itemRenderPrefix('uid-1', 'item_abc')).toBe(
         'users/uid-1/items/item_abc/renders/',
       );
+    });
+  });
+
+  describe('wardrobeMediaPrefix', () => {
+    it('builds users/{uid}/wardrobes/{wardrobeId}/', () => {
+      expect(wardrobeMediaPrefix('uid-1', 'wd_abc')).toBe(
+        'users/uid-1/wardrobes/wd_abc/',
+      );
+    });
+
+    it('rejects path-like ids', () => {
+      expect(() => wardrobeMediaPrefix('uid-1', '../secret')).toThrow(AppError);
     });
   });
 
@@ -400,6 +428,78 @@ describe('s3 helpers (WARDROBE-8)', () => {
         failed: 0,
       });
       expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('deleteObjectsByKeys', () => {
+    it('dedupes keys and deletes them in one batch under the limit', async () => {
+      mockSend.mockResolvedValueOnce({
+        Deleted: [
+          { Key: 'users/uid-1/uploads/a.jpg' },
+          { Key: 'users/uid-1/uploads/b.jpg' },
+        ],
+      });
+
+      await expect(
+        deleteObjectsByKeys([
+          'users/uid-1/uploads/a.jpg',
+          ' users/uid-1/uploads/a.jpg ',
+          'users/uid-1/uploads/b.jpg',
+          '',
+        ]),
+      ).resolves.toEqual({ deleted: 2, failed: 0 });
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'DeleteObjects',
+          input: {
+            Bucket: 'wardrobe-media-test',
+            Delete: {
+              Objects: [
+                { Key: 'users/uid-1/uploads/a.jpg' },
+                { Key: 'users/uid-1/uploads/b.jpg' },
+              ],
+              Quiet: false,
+            },
+          },
+        }),
+      );
+    });
+
+    it('chunks at the S3 DeleteObjects limit', async () => {
+      const keys = Array.from(
+        { length: S3_DELETE_OBJECTS_LIMIT + 1 },
+        (_, index) => `users/uid-1/uploads/${index}.jpg`,
+      );
+      mockSend
+        .mockResolvedValueOnce({
+          Deleted: keys.slice(0, S3_DELETE_OBJECTS_LIMIT).map((Key) => ({ Key })),
+        })
+        .mockResolvedValueOnce({
+          Deleted: [{ Key: keys[S3_DELETE_OBJECTS_LIMIT] }],
+        });
+
+      await expect(deleteObjectsByKeys(keys)).resolves.toEqual({
+        deleted: S3_DELETE_OBJECTS_LIMIT + 1,
+        failed: 0,
+      });
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const first = mockSend.mock.calls[0][0] as {
+        input: { Delete?: { Objects?: Array<{ Key: string }> } };
+      };
+      expect(first.input.Delete?.Objects).toHaveLength(S3_DELETE_OBJECTS_LIMIT);
+    });
+
+    it('counts individual object errors and continues', async () => {
+      mockSend.mockResolvedValueOnce({
+        Deleted: [],
+        Errors: [{ Key: 'users/uid-1/uploads/a.jpg', Code: 'AccessDenied' }],
+      });
+
+      await expect(
+        deleteObjectsByKeys(['users/uid-1/uploads/a.jpg']),
+      ).resolves.toEqual({ deleted: 0, failed: 1 });
     });
   });
 

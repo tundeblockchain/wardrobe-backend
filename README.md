@@ -516,7 +516,7 @@ Create / update body (`name` required, trimmed, 1–100 characters):
 { "name": "Summer Clothes" }
 ```
 
-Create returns `201` with the Flutter DTO (`wardrobeId`, `name`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "wardrobes": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Delete returns `204`.
+Create returns `201` with the Flutter DTO (`wardrobeId`, `name`, ISO 8601 `createdAt` / `updatedAt`). List returns `{ "wardrobes": [...] }`. Missing or other-user wardrobes return `404` `WARDROBE_NOT_FOUND`. Delete returns `204` with an empty body. It cascades that wardrobe's items, every outfit that references those items or the wardrobe (including worn-on rows), and related S3 objects — original, processed, cover, and Virtual Try On render images — using the same Dynamo batch-delete and S3 list/delete helpers as `DELETE /me/content`, scoped to the owner and wardrobe. Other wardrobes and users are left untouched.
 
 `GET /wardrobes` also adds optional `coverImageUrl` per wardrobe (WARDROBE-178). Create / PATCH / GET-by-id are unchanged — existing fields are not renamed or removed. Flutter parses this list.
 
