@@ -21,6 +21,7 @@ import {
 } from '../src/functions/ai-profiles/catalog';
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
+import { normalizeBillingWebOrigin } from '../src/shared/billing-urls';
 import { addEntitlements } from './entitlements';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
@@ -46,7 +47,7 @@ export class WardrobeStack extends cdk.Stack {
     cdk.Tags.of(this).add('Stage', stage);
 
     // Single-table PK/SK matches backend.md §16–17 access patterns:
-    // USER#{uid}                 / PROFILE | WARDROBE#{wardrobeId} | AIPROFILE#{id}
+    // USER#{uid}                 / PROFILE (stripeCustomerId) | WARDROBE#{wardrobeId} | AIPROFILE#{id}
     //                            / EVENT#{eventId} | DEVICE#{deviceId}
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
     //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
@@ -349,6 +350,20 @@ export class WardrobeStack extends cdk.Stack {
         FIREBASE_ADMIN_SECRET_ARN: firebaseAdminSecret.secretArn,
       },
     });
+    // WARDROBE-189: Stripe customer + Checkout Session. Active-mode secret
+    // is granted via grantStripeSecretRead only (below). Return URLs use
+    // BILLING_WEB_ORIGIN — never request body/header URLs.
+    const billingWebOrigin = normalizeBillingWebOrigin(
+      this.node.tryGetContext('billingWebOrigin') ?? process.env.BILLING_WEB_ORIGIN,
+    );
+    const billingFn = this.lambda('BillingFn', 'billing', {
+      ...commonLambdaProps,
+      timeout: cdk.Duration.seconds(15),
+      environment: {
+        ...commonLambdaProps.environment,
+        BILLING_WEB_ORIGIN: billingWebOrigin,
+      },
+    });
     // WARDROBE-114 job-done inbox + FCM device registration. Workers write
     // events; this Lambda only lists / acks / registers tokens.
     const eventsFn = this.lambda('EventsFn', 'events', commonLambdaProps);
@@ -483,6 +498,7 @@ export class WardrobeStack extends cdk.Stack {
 
     table.grantReadWriteData(meFn);
     firebaseAdminSecret.grantRead(meFn);
+    table.grantReadWriteData(billingFn);
     table.grantReadWriteData(eventsFn);
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
@@ -715,6 +731,10 @@ export class WardrobeStack extends cdk.Stack {
 
     const healthIntegration = new HttpLambdaIntegration('HealthIntegration', healthFn);
     const meIntegration = new HttpLambdaIntegration('MeIntegration', meFn);
+    const billingIntegration = new HttpLambdaIntegration(
+      'BillingIntegration',
+      billingFn,
+    );
     const eventsIntegration = new HttpLambdaIntegration('EventsIntegration', eventsFn);
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
     const itemsIntegration = new HttpLambdaIntegration('ItemsIntegration', itemsFn);
@@ -754,6 +774,13 @@ export class WardrobeStack extends cdk.Stack {
       path: '/me',
       methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.DELETE],
       integration: meIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/billing/checkout-session',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: billingIntegration,
       authorizer: firebaseAuthorizer,
     });
 
@@ -1065,10 +1092,15 @@ export class WardrobeStack extends cdk.Stack {
 
     // Isolated WARDROBE-187 Stripe secrets. Mode is CDK context stripeMode /
     // STRIPE_MODE (default test). Preview and dev cannot select live.
-    // grantStripeSecretRead is the pattern for checkout / portal / webhook
-    // (WARDROBE-189–191). Account delete (MeFn) is granted now.
+    // grantStripeSecretRead grants the **active** mode secret only.
+    // MeFn (account delete) + BillingFn (WARDROBE-189 checkout). Portal /
+    // webhook (190–191) are not granted here.
     const stripe = addStripeSecrets(this, { stage, removalPolicy });
     grantStripeSecretRead(meFn, stripe.activeSecret, {
+      mode: stripe.mode,
+      lookupKeys: stripe.lookupKeys,
+    });
+    grantStripeSecretRead(billingFn, stripe.activeSecret, {
       mode: stripe.mode,
       lookupKeys: stripe.lookupKeys,
     });

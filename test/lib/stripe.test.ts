@@ -112,7 +112,7 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(synthesized).not.toMatch(/price_1[A-Za-z0-9]{8,}/);
   });
 
-  test('defaults the stage to the test secret and grants it only to MeFn', () => {
+  test('defaults the stage to the test secret and grants it only to MeFn and BillingFn', () => {
     const meEnv = functionEnv(
       template,
       (vars) => Boolean(vars.SUPERWALL_SECRET_ARN && vars.STRIPE_SECRET_ARN),
@@ -129,9 +129,30 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(meEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
     expect(meEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
 
+    const billingEnv = functionEnv(
+      template,
+      (vars) => Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
+    );
+    expect(billingEnv).toBeDefined();
+    expect(billingEnv).toEqual(
+      expect.objectContaining({
+        STRIPE_MODE: 'test',
+        STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'wardrobe_basic_monthly',
+        STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'wardrobe_premium_monthly',
+        STRIPE_SECRET_ARN: expect.anything(),
+        BILLING_WEB_ORIGIN: 'https://wende-wardrobe.netlify.app',
+      }),
+    );
+    expect(billingEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
+    expect(billingEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
+    expect(billingEnv).not.toHaveProperty('SUPERWALL_SECRET_ARN');
+
     const synthesized = JSON.stringify(template.toJSON());
     expect(synthesized).toContain('StripeTestSecret');
     expect(secretActionsFor(template, 'MeFn')).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
+    expect(secretActionsFor(template, 'BillingFn')).toEqual(
       expect.arrayContaining(['secretsmanager:GetSecretValue']),
     );
 
@@ -141,12 +162,18 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(JSON.stringify(mePolicies)).toContain('StripeTestSecret');
     expect(JSON.stringify(mePolicies)).not.toContain('StripeLiveSecret');
 
+    const billingPolicies = (
+      Object.values(template.findResources('AWS::IAM::Policy')) as PolicyResource[]
+    ).filter((policy) => JSON.stringify(policy).includes('BillingFn'));
+    expect(JSON.stringify(billingPolicies)).toContain('StripeTestSecret');
+    expect(JSON.stringify(billingPolicies)).not.toContain('StripeLiveSecret');
+
     const functionsWithStripe = (
       Object.values(template.findResources('AWS::Lambda::Function')) as Array<{
         Properties: { Environment?: { Variables?: Record<string, unknown> } };
       }>
     ).filter((fn) => fn.Properties.Environment?.Variables?.STRIPE_SECRET_ARN);
-    expect(functionsWithStripe).toHaveLength(1);
+    expect(functionsWithStripe).toHaveLength(2);
 
     for (const fnId of [
       'HealthFn',
@@ -165,6 +192,24 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
       expect(JSON.stringify(policies)).not.toContain('StripeTestSecret');
       expect(JSON.stringify(policies)).not.toContain('StripeLiveSecret');
     }
+  });
+
+  test('BillingFn checkout route is owner-auth and uses grantStripeSecretRead only', () => {
+    const routes = Object.values(
+      template.findResources('AWS::ApiGatewayV2::Route'),
+    ) as Array<{ Properties: { RouteKey: string; AuthorizationType?: string } }>;
+    const checkout = routes.find(
+      (route) => route.Properties.RouteKey === 'POST /billing/checkout-session',
+    );
+    expect(checkout?.Properties.AuthorizationType).toBe('CUSTOM');
+
+    const custom = synthTemplate('dev', {
+      billingWebOrigin: 'https://preview.example',
+    });
+    const billingEnv = functionEnv(custom, (vars) =>
+      Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
+    );
+    expect(billingEnv?.BILLING_WEB_ORIGIN).toBe('https://preview.example');
   });
 
   test('API CORS stays allowOrigins *', () => {
@@ -199,14 +244,27 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     });
     prod.hasOutput('StripeMode', { Value: 'live' });
 
-    const meEnv = functionEnv(prod, (vars) => Boolean(vars.STRIPE_SECRET_ARN));
+    const meEnv = functionEnv(prod, (vars) =>
+      Boolean(vars.SUPERWALL_SECRET_ARN && vars.STRIPE_SECRET_ARN),
+    );
     expect(meEnv?.STRIPE_MODE).toBe('live');
+
+    const billingEnv = functionEnv(prod, (vars) =>
+      Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
+    );
+    expect(billingEnv?.STRIPE_MODE).toBe('live');
 
     const mePolicies = (
       Object.values(prod.findResources('AWS::IAM::Policy')) as PolicyResource[]
     ).filter((policy) => JSON.stringify(policy).includes('MeFn'));
     expect(JSON.stringify(mePolicies)).toContain('StripeLiveSecret');
     expect(JSON.stringify(mePolicies)).not.toContain('StripeTestSecret');
+
+    const billingPolicies = (
+      Object.values(prod.findResources('AWS::IAM::Policy')) as PolicyResource[]
+    ).filter((policy) => JSON.stringify(policy).includes('BillingFn'));
+    expect(JSON.stringify(billingPolicies)).toContain('StripeLiveSecret');
+    expect(JSON.stringify(billingPolicies)).not.toContain('StripeTestSecret');
   });
 
   test('preview and dev stages cannot select live mode', () => {

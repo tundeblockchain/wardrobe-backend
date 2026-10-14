@@ -11,6 +11,7 @@ export interface AppConfig {
   stripeMode?: string;
   stripeLookupKeyBasicMonthly?: string;
   stripeLookupKeyPremiumMonthly?: string;
+  billingWebOrigin?: string;
 }
 
 interface ContextReader {
@@ -76,6 +77,11 @@ export function resolveAppConfig(node: ContextReader): AppConfig {
       node,
       'stripeLookupKeyPremiumMonthly',
       process.env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
+    ),
+    billingWebOrigin: readString(
+      node,
+      'billingWebOrigin',
+      process.env.BILLING_WEB_ORIGIN,
     ),
   };
 }

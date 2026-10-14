@@ -50,12 +50,16 @@ export function errorResponse(error: unknown): APIGatewayProxyResultV2 {
       code: ErrorCode;
       message: string;
       retryable?: boolean;
+      source?: string;
     } = {
       code: error.code,
       message: error.message,
     };
     if (error.retryable !== undefined) {
       errorBody.retryable = error.retryable;
+    }
+    if (error.source !== undefined) {
+      errorBody.source = error.source;
     }
     return json(
       error.statusCode,

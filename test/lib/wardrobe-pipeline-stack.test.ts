@@ -132,6 +132,16 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
     );
   });
 
+  test('bakes a non-empty billingWebOrigin into the Synth project', () => {
+    const template = synthPipeline({
+      ...pipelineSource,
+      billingWebOrigin: 'https://preview.example',
+    });
+
+    const env = synthStepEnv(template);
+    expect(env.BILLING_WEB_ORIGIN).toBe('https://preview.example');
+  });
+
   test('omits Stripe synth env vars when config does not set them', () => {
     const template = synthPipeline(pipelineSource);
     const env = synthStepEnv(template);
@@ -139,10 +149,12 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
     expect(env).not.toHaveProperty('STRIPE_MODE');
     expect(env).not.toHaveProperty('STRIPE_LOOKUP_KEY_BASIC_MONTHLY');
     expect(env).not.toHaveProperty('STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY');
+    expect(env).not.toHaveProperty('BILLING_WEB_ORIGIN');
     for (const vars of codeBuildEnvMaps(template)) {
       expect(vars).not.toHaveProperty('STRIPE_MODE');
       expect(vars).not.toHaveProperty('STRIPE_LOOKUP_KEY_BASIC_MONTHLY');
       expect(vars).not.toHaveProperty('STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY');
+      expect(vars).not.toHaveProperty('BILLING_WEB_ORIGIN');
     }
   });
 });
