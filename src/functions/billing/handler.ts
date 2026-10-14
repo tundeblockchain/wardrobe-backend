@@ -1,10 +1,11 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
-import { resolveBillingWebOrigin } from '../../shared/billing-urls';
+import { resolveBillingReturnOrigin } from '../../shared/billing-urls';
 import { resolveEntitlement, StoredEntitlement } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import { errorResponse, ok, parseJsonBody, parseOptionalJsonBody, routeKey } from '../../shared/http';
 import { logger } from '../../shared/logger';
+import { parseAllowedOrigins, requestOrigin } from '../support/origins';
 import { toPaidTierStatus } from '../../shared/paid-tier';
 import {
   createSubscriptionCheckoutSession,
@@ -38,6 +39,7 @@ export interface BillingHandlerDeps {
   getStripeClient?: () => Promise<StripeCheckoutClient>;
   getStripePortalClient?: () => Promise<StripePortalClient>;
   origin?: string;
+  allowedOrigins?: string[];
   portalConfigurationId?: string;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
   stripeConfigDeps?: StripeConfigDeps;
@@ -63,8 +65,9 @@ interface CheckoutSessionBody {
  * and `USER#{uid} / PROFILE.stripeCustomerId` must already be stored
  * (this handler never creates a customer).
  *
- * Return URLs are server-built from `BILLING_WEB_ORIGIN` — body and
- * header URL fields are ignored.
+ * Return URLs are server-built from `BILLING_WEB_ORIGIN`. Body URL
+ * fields are ignored. Request `Origin` is used only when it is https
+ * and matches the allowlist exactly on scheme + host + port.
  *
  * The webhook is StripeWebhookFn (WARDROBE-190). DELETE /me Stripe
  * cancel is WARDROBE-192 on MeFn.
@@ -129,7 +132,7 @@ async function createCheckoutSession(
     loadClient(),
   ]);
 
-  const origin = deps.origin ?? resolveBillingWebOrigin();
+  const origin = resolveReturnOrigin(event, deps);
   return createSubscriptionCheckoutSession({
     userId,
     tier,
@@ -170,7 +173,7 @@ async function createPortalSession(
     (() => getStripeClient(configDeps) as Promise<StripePortalClient>);
 
   const [config, stripe] = await Promise.all([loadConfig(), loadClient()]);
-  const origin = deps.origin ?? resolveBillingWebOrigin();
+  const origin = resolveReturnOrigin(event, deps);
   const configurationId =
     deps.portalConfigurationId ?? resolveStripePortalConfigurationId();
 
@@ -181,6 +184,19 @@ async function createPortalSession(
     configurationId,
     mode: config.mode,
     log,
+  });
+}
+
+function resolveReturnOrigin(
+  event: APIGatewayProxyEventV2,
+  deps: BillingHandlerDeps,
+): string {
+  return resolveBillingReturnOrigin({
+    configured: deps.origin,
+    requestOrigin: requestOrigin(event.headers),
+    allowlist:
+      deps.allowedOrigins ??
+      parseAllowedOrigins(process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS),
   });
 }
 

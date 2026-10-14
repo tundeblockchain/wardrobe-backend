@@ -29,6 +29,7 @@ export type ErrorCode =
   | 'NOT_STRIPE_PLAN'
   | 'INVALID_INTERVAL'
   | 'BILLING_PRICE_NOT_FOUND'
+  | 'BILLING_NOT_CONFIGURED'
   | 'BILLING_CANCEL_FAILED';
 
 export class AppError extends Error {
@@ -203,6 +204,14 @@ export const Errors = {
   billingPriceNotFound: (
     message = 'The requested billing plan is not available.',
   ) => new AppError('BILLING_PRICE_NOT_FOUND', message, 503),
+
+  /**
+   * Stripe return origin is missing or not https (WARDROBE-198).
+   * Do not default to a Netlify (or any other) domain.
+   */
+  billingNotConfigured: (
+    message = 'Billing return URL is not configured.',
+  ) => new AppError('BILLING_NOT_CONFIGURED', message, 503),
 
   /**
    * Portal is Stripe-only (WARDROBE-191). `source` is the current

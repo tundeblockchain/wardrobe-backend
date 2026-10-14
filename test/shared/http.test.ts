@@ -355,6 +355,18 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps BILLING_NOT_CONFIGURED to a 503 envelope', () => {
+    const result = asResult(errorResponse(Errors.billingNotConfigured()));
+
+    expect(result.statusCode).toBe(503);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'BILLING_NOT_CONFIGURED',
+        message: 'Billing return URL is not configured.',
+      },
+    });
+  });
+
   it('maps BILLING_CANCEL_FAILED to a 503 envelope with retryable', () => {
     const result = asResult(errorResponse(Errors.billingCancelFailed()));
 

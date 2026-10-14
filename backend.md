@@ -221,12 +221,12 @@ Authorization: Bearer <firebase-id-token>
 { "tier": "basic", "interval": "yearly" }
 ```
 
-`tier` must be `"basic"` or `"premium"` (400 `VALIDATION_ERROR` otherwise). Optional `interval` is `"monthly"` (default) or `"yearly"` (400 `INVALID_INTERVAL` for anything else, including non-strings; no Stripe calls). Yearly Prices use `wardrobe_basic_yearly` / `wardrobe_premium_yearly` (created in the Stripe dashboard, not by seed). A missing yearly Price is `503 BILLING_PRICE_NOT_FOUND`. Return URLs are server-built from `billingWebOrigin` / `BILLING_WEB_ORIGIN` (default `https://wende-wardrobe.netlify.app`):
+`tier` must be `"basic"` or `"premium"` (400 `VALIDATION_ERROR` otherwise). Optional `interval` is `"monthly"` (default) or `"yearly"` (400 `INVALID_INTERVAL` for anything else, including non-strings; no Stripe calls). Yearly Prices use `wardrobe_basic_yearly` / `wardrobe_premium_yearly` (created in the Stripe dashboard, not by seed). A missing yearly Price is `503 BILLING_PRICE_NOT_FOUND`. Return URLs are server-built from required `billingWebOrigin` / `BILLING_WEB_ORIGIN` (no hardcoded default; missing config is `503 BILLING_NOT_CONFIGURED`):
 
 - `success_url` = `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}`
 - `cancel_url` = `{origin}/app/billing/cancel`
 
-Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `200 { "url" }` only. An account that already has a paid tier from any source (`ios` / `android` / `stripe`) receives `409 ALREADY_SUBSCRIBED` with `error.source` when known.
+Ignore URL fields on the body. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` (or the configured base) exactly on scheme + host + port. Non-allowlisted / missing / non-https Origin falls back to the configured base. Response is `200 { "url" }` only. An account that already has a paid tier from any source (`ios` / `android` / `stripe`) receives `409 ALREADY_SUBSCRIBED` with `error.source` when known.
 
 ### Stripe Billing Portal (WARDROBE-191)
 
@@ -235,11 +235,11 @@ POST /billing/portal-session
 Authorization: Bearer <firebase-id-token>
 ```
 
-No body is required. `return_url` is server-built from `billingWebOrigin` / `BILLING_WEB_ORIGIN`:
+No body is required. `return_url` is server-built from required `billingWebOrigin` / `BILLING_WEB_ORIGIN` (same rules as checkout; `503 BILLING_NOT_CONFIGURED` when unset):
 
 - `return_url` = `{origin}/app/settings#plan`
 
-Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `200 { "url" }` only.
+Ignore URL fields on the body. Request `Origin` is used only when it is https and matches the allowlist exactly on scheme + host + port. Response is `200 { "url" }` only.
 
 Only an account whose current `paidTier.source` is `"stripe"` and that already has a stored `stripeCustomerId` may open the portal. Otherwise `409 NOT_STRIPE_PLAN` with `error.source` (`ios` / `android` / `stripe`, or `null` when the effective plan is Free). The handler never creates a Stripe customer.
 
@@ -1232,7 +1232,7 @@ POST /billing/portal-session
 POST /billing/stripe-webhook
 ```
 
-`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from `billingWebOrigin`.
+`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from required `billingWebOrigin` / `BILLING_WEB_ORIGIN` (WARDROBE-198). Missing config is `503 BILLING_NOT_CONFIGURED`. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` exactly on scheme + host + port.
 
 ### Uploads
 
@@ -1301,6 +1301,7 @@ ALREADY_SUBSCRIBED
 NOT_STRIPE_PLAN
 INVALID_INTERVAL
 BILLING_PRICE_NOT_FOUND
+BILLING_NOT_CONFIGURED
 INTERNAL_ERROR
 ```
 

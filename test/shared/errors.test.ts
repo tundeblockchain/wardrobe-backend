@@ -74,6 +74,14 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(error.message).toBe('This account already has a paid plan.');
   });
 
+  it('marks BILLING_NOT_CONFIGURED as a 503', () => {
+    const error = Errors.billingNotConfigured();
+
+    expect(error.code).toBe('BILLING_NOT_CONFIGURED');
+    expect(error.statusCode).toBe(503);
+    expect(error.message).toBe('Billing return URL is not configured.');
+  });
+
   it('marks BILLING_CANCEL_FAILED as a retryable 503', () => {
     const error = Errors.billingCancelFailed();
 
