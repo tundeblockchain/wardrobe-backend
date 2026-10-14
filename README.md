@@ -2758,7 +2758,7 @@ Handled event types (the handler re-fetches the subscription from Stripe and doe
 
 **Price → tier.** The Price `lookup_key` maps to `basic` / `premium` (`wardrobe_basic_monthly` / `wardrobe_premium_monthly`, overridable).
 
-**Grant / clear.** `active` or `trialing` → `setPaidTierStatus(tier, source: 'stripe', expiresAt: current_period_end)`. `canceled`, `unpaid`, `incomplete_expired`, or ended → clear the Stripe paid tier **only if** the current source is `stripe`. An active plan from `ios` / `android` is kept.
+**Grant / clear.** `active`, `trialing`, or `past_due` → `setPaidTierStatus(tier, source: 'stripe', expiresAt: current_period_end)`. `past_due` keeps the paid tier while Stripe retries payment. `canceled`, `unpaid`, `incomplete_expired`, or ended → clear the Stripe paid tier **only if** the current source is `stripe`. An active plan from `ios` / `android` is kept.
 
 **Clash.** A different source does not overwrite an active plan. The webhook logs a structured warning (`uid`, `existingSource`, `stripeSubscriptionId`) and returns `200`. Same-source upgrades and renewals are applied.
 

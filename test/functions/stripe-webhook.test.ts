@@ -377,6 +377,86 @@ describe('POST /billing/stripe-webhook (WARDROBE-190)', () => {
     );
   });
 
+  it('keeps a Stripe paid tier on past_due and refreshes expiresAt from current_period_end', async () => {
+    const periodEnd = Math.floor(Date.parse('2027-02-01T00:00:00.000Z') / 1000);
+    mockQueryByPk.mockResolvedValue([
+      entitlementRow({
+        tier: 'PREMIUM',
+        source: 'stripe',
+        store: 'STRIPE',
+        expiresAt: '2027-01-01T00:00:00.000Z',
+      }),
+    ]);
+    retrieve.mockResolvedValue(
+      subscription({
+        status: 'past_due',
+        current_period_end: periodEnd,
+        items: {
+          data: [
+            {
+              current_period_end: periodEnd,
+              price: {
+                id: 'price_premium',
+                lookup_key: 'wardrobe_premium_monthly',
+              },
+            },
+          ],
+        },
+      }),
+    );
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.updated' }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({
+        status: 'applied',
+        reason: 'renewed',
+        tier: 'premium',
+      }),
+    );
+    expect(mockPutItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier: 'PREMIUM',
+        source: 'stripe',
+        store: 'STRIPE',
+        status: 'ACTIVE',
+        expiresAt: '2027-02-01T00:00:00.000Z',
+      }),
+    );
+  });
+
+  it('clears a Stripe paid tier when the subscription is unpaid', async () => {
+    mockQueryByPk.mockResolvedValue([
+      entitlementRow({ tier: 'PREMIUM', source: 'stripe', store: 'STRIPE' }),
+    ]);
+    retrieve.mockResolvedValue(subscription({ status: 'unpaid' }));
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.updated' }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'cleared', reason: 'cleared' }),
+    );
+    expect(mockPutItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier: 'FREE',
+        status: 'EXPIRED',
+        source: 'stripe',
+      }),
+    );
+  });
+
   it('clears a Stripe paid tier on subscription cancel', async () => {
     mockQueryByPk.mockResolvedValue([
       entitlementRow({ tier: 'PREMIUM', source: 'stripe', store: 'STRIPE' }),

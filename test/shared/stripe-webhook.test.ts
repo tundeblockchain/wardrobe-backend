@@ -92,6 +92,8 @@ describe('stripe webhook helpers (WARDROBE-190)', () => {
       ),
     ).toBe('basic');
     expect(isStripeGrantStatus({ status: 'trialing' })).toBe(true);
+    expect(isStripeGrantStatus({ status: 'past_due' })).toBe(true);
+    expect(isStripeClearStatus({ status: 'past_due' })).toBe(false);
     expect(isStripeClearStatus({ status: 'canceled' })).toBe(true);
     expect(isStripeClearStatus({ status: 'unpaid' })).toBe(true);
     expect(isStripeClearStatus({ status: 'incomplete_expired' })).toBe(true);

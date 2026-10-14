@@ -28,7 +28,8 @@ export type StripeWebhookEventType = (typeof STRIPE_WEBHOOK_EVENT_TYPES)[number]
 
 export const STRIPE_WEBHOOK_EVENT_TTL_SECONDS = 90 * 24 * 60 * 60;
 
-const GRANT_STATUSES = new Set(['active', 'trialing']);
+/** Paid access stays up. `past_due` means Stripe is retrying payment. */
+const GRANT_STATUSES = new Set(['active', 'trialing', 'past_due']);
 const CLEAR_STATUSES = new Set([
   'canceled',
   'unpaid',
