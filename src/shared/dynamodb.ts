@@ -6,6 +6,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  ScanCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
@@ -162,6 +163,34 @@ export async function queryByPk<T extends DynamoItem>(
       }),
     );
     items.push(...((result.Items ?? []) as T[]));
+    exclusiveStartKey = result.LastEvaluatedKey as
+      | Record<string, unknown>
+      | undefined;
+  } while (exclusiveStartKey);
+
+  return items;
+}
+
+/**
+ * Full-table scan filtered by `entityType`. Operator backfills only —
+ * not request-path. Paginates until Dynamo is exhausted.
+ */
+export async function scanByEntityType(
+  entityType: string,
+): Promise<DynamoItem[]> {
+  const items: DynamoItem[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: tableName(),
+        FilterExpression: 'entityType = :entityType',
+        ExpressionAttributeValues: { ':entityType': entityType },
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    );
+    items.push(...((result.Items ?? []) as DynamoItem[]));
     exclusiveStartKey = result.LastEvaluatedKey as
       | Record<string, unknown>
       | undefined;

@@ -703,6 +703,26 @@ export interface Entitlement {
   /** ISO 8601. Present when Superwall sent `expirationAt`. */
   expiresAt?: string;
   updatedAt: string;
+  /**
+   * Additive paid-tier status (WARDROBE-188). `null` when the effective
+   * plan is Free. Does not replace `tier` / `store` / `expiresAt`.
+   */
+  paidTier: PaidTierStatus | null;
+}
+
+/** Lowercase paid plan on `GET /me` `paidTier` (WARDROBE-188). */
+export const PAID_TIERS = ['basic', 'premium'] as const;
+export type PaidTier = (typeof PAID_TIERS)[number];
+
+/** Billing source on `GET /me` `paidTier.source` (WARDROBE-188). */
+export const PAID_TIER_SOURCES = ['ios', 'android', 'stripe'] as const;
+export type PaidTierSource = (typeof PAID_TIER_SOURCES)[number];
+
+export interface PaidTierStatus {
+  tier: PaidTier;
+  source?: PaidTierSource;
+  /** ISO 8601. Reuses the stored entitlement `expiresAt`. Soft-omitted when unknown. */
+  expiresAt?: string;
 }
 
 export const SHARE_RESOURCE_TYPES = ['ITEM', 'OUTFIT'] as const;

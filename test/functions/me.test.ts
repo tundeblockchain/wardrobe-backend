@@ -36,6 +36,10 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
     _op: 'BatchWrite',
     input,
   })),
+  ScanCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'Scan',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/client-s3', () => ({
@@ -59,6 +63,12 @@ jest.mock('@aws-sdk/client-s3', () => ({
 }));
 
 import { handler } from '../../src/functions/me/handler';
+import {
+  assertExistingMeContract,
+  existingMeFieldSnapshot,
+  GET_ME_EXISTING_OPTIONAL_FIELDS,
+  GET_ME_EXISTING_REQUIRED_FIELDS,
+} from '../helpers/me-contract';
 
 const OWNER_ID = 'firebase-uid-owner';
 const OTHER_ID = 'firebase-uid-other';
@@ -1019,6 +1029,7 @@ describe('me handler (WARDROBE-36)', () => {
         limits: { wardrobes: 1, items: 5, outfits: 5 },
         usage: { wardrobes: 0, items: 0, outfits: 0 },
         updatedAt: expect.any(String),
+        paidTier: null,
       });
       const puts = mockDynamoSend.mock.calls
         .map((call) => call[0] as DynamoCommand)
@@ -1143,6 +1154,10 @@ describe('me handler (WARDROBE-36)', () => {
         store: 'APP_STORE',
         period: 'MONTHLY',
         updatedAt: '2026-09-16T12:00:00.000Z',
+        paidTier: {
+          tier: 'premium',
+          source: 'ios',
+        },
       });
       expect(bodyOf(result)).not.toHaveProperty('PK');
       expect(bodyOf(result)).not.toHaveProperty('lastEventId');
@@ -1294,6 +1309,88 @@ describe('me handler (WARDROBE-36)', () => {
           tier: 'PREMIUM',
           status: 'ACTIVE',
         }),
+      );
+    });
+
+    it('snapshots existing GET /me fields so additive paidTier cannot rename them', async () => {
+      expect([...GET_ME_EXISTING_REQUIRED_FIELDS]).toEqual([
+        'userId',
+        'tier',
+        'status',
+        'features',
+        'limits',
+        'usage',
+        'updatedAt',
+      ]);
+      expect([...GET_ME_EXISTING_OPTIONAL_FIELDS]).toEqual([
+        'productId',
+        'store',
+        'period',
+        'expiresAt',
+      ]);
+
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          const sk = command.input.ExpressionAttributeValues?.[':sk'];
+          if (pk === `USER#${OWNER_ID}` && sk === 'ENTITLEMENT') {
+            return {
+              Items: [
+                {
+                  PK: `USER#${OWNER_ID}`,
+                  SK: 'ENTITLEMENT',
+                  entityType: 'ENTITLEMENT',
+                  userId: OWNER_ID,
+                  tier: 'PREMIUM',
+                  status: 'ACTIVE',
+                  productId: 'premium_monthly',
+                  store: 'APP_STORE',
+                  period: 'MONTHLY',
+                  expiresAt: '2026-11-01T00:00:00.000Z',
+                  createdAt: '2026-09-16T00:00:00.000Z',
+                  updatedAt: '2026-09-16T12:00:00.000Z',
+                },
+              ],
+            };
+          }
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as Record<string, unknown>;
+      assertExistingMeContract(body);
+      expect(existingMeFieldSnapshot(body)).toEqual({
+        userId: OWNER_ID,
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        features: {
+          unlimitedCatalog: true,
+          aiTryOn: true,
+          otherAi: true,
+        },
+        limits: null,
+        usage: { wardrobes: 0, items: 0, outfits: 0 },
+        productId: 'premium_monthly',
+        store: 'APP_STORE',
+        period: 'MONTHLY',
+        expiresAt: '2026-11-01T00:00:00.000Z',
+        updatedAt: '2026-09-16T12:00:00.000Z',
+      });
+      expect(body.tier).toBe('PREMIUM');
+      expect(body.store).toBe('APP_STORE');
+      expect(typeof body.tier).toBe('string');
+      expect(body.paidTier).toEqual({
+        tier: 'premium',
+        source: 'ios',
+        expiresAt: '2026-11-01T00:00:00.000Z',
+      });
+      expect(Object.keys(body)).toEqual(
+        expect.arrayContaining([...GET_ME_EXISTING_REQUIRED_FIELDS]),
       );
     });
 
