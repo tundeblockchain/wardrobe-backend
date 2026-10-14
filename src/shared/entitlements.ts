@@ -488,6 +488,63 @@ export async function setPaidTierStatus(
   return { applied: true, reason: decision.reason, stored };
 }
 
+export type ClearStripePaidTierResult =
+  | { cleared: true; reason: 'cleared'; stored: StoredEntitlement }
+  | {
+      cleared: false;
+      reason: 'not_stripe' | 'already_free';
+      stored?: StoredEntitlement;
+    };
+
+/**
+ * Drop a Stripe-sourced paid tier (WARDROBE-190). Store plans
+ * (`ios` / `android`) are left untouched.
+ */
+export async function clearStripePaidTier(input: {
+  userId: string;
+  lastEventId?: string;
+  lastEventAt?: number;
+  nowIso?: string;
+  nowMs?: number;
+}): Promise<ClearStripePaidTierResult> {
+  const timestamp = input.nowIso ?? nowIso();
+  const nowMs = input.nowMs ?? Date.parse(timestamp);
+  const history = await listStoredEntitlements(input.userId);
+  const existing = pickLatestEntitlement(history);
+  if (!existing) {
+    return { cleared: false, reason: 'already_free' };
+  }
+
+  const effective = effectiveEntitlement(
+    existing,
+    Number.isFinite(nowMs) ? nowMs : Date.now(),
+  );
+  const source = existing.source ?? paidTierSourceFromStore(existing.store);
+  const paid =
+    effective.tier === 'BASIC' || effective.tier === 'PREMIUM';
+
+  if (!paid) {
+    return { cleared: false, reason: 'already_free', stored: effective };
+  }
+  if (source !== 'stripe') {
+    return { cleared: false, reason: 'not_stripe', stored: existing };
+  }
+
+  const stored: StoredEntitlement = {
+    ...existing,
+    sk: undefined,
+    userId: input.userId,
+    tier: 'FREE',
+    status: 'EXPIRED',
+    lastEventId: input.lastEventId ?? existing.lastEventId,
+    lastEventAt: input.lastEventAt ?? existing.lastEventAt,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  await persistEntitlement(stored);
+  return { cleared: true, reason: 'cleared', stored };
+}
+
 function entitlementItem(
   stored: StoredEntitlement,
   options?: { history?: boolean },

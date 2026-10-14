@@ -782,7 +782,9 @@ export type EntityType =
   | 'DEVICE'
   | 'SHARE'
   | 'RATE_LIMIT'
-  | 'ACCOUNT_DELETION';
+  | 'ACCOUNT_DELETION'
+  | 'STRIPE_EVENT'
+  | 'STRIPE_CUSTOMER';
 
 export interface DynamoItem {
   PK: string;

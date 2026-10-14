@@ -38,6 +38,10 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
       'RATE#SUPPORT_CONTACT#abc123',
     );
     expect(keys.rateLimitSk(1_700_000_000)).toBe('WINDOW#1700000000');
+    expect(keys.stripeEventPk('evt_1')).toBe('STRIPE_EVENT#evt_1');
+    expect(keys.stripeEventSk).toBe('PROCESSED');
+    expect(keys.stripeCustomerPk('cus_123')).toBe('STRIPE_CUSTOMER#cus_123');
+    expect(keys.stripeCustomerSk).toBe('UID');
     expect(keys.wardrobeSk('wd_abc123')).toBe('WARDROBE#wd_abc123');
   });
 

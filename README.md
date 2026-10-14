@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (Stripe Checkout + customer portal), events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (Stripe Checkout + customer portal), Stripe webhook, events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
@@ -22,6 +22,7 @@ Working in this first cut:
 - `GET /me` (entitlement for Flutter WARDROBE-90)
 - `POST /billing/checkout-session` (Stripe Checkout for web Basic / Premium; WARDROBE-189)
 - `POST /billing/portal-session` (Stripe Billing Portal for an existing Stripe subscriber; WARDROBE-191)
+- `POST /billing/stripe-webhook` (Stripe-signed subscription webhook; no Firebase auth; WARDROBE-190)
 - `DELETE /me/content` (clear content; keeps account + entitlement)
 - `DELETE /me` (cancel Stripe subscriptions first, then best-effort store cancel, revoke entitlement, delete AWS data + Firebase Auth user; Flutter WARDROBE-154 / WARDROBE-192)
 - `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
@@ -226,7 +227,17 @@ PUT    /me/devices
 DELETE /me/devices/{deviceId}
 ```
 
-`GET /me` returns the Flutter entitlement DTO (WARDROBE-91). See **Entitlements** below.
+`GET /me` returns the Flutter entitlement DTO (WARDROBE-91). See **Entitlements** below. Stripe webhooks (WARDROBE-190) do not add fields to this DTO.
+
+### Billing
+
+```http
+POST /billing/checkout-session
+POST /billing/portal-session
+POST /billing/stripe-webhook
+```
+
+`POST /billing/checkout-session` and `POST /billing/portal-session` are Firebase-auth (WARDROBE-189 / WARDROBE-191). `POST /billing/stripe-webhook` is public — Stripe-Signature only, no Firebase authorizer. See **Stripe billing**.
 
 `DELETE /me/content` wipes the caller's wardrobes, items, outfits, worn-on dates, personal AI profiles, job-done events, FCM device tokens, and share-link tokens in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, Virtual Profile refs, Virtual Try On renders). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
 
@@ -2459,6 +2470,8 @@ USER#{uid}                 AIPROFILE#{aiProfileId}    (omitted — sparse)
 USER#{uid}                 SHOPPING#{itemId}          (24h TTL cache)
 USER#{uid}                 EVENT#{eventId}            (30d TTL inbox)
 USER#{uid}                 DEVICE#{deviceId}          (FCM token)
+STRIPE_EVENT#{eventId}     PROCESSED                  (90d TTL; WARDROBE-190)
+STRIPE_CUSTOMER#{cus_id}   UID                        (WARDROBE-190)
 WARDROBE#{wardrobeId}      ITEM#{itemId}
 WARDROBE#{wardrobeId}      OUTFIT#{outfitId}
 WARDROBE#{wardrobeId}      OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
@@ -2480,6 +2493,8 @@ List GENERIC_MODEL (picker)         Query GSI1 PK=TYPE#GENERIC_MODEL
 Get GENERIC_MODEL                   Get AIPROFILE#GENERIC_MODEL / AIPROFILE#{id}
 Get share by token                  Get SHARE#{token} / SHARE
 List caller's shares (account wipe) Query GSI1 PK=SHARE#USER#{uid} begins_with SK=SHARE#
+Record Stripe event (idempotent)    Put STRIPE_EVENT#{eventId} / PROCESSED
+Resolve uid by Stripe customer      Get STRIPE_CUSTOMER#{cus_id} / UID
 ```
 
 API responses never expose `PK` / `SK` / `GSI1PK` / `GSI1SK`.
@@ -2503,6 +2518,7 @@ src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154 / WARDROBE-188)
   billing/             Stripe customer + Checkout Session (WARDROBE-189) + Billing Portal (WARDROBE-191)
+  stripe-webhook/      public Stripe webhook (WARDROBE-190; no Firebase authorizer)
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
@@ -2543,13 +2559,14 @@ src/shared/
   stripe-checkout.ts Checkout Session + lookup-key price resolve (WARDROBE-189)
   stripe-portal.ts   Billing Portal session (WARDROBE-191)
   stripe-cancel.ts   DELETE /me Stripe cancel (WARDROBE-192; fail-closed)
+  stripe-webhook.ts  Stripe-Signature verify + subscription apply (WARDROBE-190)
   billing-urls.ts    server-built checkout + portal return URLs (WARDROBE-189 / WARDROBE-191)
   validation.ts
 ```
 
-## Stripe billing (WARDROBE-187 / WARDROBE-189 / WARDROBE-191 / WARDROBE-192)
+## Stripe billing (WARDROBE-187 / WARDROBE-189 / WARDROBE-190 / WARDROBE-191 / WARDROBE-192)
 
-WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. WARDROBE-191 adds authenticated `POST /billing/portal-session` for an existing Stripe subscriber. WARDROBE-192 cancels that customer's active Stripe subscriptions on `DELETE /me` before wiping data. The Stripe webhook lands in a later story (190).
+WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. WARDROBE-191 adds authenticated `POST /billing/portal-session` for an existing Stripe subscriber. WARDROBE-190 adds public `POST /billing/stripe-webhook`. WARDROBE-192 cancels that customer's active Stripe subscriptions on `DELETE /me` before wiping data.
 
 This stack creates **two** Secrets Manager secrets per stage and chooses which one Lambdas may read.
 
@@ -2585,7 +2602,7 @@ aws secretsmanager put-secret-value \
 
 JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook signing secret). Snake_case aliases are accepted. Lambdas receive `STRIPE_SECRET_ARN` and `STRIPE_MODE` only — never the raw key. Runtime helpers `getStripeConfig` / `getStripeClient` cache the result and **must not log** the secret key or signing secret.
 
-**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). It grants the **active** mode secret only. `MeFn` (WARDROBE-192 account-delete cancel) and `BillingFn` (WARDROBE-189 checkout + WARDROBE-191 portal) have that grant. Other Lambdas cannot read Stripe secrets. The webhook Lambda is not granted here.
+**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). It grants the **active** mode secret only. `MeFn` (WARDROBE-192 account-delete cancel), `BillingFn` (WARDROBE-189 checkout + WARDROBE-191 portal), and `StripeWebhookFn` (WARDROBE-190) have that grant. Other Lambdas cannot read Stripe secrets. Never log the secret key, webhook secret, or `Stripe-Signature`.
 
 **Plans.** Two paid tiers — Basic and Premium — matching the existing entitlement matrix (unlimited catalog; Premium-only AI). Limits are not duplicated. Price **lookup keys** (not live `price_…` ids) come from config:
 
@@ -2662,7 +2679,7 @@ If `GET /me` `paidTier` is already set from **any** source (`ios` / `android` / 
 }
 ```
 
-Existing responses are unchanged except this additive `source` field on `ALREADY_SUBSCRIBED`. Webhook is not implemented here.
+Existing responses are unchanged except this additive `source` field on `ALREADY_SUBSCRIBED`.
 
 ### `POST /billing/portal-session`
 
@@ -2706,8 +2723,6 @@ Or export `STRIPE_PORTAL_CONFIGURATION_ID`. When unset, Stripe uses the default 
 }
 ```
 
-Webhook is not implemented here. `DELETE /me` Stripe cancel is WARDROBE-192 on `MeFn`.
-
 ### `DELETE /me` Stripe cancel (WARDROBE-192)
 
 Authenticated account delete cancels Stripe **before** Dynamo / S3 / Auth delete. `MeFn` already has `grantStripeSecretRead`.
@@ -2718,6 +2733,56 @@ Authenticated account delete cancels Stripe **before** Dynamo / S3 / Auth delete
 4. `resource_missing` or already-canceled must not block delete. Any other Stripe cancel failure returns `503 { "error": { "code": "BILLING_CANCEL_FAILED", "message": "…", "retryable": true } }` and leaves the account intact.
 5. On `BILLING_CANCEL_FAILED` the client signs the user out, returns to login, and shows a try-again message (WARDROBE-152).
 6. App Store / Play cancel stays best-effort. Success body of `DELETE /me` is unchanged (`{ "deleted": true }`). API CORS is unchanged.
+
+### `POST /billing/stripe-webhook`
+
+Public (no Firebase authorizer). API CORS is unchanged (`allowOrigins: ['*']`; `Authorization` + `Content-Type` only). HTTP API Lambda proxy forwards the raw body; when API Gateway sets `isBase64Encoded`, the handler base64-decodes **before** HMAC verification and **before** any JSON parse.
+
+```http
+POST /billing/stripe-webhook
+Stripe-Signature: t=…,v1=…
+```
+
+`webhookSecret` comes from the active-mode Stripe secret (`wardrobe/{stage}/stripe-test` or `stripe-live`). Bad or missing signature → `400 VALIDATION_ERROR`. Nothing is written.
+
+Handled event types (the handler re-fetches the subscription from Stripe and does not trust event payload ordering):
+
+| Event | Action |
+| --- | --- |
+| `checkout.session.completed` | Resolve the session's subscription, then apply current state |
+| `customer.subscription.created` | Re-fetch subscription, then apply |
+| `customer.subscription.updated` | Re-fetch subscription, then apply |
+| `customer.subscription.deleted` | Re-fetch subscription, then apply |
+
+**Identity.** `subscription.metadata.uid`, then `customer.metadata.uid`, then the stored `STRIPE_CUSTOMER#{cus_id} / UID` mapping (complements `PROFILE.stripeCustomerId`).
+
+**Price → tier.** The Price `lookup_key` maps to `basic` / `premium` (`wardrobe_basic_monthly` / `wardrobe_premium_monthly`, overridable).
+
+**Grant / clear.** `active`, `trialing`, or `past_due` → `setPaidTierStatus(tier, source: 'stripe', expiresAt: current_period_end)`. `past_due` keeps the paid tier while Stripe retries payment. `canceled`, `unpaid`, `incomplete_expired`, or ended → clear the Stripe paid tier **only if** the current source is `stripe`. An active plan from `ios` / `android` is kept.
+
+**Clash.** A different source does not overwrite an active plan. The webhook logs a structured warning (`uid`, `existingSource`, `stripeSubscriptionId`) and returns `200`. Same-source upgrades and renewals are applied.
+
+**Idempotency.** Processed Stripe event ids are stored (`STRIPE_EVENT#{id} / PROCESSED`) with a conditional write and Dynamo TTL. Repeats return `200 { "status": "duplicate" }` without applying again.
+
+`GET /me` is unchanged (no new fields). Paid-tier still appears as the existing `paidTier` object.
+
+#### After deploy — Stripe test webhook
+
+1. Deploy the stack and note `ApiUrl` (or `StripeWebhookUrl`).
+2. In the Stripe Dashboard (test mode) create a webhook endpoint at `{ApiUrl}/billing/stripe-webhook` for:
+   - `checkout.session.completed`
+   - `customer.subscription.created`
+   - `customer.subscription.updated`
+   - `customer.subscription.deleted`
+3. Put the endpoint's signing secret (`whsec_…`) into `webhookSecret` of the **test** secret (do not commit it):
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/dev/stripe-test \
+  --secret-string '{"secretKey":"sk_test_...","webhookSecret":"whsec_..."}'
+```
+
+Live mode (prod only, after `stripeMode=live`) uses `wardrobe/prod/stripe-live` the same way. The Lambda never receives the raw key — only `STRIPE_SECRET_ARN`.
 
 ## Environments
 
