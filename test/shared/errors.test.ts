@@ -47,6 +47,24 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(free.source).toBeNull();
   });
 
+  it('keeps INVALID_INTERVAL as a 400', () => {
+    const error = Errors.invalidInterval();
+
+    expect(error.code).toBe('INVALID_INTERVAL');
+    expect(error.statusCode).toBe(400);
+    expect(error.message).toBe('interval must be "monthly" or "yearly".');
+  });
+
+  it('marks BILLING_PRICE_NOT_FOUND as a 503 without Stripe details', () => {
+    const error = Errors.billingPriceNotFound();
+
+    expect(error.code).toBe('BILLING_PRICE_NOT_FOUND');
+    expect(error.statusCode).toBe(503);
+    expect(error.message).toBe('The requested billing plan is not available.');
+    expect(error.message).not.toMatch(/price_/);
+    expect(error.message).not.toContain('sk_');
+  });
+
   it('keeps ALREADY_SUBSCRIBED as a 409 with the paid-tier source', () => {
     const error = Errors.alreadySubscribed('android');
 

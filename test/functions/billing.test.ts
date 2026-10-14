@@ -63,6 +63,8 @@ function stripeConfig(): StripeRuntimeConfig {
     lookupKeys: {
       basicMonthly: 'wardrobe_basic_monthly',
       premiumMonthly: 'wardrobe_premium_monthly',
+      basicYearly: 'wardrobe_basic_yearly',
+      premiumYearly: 'wardrobe_premium_yearly',
     },
     priceIds: {},
   };
@@ -217,6 +219,124 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
         source,
       },
     });
+    expect(stripe.sessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it('defaults interval to monthly when omitted', async () => {
+    const stripe = mockStripe({ priceId: 'price_basic_monthly' });
+    const result = asResult(
+      await handler(event({ body: { tier: 'basic' } }), {
+        resolveEntitlement: async () => freeEntitlement(),
+        ensureStripeCustomer: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => stripe,
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ url: CHECKOUT_URL });
+    expect(stripe.pricesList).toHaveBeenCalledWith({
+      lookup_keys: ['wardrobe_basic_monthly'],
+      active: true,
+      limit: 1,
+    });
+  });
+
+  it.each([
+    ['basic', 'wardrobe_basic_yearly', 'price_basic_yearly'] as const,
+    ['premium', 'wardrobe_premium_yearly', 'price_premium_yearly'] as const,
+  ])(
+    'uses the yearly lookup key for %s',
+    async (tier, lookupKey, priceId) => {
+      const stripe = mockStripe({ priceId });
+      const result = asResult(
+        await handler(event({ body: { tier, interval: 'yearly' } }), {
+          resolveEntitlement: async () => freeEntitlement(),
+          ensureStripeCustomer: async () => 'cus_123',
+          getStripeConfig: async () => stripeConfig(),
+          getStripeClient: async () => stripe,
+        }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ url: CHECKOUT_URL });
+      expect(Object.keys(bodyOf(result) as object)).toEqual(['url']);
+      expect(stripe.pricesList).toHaveBeenCalledWith({
+        lookup_keys: [lookupKey],
+        active: true,
+        limit: 1,
+      });
+      expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [{ price: priceId, quantity: 1 }],
+          subscription_data: { metadata: { uid: UID, tier } },
+        }),
+      );
+    },
+  );
+
+  it('returns 400 INVALID_INTERVAL for an invalid interval without Stripe calls', async () => {
+    for (const interval of [
+      'weekly',
+      'Monthly',
+      'YEARLY',
+      '',
+      1,
+      true,
+      null,
+      { period: 'yearly' },
+      ['yearly'],
+    ]) {
+      const stripe = mockStripe();
+      const ensureCustomer = jest.fn().mockResolvedValue('cus_should_not_run');
+      const getStripeConfig = jest.fn().mockResolvedValue(stripeConfig());
+      const getStripeClient = jest.fn().mockResolvedValue(stripe);
+      const result = asResult(
+        await handler(event({ body: { tier: 'basic', interval } }), {
+          resolveEntitlement: async () => freeEntitlement(),
+          ensureStripeCustomer: ensureCustomer,
+          getStripeConfig,
+          getStripeClient,
+        }),
+      );
+
+      expect(result.statusCode).toBe(400);
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'INVALID_INTERVAL',
+          message: 'interval must be "monthly" or "yearly".',
+        },
+      });
+      expect(ensureCustomer).not.toHaveBeenCalled();
+      expect(getStripeConfig).not.toHaveBeenCalled();
+      expect(getStripeClient).not.toHaveBeenCalled();
+      expect(stripe.pricesList).not.toHaveBeenCalled();
+      expect(stripe.sessionsCreate).not.toHaveBeenCalled();
+    }
+  });
+
+  it('returns 503 BILLING_PRICE_NOT_FOUND when a yearly price is missing', async () => {
+    const stripe = mockStripe();
+    stripe.pricesList.mockResolvedValue({ data: [] });
+
+    const result = asResult(
+      await handler(event({ body: { tier: 'premium', interval: 'yearly' } }), {
+        resolveEntitlement: async () => freeEntitlement(),
+        ensureStripeCustomer: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => stripe,
+      }),
+    );
+
+    expect(result.statusCode).toBe(503);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'BILLING_PRICE_NOT_FOUND',
+        message: 'The requested billing plan is not available.',
+      },
+    });
+    expect(JSON.stringify(bodyOf(result))).not.toMatch(/price_/);
+    expect(JSON.stringify(bodyOf(result))).not.toContain('sk_test_');
     expect(stripe.sessionsCreate).not.toHaveBeenCalled();
   });
 

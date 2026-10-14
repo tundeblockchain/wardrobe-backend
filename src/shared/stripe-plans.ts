@@ -12,6 +12,12 @@ export type StripePaidTier = (typeof STRIPE_PAID_TIERS)[number];
 export const DEFAULT_STRIPE_LOOKUP_KEY_BASIC_MONTHLY = 'wardrobe_basic_monthly';
 export const DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY =
   'wardrobe_premium_monthly';
+export const DEFAULT_STRIPE_LOOKUP_KEY_BASIC_YEARLY = 'wardrobe_basic_yearly';
+export const DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_YEARLY =
+  'wardrobe_premium_yearly';
+
+export const CHECKOUT_INTERVALS = ['monthly', 'yearly'] as const;
+export type CheckoutInterval = (typeof CHECKOUT_INTERVALS)[number];
 
 /** GBP minor units. Matches the existing product matrix (£5 / £15). */
 export const DEFAULT_STRIPE_UNIT_AMOUNT_BASIC_MONTHLY = 500;
@@ -21,11 +27,15 @@ export const DEFAULT_STRIPE_CURRENCY = 'gbp';
 export interface StripeLookupKeys {
   basicMonthly: string;
   premiumMonthly: string;
+  basicYearly: string;
+  premiumYearly: string;
 }
 
 export interface StripePriceIds {
   basicMonthly?: string;
   premiumMonthly?: string;
+  basicYearly?: string;
+  premiumYearly?: string;
 }
 
 export interface StripePlanPrice {
@@ -57,6 +67,12 @@ export function resolveStripeLookupKeys(
     premiumMonthly:
       env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY?.trim() ||
       DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
+    basicYearly:
+      env.STRIPE_LOOKUP_KEY_BASIC_YEARLY?.trim() ||
+      DEFAULT_STRIPE_LOOKUP_KEY_BASIC_YEARLY,
+    premiumYearly:
+      env.STRIPE_LOOKUP_KEY_PREMIUM_YEARLY?.trim() ||
+      DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_YEARLY,
   };
 }
 
@@ -96,11 +112,19 @@ export function isStripePaidTier(value: string): value is StripePaidTier {
   );
 }
 
-/** Lookup key for a checkout `basic` / `premium` body tier. */
+export function isCheckoutInterval(value: string): value is CheckoutInterval {
+  return (CHECKOUT_INTERVALS as readonly string[]).includes(value);
+}
+
+/** Lookup key for a checkout `basic` / `premium` body tier and interval. */
 export function stripeLookupKeyForPaidTier(
   tier: PaidTier,
   keys: StripeLookupKeys,
+  interval: CheckoutInterval = 'monthly',
 ): string {
+  if (interval === 'yearly') {
+    return tier === 'premium' ? keys.premiumYearly : keys.basicYearly;
+  }
   return tier === 'premium' ? keys.premiumMonthly : keys.basicMonthly;
 }
 
@@ -108,9 +132,51 @@ export function stripeLookupKeyForPaidTier(
 export function stripePriceIdForPaidTier(
   tier: PaidTier,
   ids: StripePriceIds,
+  interval: CheckoutInterval = 'monthly',
 ): string | undefined {
-  const priceId = tier === 'premium' ? ids.premiumMonthly : ids.basicMonthly;
+  const priceId =
+    interval === 'yearly'
+      ? tier === 'premium'
+        ? ids.premiumYearly
+        : ids.basicYearly
+      : tier === 'premium'
+        ? ids.premiumMonthly
+        : ids.basicMonthly;
   return priceId?.trim() || undefined;
+}
+
+/** Monthly and yearly lookup keys resolve to the same paid tier. */
+export function paidTierFromStripeLookupKey(
+  lookupKey: string | undefined,
+  keys: StripeLookupKeys,
+): PaidTier | undefined {
+  if (!lookupKey) {
+    return undefined;
+  }
+  if (lookupKey === keys.premiumMonthly || lookupKey === keys.premiumYearly) {
+    return 'premium';
+  }
+  if (lookupKey === keys.basicMonthly || lookupKey === keys.basicYearly) {
+    return 'basic';
+  }
+  return undefined;
+}
+
+/** Pinned price ids (monthly or yearly) resolve to the same paid tier. */
+export function paidTierFromStripePriceId(
+  priceId: string | undefined,
+  ids: StripePriceIds | undefined,
+): PaidTier | undefined {
+  if (!priceId || !ids) {
+    return undefined;
+  }
+  if (priceId === ids.premiumMonthly || priceId === ids.premiumYearly) {
+    return 'premium';
+  }
+  if (priceId === ids.basicMonthly || priceId === ids.basicYearly) {
+    return 'basic';
+  }
+  return undefined;
 }
 
 function planDefinition(

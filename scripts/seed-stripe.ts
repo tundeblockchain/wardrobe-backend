@@ -7,6 +7,9 @@
  *
  *   STRIPE_SECRET_KEY=sk_test_... npm run stripe:seed
  *
+ * Yearly Prices (wardrobe_basic_yearly / wardrobe_premium_yearly) are
+ * created in the Stripe dashboard (WARDROBE-196). Do not seed them here.
+ *
  * Optional env (defaults match the existing product matrix):
  *   STRIPE_LOOKUP_KEY_BASIC_MONTHLY=wardrobe_basic_monthly
  *   STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY=wardrobe_premium_monthly

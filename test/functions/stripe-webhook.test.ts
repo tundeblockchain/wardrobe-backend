@@ -55,6 +55,8 @@ function stripeConfig(): StripeRuntimeConfig {
     lookupKeys: {
       basicMonthly: 'wardrobe_basic_monthly',
       premiumMonthly: 'wardrobe_premium_monthly',
+      basicYearly: 'wardrobe_basic_yearly',
+      premiumYearly: 'wardrobe_premium_yearly',
     },
     priceIds: {},
   };
@@ -352,6 +354,56 @@ describe('POST /billing/stripe-webhook (WARDROBE-190)', () => {
     expect(serialized).not.toContain(SECRET_KEY);
     expect(serialized).not.toContain(WEBHOOK_SECRET);
   });
+
+  it.each([
+    ['basic', 'wardrobe_basic_yearly', 'BASIC'] as const,
+    ['premium', 'wardrobe_premium_yearly', 'PREMIUM'] as const,
+  ])(
+    'maps a yearly %s lookup key to the %s paid tier',
+    async (tier, lookupKey, storedTier) => {
+      retrieve.mockResolvedValue(
+        subscription({
+          metadata: { uid: UID, tier },
+          items: {
+            data: [
+              {
+                current_period_end: PERIOD_END,
+                price: {
+                  id: `price_${tier}_yearly`,
+                  lookup_key: lookupKey,
+                },
+              },
+            ],
+          },
+        }),
+      );
+      const { payload, signature } = signedPayload(
+        stripeEventObject({ type: 'customer.subscription.created' }),
+      );
+
+      const result = asResult(
+        await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          status: 'applied',
+          tier,
+          eventId: EVENT_ID,
+        }),
+      );
+      expect(mockPutItem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tier: storedTier,
+          source: 'stripe',
+          store: 'STRIPE',
+          status: 'ACTIVE',
+          expiresAt: new Date(PERIOD_END * 1000).toISOString(),
+        }),
+      );
+    },
+  );
 
   it('applies a same-source upgrade from basic to premium', async () => {
     mockQueryByPk.mockResolvedValue([entitlementRow()]);

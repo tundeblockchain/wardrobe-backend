@@ -20,7 +20,7 @@ Working in this first cut:
 
 - `GET /health` (no auth)
 - `GET /me` (entitlement for Flutter WARDROBE-90)
-- `POST /billing/checkout-session` (Stripe Checkout for web Basic / Premium; WARDROBE-189)
+- `POST /billing/checkout-session` (Stripe Checkout for web Basic / Premium; optional `interval` monthly/yearly; WARDROBE-189 / WARDROBE-196)
 - `POST /billing/portal-session` (Stripe Billing Portal for an existing Stripe subscriber; WARDROBE-191)
 - `POST /billing/stripe-webhook` (Stripe-signed subscription webhook; no Firebase auth; WARDROBE-190)
 - `DELETE /me/content` (clear content; keeps account + entitlement)
@@ -391,7 +391,7 @@ There is no fallback to `userAttributes` alone, to the receipt owner, or to a st
 
 App Store / Play product IDs are **TBD**. Do not hardcode them in the app or this repo. Operators fill `productTiers` in Secrets Manager after the IDs exist.
 
-Stripe web prices (Basic / Premium monthly) are created with `npm run stripe:seed` using **lookup keys** from config (`stripeLookupKeyBasicMonthly` / `stripeLookupKeyPremiumMonthly`). Do not hard-code live Stripe price ids. Catalog limits stay the table above — paid tiers are unlimited (`limits: null`); do not add a second limits table.
+Stripe web **monthly** prices (Basic / Premium) are created with `npm run stripe:seed` using **lookup keys** from config (`stripeLookupKeyBasicMonthly` / `stripeLookupKeyPremiumMonthly`). Yearly prices (`wardrobe_basic_yearly` / `wardrobe_premium_yearly`) are created in the Stripe dashboard — do not add them to the seed script. Do not hard-code live Stripe price ids. Catalog limits stay the table above — paid tiers are unlimited (`limits: null`); do not add a second limits table.
 
 #### `GET /me`
 
@@ -2517,7 +2517,7 @@ scripts/backfill-paid-tier.ts    idempotent ENTITLEMENT source backfill (WARDROB
 src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154 / WARDROBE-188)
-  billing/             Stripe customer + Checkout Session (WARDROBE-189) + Billing Portal (WARDROBE-191)
+  billing/             Stripe customer + Checkout Session (WARDROBE-189 / WARDROBE-196) + Billing Portal (WARDROBE-191)
   stripe-webhook/      public Stripe webhook (WARDROBE-190; no Firebase authorizer)
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
@@ -2553,10 +2553,10 @@ src/shared/
   svix.ts
   types.ts
   stripe-config.ts   getStripeConfig / getStripeClient (WARDROBE-187; cached; never logs the secret)
-  stripe-plans.ts    Basic / Premium lookup keys; reuses featuresForTier
-  stripe-seed.ts     idempotent Product + monthly Price seed
+  stripe-plans.ts    Basic / Premium monthly + yearly lookup keys; reuses featuresForTier
+  stripe-seed.ts     idempotent Product + monthly Price seed (yearly prices are dashboard-only)
   stripe-customer.ts one Stripe customer per Firebase uid (WARDROBE-189)
-  stripe-checkout.ts Checkout Session + lookup-key price resolve (WARDROBE-189)
+  stripe-checkout.ts Checkout Session + lookup-key price resolve (WARDROBE-189 / WARDROBE-196)
   stripe-portal.ts   Billing Portal session (WARDROBE-191)
   stripe-cancel.ts   DELETE /me Stripe cancel (WARDROBE-192; fail-closed)
   stripe-webhook.ts  Stripe-Signature verify + subscription apply (WARDROBE-190)
@@ -2564,9 +2564,9 @@ src/shared/
   validation.ts
 ```
 
-## Stripe billing (WARDROBE-187 / WARDROBE-189 / WARDROBE-190 / WARDROBE-191 / WARDROBE-192)
+## Stripe billing (WARDROBE-187 / WARDROBE-189 / WARDROBE-190 / WARDROBE-191 / WARDROBE-192 / WARDROBE-196)
 
-WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. WARDROBE-191 adds authenticated `POST /billing/portal-session` for an existing Stripe subscriber. WARDROBE-190 adds public `POST /billing/stripe-webhook`. WARDROBE-192 cancels that customer's active Stripe subscriptions on `DELETE /me` before wiping data.
+WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. WARDROBE-196 adds optional checkout `interval` (`monthly` default, or `yearly`) and yearly lookup keys. WARDROBE-191 adds authenticated `POST /billing/portal-session` for an existing Stripe subscriber. WARDROBE-190 adds public `POST /billing/stripe-webhook`. WARDROBE-192 cancels that customer's active Stripe subscriptions on `DELETE /me` before wiping data.
 
 This stack creates **two** Secrets Manager secrets per stage and chooses which one Lambdas may read.
 
@@ -2611,6 +2611,8 @@ JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook si
 | `stripeMode` | `STRIPE_MODE` | `test` |
 | `stripeLookupKeyBasicMonthly` | `STRIPE_LOOKUP_KEY_BASIC_MONTHLY` | `wardrobe_basic_monthly` |
 | `stripeLookupKeyPremiumMonthly` | `STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY` | `wardrobe_premium_monthly` |
+| `stripeLookupKeyBasicYearly` | `STRIPE_LOOKUP_KEY_BASIC_YEARLY` | `wardrobe_basic_yearly` |
+| `stripeLookupKeyPremiumYearly` | `STRIPE_LOOKUP_KEY_PREMIUM_YEARLY` | `wardrobe_premium_yearly` |
 | `billingWebOrigin` | `BILLING_WEB_ORIGIN` | `https://wende-wardrobe.netlify.app` |
 | `stripePortalConfigurationId` | `STRIPE_PORTAL_CONFIGURATION_ID` | unset (Stripe default portal configuration) |
 
@@ -2620,7 +2622,7 @@ Seed Products and monthly Prices against whichever key is supplied (use a **test
 STRIPE_SECRET_KEY=sk_test_... npm run stripe:seed
 ```
 
-The script is idempotent: it finds an existing Price by `lookup_key` or creates Product + Price. It prints `productId` / `priceId` / `lookupKey`. It does not print the secret key. Optional amount / currency overrides: `STRIPE_UNIT_AMOUNT_BASIC_MONTHLY` (default `500`), `STRIPE_UNIT_AMOUNT_PREMIUM_MONTHLY` (default `1500`), `STRIPE_CURRENCY` (default `gbp`). Optional `STRIPE_PRICE_ID_*` pins an id in runtime config only — do not commit live price ids.
+The script is idempotent: it finds an existing Price by `lookup_key` or creates Product + Price. It prints `productId` / `priceId` / `lookupKey`. It does not print the secret key. Optional amount / currency overrides: `STRIPE_UNIT_AMOUNT_BASIC_MONTHLY` (default `500`), `STRIPE_UNIT_AMOUNT_PREMIUM_MONTHLY` (default `1500`), `STRIPE_CURRENCY` (default `gbp`). Optional `STRIPE_PRICE_ID_*` pins an id in runtime config only — do not commit live price ids. Yearly Prices (`wardrobe_basic_yearly` / `wardrobe_premium_yearly`) are created in the Stripe dashboard; `stripe:seed` does not create them.
 
 ### Stripe customer (one per Firebase uid)
 
@@ -2628,14 +2630,14 @@ Checkout looks up `stripeCustomerId` on `USER#{uid} / PROFILE`. If it is missing
 
 ### `POST /billing/checkout-session`
 
-Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium" }` only. Return URLs are **server-built** from `billingWebOrigin` — any `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` in the body or `Origin` / `Referer` headers is ignored.
+Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }`. `interval` defaults to `"monthly"` when omitted. Return URLs are **server-built** from `billingWebOrigin` — any `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` in the body or `Origin` / `Referer` headers is ignored. Response remains `{ "url" }` only.
 
 ```http
 POST /billing/checkout-session
 Authorization: Bearer <firebase-id-token>
 Content-Type: application/json
 
-{ "tier": "premium" }
+{ "tier": "premium", "interval": "yearly" }
 ```
 
 **200** — Checkout Session URL only:
@@ -2644,7 +2646,14 @@ Content-Type: application/json
 { "url": "https://checkout.stripe.com/c/pay/cs_test_…" }
 ```
 
-The session is `mode=subscription`. `customer` is the uid's Stripe customer. `client_reference_id` is the Firebase uid. `subscription_data.metadata` is `{ "uid", "tier" }`. The Price is resolved from the plan lookup key (`wardrobe_basic_monthly` / `wardrobe_premium_monthly`, overridable) via `stripe.prices.list({ lookup_keys })`, or from an optional `STRIPE_PRICE_ID_*` pin.
+The session is `mode=subscription`. `customer` is the uid's Stripe customer. `client_reference_id` is the Firebase uid. `subscription_data.metadata` is `{ "uid", "tier" }`. The Price is resolved from the plan lookup key via `stripe.prices.list({ lookup_keys })`, or from an optional `STRIPE_PRICE_ID_*` pin:
+
+| `tier` | `interval` | Default lookup key |
+| --- | --- | --- |
+| `basic` | `monthly` (default) | `wardrobe_basic_monthly` |
+| `premium` | `monthly` (default) | `wardrobe_premium_monthly` |
+| `basic` | `yearly` | `wardrobe_basic_yearly` |
+| `premium` | `yearly` | `wardrobe_premium_yearly` |
 
 Return URLs (not taken from the client):
 
@@ -2666,8 +2675,10 @@ If `GET /me` `paidTier` is already set from **any** source (`ios` / `android` / 
 | HTTP | `code` | When |
 | --- | --- | --- |
 | 400 | `VALIDATION_ERROR` | Missing / invalid JSON, or `tier` is not `"basic"` \| `"premium"` |
+| 400 | `INVALID_INTERVAL` | `interval` is present and is not `"monthly"` \| `"yearly"` (including non-strings). No Stripe calls. |
 | 401 | `UNAUTHENTICATED` | Missing Firebase authorizer identity |
 | 409 | `ALREADY_SUBSCRIBED` | Account already has a paid tier. Error body includes `source` (`ios` \| `android` \| `stripe`) when known |
+| 503 | `BILLING_PRICE_NOT_FOUND` | The Price for the requested plan (typically a dashboard-created yearly price) is missing. Message does not include Stripe ids. |
 
 ```json
 {
@@ -2756,7 +2767,7 @@ Handled event types (the handler re-fetches the subscription from Stripe and doe
 
 **Identity.** `subscription.metadata.uid`, then `customer.metadata.uid`, then the stored `STRIPE_CUSTOMER#{cus_id} / UID` mapping (complements `PROFILE.stripeCustomerId`).
 
-**Price → tier.** The Price `lookup_key` maps to `basic` / `premium` (`wardrobe_basic_monthly` / `wardrobe_premium_monthly`, overridable).
+**Price → tier.** The Price `lookup_key` (or a pinned price id) maps monthly and yearly keys to the same `basic` / `premium` tier (`wardrobe_basic_monthly` / `wardrobe_basic_yearly` → `basic`; `wardrobe_premium_monthly` / `wardrobe_premium_yearly` → `premium`, overridable). `expiresAt` still comes from `current_period_end`.
 
 **Grant / clear.** `active`, `trialing`, or `past_due` → `setPaidTierStatus(tier, source: 'stripe', expiresAt: current_period_end)`. `past_due` keeps the paid tier while Stripe retries payment. `canceled`, `unpaid`, `incomplete_expired`, or ended → clear the Stripe paid tier **only if** the current source is `stripe`. An active plan from `ios` / `android` is kept.
 

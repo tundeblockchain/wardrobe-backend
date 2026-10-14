@@ -14,7 +14,12 @@ import { AppError, Errors } from './errors';
 import { nowIso } from './ids';
 import { logger } from './logger';
 import { isPaidTier, normalizePaidTier } from './paid-tier';
-import { StripeLookupKeys } from './stripe-plans';
+import {
+  paidTierFromStripeLookupKey,
+  paidTierFromStripePriceId,
+  StripeLookupKeys,
+  StripePriceIds,
+} from './stripe-plans';
 import { PaidTier } from './types';
 
 export const STRIPE_WEBHOOK_EVENT_TYPES = [
@@ -215,13 +220,19 @@ export async function resolveStripeWebhookUid(options: {
 export function paidTierFromStripeSubscription(
   subscription: StripeSubscriptionLike,
   lookupKeys: StripeLookupKeys,
+  priceIds?: StripePriceIds,
 ): PaidTier | undefined {
   const lookupKey = lookupKeyFromSubscription(subscription);
-  if (lookupKey === lookupKeys.premiumMonthly) {
-    return 'premium';
+  const fromLookupKey = paidTierFromStripeLookupKey(lookupKey, lookupKeys);
+  if (fromLookupKey) {
+    return fromLookupKey;
   }
-  if (lookupKey === lookupKeys.basicMonthly) {
-    return 'basic';
+  const fromPriceId = paidTierFromStripePriceId(
+    priceIdFromSubscription(subscription),
+    priceIds,
+  );
+  if (fromPriceId) {
+    return fromPriceId;
   }
   return normalizePaidTier(subscription.metadata?.tier);
 }
@@ -324,6 +335,7 @@ export async function applyStripeSubscriptionState(options: {
   userId: string;
   subscription: StripeSubscriptionLike;
   lookupKeys: StripeLookupKeys;
+  priceIds?: StripePriceIds;
   eventId?: string;
   eventAtMs?: number;
 } & StripeWebhookApplyDeps): Promise<{
@@ -345,6 +357,7 @@ export async function applyStripeSubscriptionState(options: {
     const tier = paidTierFromStripeSubscription(
       options.subscription,
       options.lookupKeys,
+      options.priceIds,
     );
     if (!tier || !isPaidTier(tier)) {
       log.warn('Stripe webhook ignored; price lookup key does not map to a paid tier', {
@@ -422,6 +435,19 @@ function lookupKeyFromSubscription(
     return undefined;
   }
   return optionalString(price.lookup_key);
+}
+
+function priceIdFromSubscription(
+  subscription: StripeSubscriptionLike,
+): string | undefined {
+  const price = subscription.items?.data?.[0]?.price;
+  if (typeof price === 'string') {
+    return optionalString(price);
+  }
+  if (!price || typeof price !== 'object') {
+    return undefined;
+  }
+  return optionalString(price.id);
 }
 
 function customerIdOf(subscription: StripeSubscriptionLike): string | undefined {

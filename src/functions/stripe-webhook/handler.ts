@@ -147,6 +147,7 @@ export async function handleStripeWebhook(
         userId,
         subscription,
         lookupKeys: config.lookupKeys,
+        priceIds: config.priceIds,
         eventId,
         eventAtMs:
           typeof stripeEvent.created === 'number'

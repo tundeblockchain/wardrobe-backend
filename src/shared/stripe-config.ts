@@ -4,7 +4,9 @@ import { getSecretString, parseJsonObjectOrString } from './secrets';
 import { looksLikePlaceholderCredential } from './superwall-config';
 import {
   DEFAULT_STRIPE_LOOKUP_KEY_BASIC_MONTHLY,
+  DEFAULT_STRIPE_LOOKUP_KEY_BASIC_YEARLY,
   DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
+  DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_YEARLY,
   resolveStripeLookupKeys,
   StripeLookupKeys,
   StripePriceIds,
@@ -175,6 +177,8 @@ export async function getStripeConfig(
     priceIds: {
       basicMonthly: optionalEnv(env, 'STRIPE_PRICE_ID_BASIC_MONTHLY'),
       premiumMonthly: optionalEnv(env, 'STRIPE_PRICE_ID_PREMIUM_MONTHLY'),
+      basicYearly: optionalEnv(env, 'STRIPE_PRICE_ID_BASIC_YEARLY'),
+      premiumYearly: optionalEnv(env, 'STRIPE_PRICE_ID_PREMIUM_YEARLY'),
     },
   };
 
@@ -183,6 +187,8 @@ export async function getStripeConfig(
     mode: config.mode,
     lookupKeyBasicMonthly: config.lookupKeys.basicMonthly,
     lookupKeyPremiumMonthly: config.lookupKeys.premiumMonthly,
+    lookupKeyBasicYearly: config.lookupKeys.basicYearly,
+    lookupKeyPremiumYearly: config.lookupKeys.premiumYearly,
   });
 
   configCache = { secretArn, config };
@@ -211,6 +217,8 @@ export function defaultStripeLookupKeys(): StripeLookupKeys {
   return {
     basicMonthly: DEFAULT_STRIPE_LOOKUP_KEY_BASIC_MONTHLY,
     premiumMonthly: DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
+    basicYearly: DEFAULT_STRIPE_LOOKUP_KEY_BASIC_YEARLY,
+    premiumYearly: DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_YEARLY,
   };
 }
 

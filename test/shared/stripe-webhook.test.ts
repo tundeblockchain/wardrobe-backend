@@ -80,6 +80,8 @@ describe('stripe webhook helpers (WARDROBE-190)', () => {
     const keys = {
       basicMonthly: 'wardrobe_basic_monthly',
       premiumMonthly: 'wardrobe_premium_monthly',
+      basicYearly: 'wardrobe_basic_yearly',
+      premiumYearly: 'wardrobe_premium_yearly',
     };
     expect(
       paidTierFromStripeSubscription(
@@ -89,6 +91,37 @@ describe('stripe webhook helpers (WARDROBE-190)', () => {
           },
         },
         keys,
+      ),
+    ).toBe('basic');
+    expect(
+      paidTierFromStripeSubscription(
+        {
+          items: {
+            data: [{ price: { lookup_key: 'wardrobe_basic_yearly' } }],
+          },
+        },
+        keys,
+      ),
+    ).toBe('basic');
+    expect(
+      paidTierFromStripeSubscription(
+        {
+          items: {
+            data: [{ price: { lookup_key: 'wardrobe_premium_yearly' } }],
+          },
+        },
+        keys,
+      ),
+    ).toBe('premium');
+    expect(
+      paidTierFromStripeSubscription(
+        {
+          items: {
+            data: [{ price: { id: 'price_yearly_basic' } }],
+          },
+        },
+        keys,
+        { basicYearly: 'price_yearly_basic' },
       ),
     ).toBe('basic');
     expect(isStripeGrantStatus({ status: 'trialing' })).toBe(true);

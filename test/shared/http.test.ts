@@ -318,6 +318,30 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps INVALID_INTERVAL to a 400 envelope', () => {
+    const result = asResult(errorResponse(Errors.invalidInterval()));
+
+    expect(result.statusCode).toBe(400);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'INVALID_INTERVAL',
+        message: 'interval must be "monthly" or "yearly".',
+      },
+    });
+  });
+
+  it('maps BILLING_PRICE_NOT_FOUND to a 503 envelope', () => {
+    const result = asResult(errorResponse(Errors.billingPriceNotFound()));
+
+    expect(result.statusCode).toBe(503);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'BILLING_PRICE_NOT_FOUND',
+        message: 'The requested billing plan is not available.',
+      },
+    });
+  });
+
   it('maps ALREADY_SUBSCRIBED to a 409 envelope and adds source', () => {
     const result = asResult(errorResponse(Errors.alreadySubscribed('ios')));
 
