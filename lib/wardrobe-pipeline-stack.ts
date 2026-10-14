@@ -70,6 +70,10 @@ export class WardrobePipelineStack extends cdk.Stack {
     if (config.billingWebOrigin) {
       synthEnv.BILLING_WEB_ORIGIN = config.billingWebOrigin;
     }
+    if (config.stripePortalConfigurationId) {
+      synthEnv.STRIPE_PORTAL_CONFIGURATION_ID =
+        config.stripePortalConfigurationId;
+    }
 
     const synth = new CodeBuildStep('Synth', {
       input: source,

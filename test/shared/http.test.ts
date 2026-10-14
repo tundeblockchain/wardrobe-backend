@@ -296,6 +296,28 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps NOT_STRIPE_PLAN to a 409 envelope with source or null', () => {
+    const ios = asResult(errorResponse(Errors.notStripePlan('ios')));
+    expect(ios.statusCode).toBe(409);
+    expect(bodyOf(ios)).toEqual({
+      error: {
+        code: 'NOT_STRIPE_PLAN',
+        message: 'Manage plan is only available for Stripe subscriptions.',
+        source: 'ios',
+      },
+    });
+
+    const free = asResult(errorResponse(Errors.notStripePlan(null)));
+    expect(free.statusCode).toBe(409);
+    expect(bodyOf(free)).toEqual({
+      error: {
+        code: 'NOT_STRIPE_PLAN',
+        message: 'Manage plan is only available for Stripe subscriptions.',
+        source: null,
+      },
+    });
+  });
+
   it('maps ALREADY_SUBSCRIBED to a 409 envelope and adds source', () => {
     const result = asResult(errorResponse(Errors.alreadySubscribed('ios')));
 

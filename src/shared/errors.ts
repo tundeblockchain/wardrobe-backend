@@ -25,15 +25,20 @@ export type ErrorCode =
   | 'INTERNAL_ERROR'
   | 'ACCOUNT_DELETION_FAILED'
   | 'AUTH_DELETION_FAILED'
-  | 'ALREADY_SUBSCRIBED';
+  | 'ALREADY_SUBSCRIBED'
+  | 'NOT_STRIPE_PLAN';
 
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly statusCode: number;
   readonly headers?: Record<string, string>;
   readonly retryable?: boolean;
-  /** Present on `ALREADY_SUBSCRIBED` when the paid-tier source is known. */
-  readonly source?: string;
+  /**
+   * Present on `ALREADY_SUBSCRIBED` when the paid-tier source is known.
+   * `NOT_STRIPE_PLAN` always sets this: `ios` | `android` | `stripe`, or
+   * `null` when the effective plan is Free.
+   */
+  readonly source?: string | null;
 
   constructor(
     code: ErrorCode,
@@ -41,7 +46,7 @@ export class AppError extends Error {
     statusCode: number,
     headers?: Record<string, string>,
     retryable?: boolean,
-    source?: string,
+    source?: string | null,
   ) {
     super(message);
     this.name = 'AppError';
@@ -178,4 +183,13 @@ export const Errors = {
     source?: string,
     message = 'This account already has a paid plan.',
   ) => new AppError('ALREADY_SUBSCRIBED', message, 409, undefined, undefined, source),
+
+  /**
+   * Portal is Stripe-only (WARDROBE-191). `source` is the current
+   * `paidTier.source`, or `null` when the effective plan is Free.
+   */
+  notStripePlan: (
+    source: string | null,
+    message = 'Manage plan is only available for Stripe subscriptions.',
+  ) => new AppError('NOT_STRIPE_PLAN', message, 409, undefined, undefined, source),
 };

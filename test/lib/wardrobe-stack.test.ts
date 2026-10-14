@@ -1491,6 +1491,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'DELETE /me',
       'DELETE /me/content',
       'POST /billing/checkout-session',
+      'POST /billing/portal-session',
       'GET /me/events',
       'POST /me/events/ack',
       'POST /me/events/{eventId}/ack',

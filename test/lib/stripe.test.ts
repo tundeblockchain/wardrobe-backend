@@ -194,22 +194,35 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     }
   });
 
-  test('BillingFn checkout route is owner-auth and uses grantStripeSecretRead only', () => {
+  test('BillingFn checkout and portal routes are owner-auth and use grantStripeSecretRead only', () => {
     const routes = Object.values(
       template.findResources('AWS::ApiGatewayV2::Route'),
     ) as Array<{ Properties: { RouteKey: string; AuthorizationType?: string } }>;
     const checkout = routes.find(
       (route) => route.Properties.RouteKey === 'POST /billing/checkout-session',
     );
+    const portal = routes.find(
+      (route) => route.Properties.RouteKey === 'POST /billing/portal-session',
+    );
     expect(checkout?.Properties.AuthorizationType).toBe('CUSTOM');
+    expect(portal?.Properties.AuthorizationType).toBe('CUSTOM');
 
     const custom = synthTemplate('dev', {
       billingWebOrigin: 'https://preview.example',
+      stripePortalConfigurationId: 'bpc_from_context',
     });
     const billingEnv = functionEnv(custom, (vars) =>
       Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
     );
     expect(billingEnv?.BILLING_WEB_ORIGIN).toBe('https://preview.example');
+    expect(billingEnv?.STRIPE_PORTAL_CONFIGURATION_ID).toBe('bpc_from_context');
+    expect(billingEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
+    expect(billingEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
+
+    const defaultEnv = functionEnv(template, (vars) =>
+      Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
+    );
+    expect(defaultEnv).not.toHaveProperty('STRIPE_PORTAL_CONFIGURATION_ID');
   });
 
   test('API CORS stays allowOrigins *', () => {

@@ -1,7 +1,8 @@
 /**
- * Server-built Stripe Checkout return URLs (WARDROBE-189).
+ * Server-built Stripe Checkout and Billing Portal return URLs
+ * (WARDROBE-189 / WARDROBE-191).
  *
- * Never read success/cancel URLs from the request body or headers.
+ * Never read success/cancel/return URLs from the request body or headers.
  * The web origin comes from CDK context / env `billingWebOrigin`
  * (`BILLING_WEB_ORIGIN` at runtime).
  */
@@ -44,4 +45,10 @@ export function checkoutReturnUrls(origin?: string): {
     successUrl: checkoutSuccessUrl(resolved),
     cancelUrl: checkoutCancelUrl(resolved),
   };
+}
+
+/** Billing Portal return — settings plan hash. Never from the request. */
+export function portalReturnUrl(origin?: string): string {
+  const base = normalizeBillingWebOrigin(origin);
+  return `${base}/app/settings#plan`;
 }
