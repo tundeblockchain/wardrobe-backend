@@ -21,8 +21,9 @@ import {
  * receive the live secret ARN or grant.
  *
  * Checkout and portal share `BillingFn` (WARDROBE-189 / WARDROBE-191).
- * Account delete (`MeFn`, WARDROBE-192) is already granted. The webhook
- * Lambda (WARDROBE-190) should call `grantStripeSecretRead` when it exists.
+ * The public webhook (`StripeWebhookFn`, WARDROBE-190) also calls
+ * `grantStripeSecretRead` for the active-mode secret only. Account
+ * delete (`MeFn`, WARDROBE-192) is already granted.
  */
 export interface StripeSecretsProps {
   stage: string;

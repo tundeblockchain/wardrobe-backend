@@ -128,6 +128,19 @@ async function collectOwnedRows(
       continue;
     }
     add(item.PK, item.SK, item.entityType);
+    if (options.includeProfile && isProfileRow(item)) {
+      const customerId =
+        typeof item.stripeCustomerId === 'string'
+          ? item.stripeCustomerId.trim()
+          : '';
+      if (customerId) {
+        add(
+          keys.stripeCustomerPk(customerId),
+          keys.stripeCustomerSk,
+          'STRIPE_CUSTOMER',
+        );
+      }
+    }
   }
 
   const shares = (

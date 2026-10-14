@@ -112,7 +112,7 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(synthesized).not.toMatch(/price_1[A-Za-z0-9]{8,}/);
   });
 
-  test('defaults the stage to the test secret and grants it only to MeFn and BillingFn', () => {
+  test('defaults the stage to the test secret and grants it only to MeFn, BillingFn, and StripeWebhookFn', () => {
     const meEnv = functionEnv(
       template,
       (vars) => Boolean(vars.SUPERWALL_SECRET_ARN && vars.STRIPE_SECRET_ARN),
@@ -155,6 +155,9 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(secretActionsFor(template, 'BillingFn')).toEqual(
       expect.arrayContaining(['secretsmanager:GetSecretValue']),
     );
+    expect(secretActionsFor(template, 'StripeWebhookFn')).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
 
     const mePolicies = (
       Object.values(template.findResources('AWS::IAM::Policy')) as PolicyResource[]
@@ -168,12 +171,36 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(JSON.stringify(billingPolicies)).toContain('StripeTestSecret');
     expect(JSON.stringify(billingPolicies)).not.toContain('StripeLiveSecret');
 
+    const webhookPolicies = (
+      Object.values(template.findResources('AWS::IAM::Policy')) as PolicyResource[]
+    ).filter((policy) => JSON.stringify(policy).includes('StripeWebhookFn'));
+    expect(JSON.stringify(webhookPolicies)).toContain('StripeTestSecret');
+    expect(JSON.stringify(webhookPolicies)).not.toContain('StripeLiveSecret');
+
+    const webhookEnv = functionEnv(
+      template,
+      (vars) =>
+        Boolean(vars.STRIPE_SECRET_ARN) &&
+        !vars.BILLING_WEB_ORIGIN &&
+        !vars.SUPERWALL_SECRET_ARN,
+    );
+    expect(webhookEnv).toEqual(
+      expect.objectContaining({
+        STRIPE_MODE: 'test',
+        STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'wardrobe_basic_monthly',
+        STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'wardrobe_premium_monthly',
+        STRIPE_SECRET_ARN: expect.anything(),
+      }),
+    );
+    expect(webhookEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
+    expect(webhookEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
+
     const functionsWithStripe = (
       Object.values(template.findResources('AWS::Lambda::Function')) as Array<{
         Properties: { Environment?: { Variables?: Record<string, unknown> } };
       }>
     ).filter((fn) => fn.Properties.Environment?.Variables?.STRIPE_SECRET_ARN);
-    expect(functionsWithStripe).toHaveLength(2);
+    expect(functionsWithStripe).toHaveLength(3);
 
     for (const fnId of [
       'HealthFn',
@@ -194,7 +221,7 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     }
   });
 
-  test('BillingFn checkout and portal routes are owner-auth and use grantStripeSecretRead only', () => {
+  test('BillingFn checkout and portal are owner-auth; Stripe webhook is public', () => {
     const routes = Object.values(
       template.findResources('AWS::ApiGatewayV2::Route'),
     ) as Array<{ Properties: { RouteKey: string; AuthorizationType?: string } }>;
@@ -206,6 +233,15 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     );
     expect(checkout?.Properties.AuthorizationType).toBe('CUSTOM');
     expect(portal?.Properties.AuthorizationType).toBe('CUSTOM');
+
+    const webhook = routes.find(
+      (route) => route.Properties.RouteKey === 'POST /billing/stripe-webhook',
+    );
+    expect(webhook).toBeDefined();
+    expect(webhook?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+    template.hasOutput('StripeWebhookUrl', {
+      Description: Match.stringLikeRegexp('raw body'),
+    });
 
     const custom = synthTemplate('dev', {
       billingWebOrigin: 'https://preview.example',
@@ -267,6 +303,15 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     );
     expect(billingEnv?.STRIPE_MODE).toBe('live');
 
+    const webhookEnv = functionEnv(
+      prod,
+      (vars) =>
+        Boolean(vars.STRIPE_SECRET_ARN) &&
+        !vars.BILLING_WEB_ORIGIN &&
+        !vars.SUPERWALL_SECRET_ARN,
+    );
+    expect(webhookEnv?.STRIPE_MODE).toBe('live');
+
     const mePolicies = (
       Object.values(prod.findResources('AWS::IAM::Policy')) as PolicyResource[]
     ).filter((policy) => JSON.stringify(policy).includes('MeFn'));
@@ -278,6 +323,12 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     ).filter((policy) => JSON.stringify(policy).includes('BillingFn'));
     expect(JSON.stringify(billingPolicies)).toContain('StripeLiveSecret');
     expect(JSON.stringify(billingPolicies)).not.toContain('StripeTestSecret');
+
+    const webhookPolicies = (
+      Object.values(prod.findResources('AWS::IAM::Policy')) as PolicyResource[]
+    ).filter((policy) => JSON.stringify(policy).includes('StripeWebhookFn'));
+    expect(JSON.stringify(webhookPolicies)).toContain('StripeLiveSecret');
+    expect(JSON.stringify(webhookPolicies)).not.toContain('StripeTestSecret');
   });
 
   test('preview and dev stages cannot select live mode', () => {

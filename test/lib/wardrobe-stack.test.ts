@@ -1451,6 +1451,12 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(publicShare).toBeDefined();
     expect(publicShare?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
 
+    const stripeWebhook = routes.find(
+      (route) => route.Properties.RouteKey === 'POST /billing/stripe-webhook',
+    );
+    expect(stripeWebhook).toBeDefined();
+    expect(stripeWebhook?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
     for (const routeKey of [
       'GET /wardrobes',
       'POST /wardrobes',

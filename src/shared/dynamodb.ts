@@ -99,6 +99,19 @@ export const keys = {
    */
   rateLimitPk: (scope: string, hashedId: string) => `RATE#${scope}#${hashedId}`,
   rateLimitSk: (windowStart: number) => `WINDOW#${windowStart}`,
+  /**
+   * Processed Stripe webhook event (WARDROBE-190). Conditional create +
+   * Dynamo TTL so retries are skipped and rows expire.
+   */
+  stripeEventPk: (eventId: string) => `STRIPE_EVENT#${eventId}`,
+  stripeEventSk: 'PROCESSED',
+  /**
+   * Reverse mapping Stripe customer → Firebase uid (WARDROBE-190).
+   * Complements `USER#{uid} / PROFILE.stripeCustomerId`.
+   */
+  stripeCustomerPk: (stripeCustomerId: string) =>
+    `STRIPE_CUSTOMER#${stripeCustomerId}`,
+  stripeCustomerSk: 'UID',
 };
 
 export async function putItem(item: DynamoItem): Promise<void> {

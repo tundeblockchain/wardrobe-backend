@@ -32,6 +32,7 @@ import {
 } from '../../src/shared/paid-tier-backfill';
 import {
   featuresForTier,
+  clearStripePaidTier,
   setPaidTierStatus,
   toEntitlementDto,
 } from '../../src/shared/entitlements';
@@ -295,6 +296,92 @@ describe('setPaidTierStatus (WARDROBE-188)', () => {
       }),
     );
     expect(mockPutItem).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('clearStripePaidTier (WARDROBE-190)', () => {
+  const nowIso = '2026-10-14T12:00:00.000Z';
+  const nowMs = Date.parse(nowIso);
+
+  beforeEach(() => {
+    mockQueryByPk.mockReset();
+    mockPutItem.mockReset();
+    mockQueryByPk.mockResolvedValue([]);
+    mockPutItem.mockResolvedValue(undefined);
+  });
+
+  it('clears an active Stripe paid tier', async () => {
+    mockQueryByPk.mockResolvedValue([
+      {
+        PK: 'USER#uid',
+        SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_stripe',
+        entityType: 'ENTITLEMENT',
+        userId: 'uid',
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        store: 'STRIPE',
+        source: 'stripe',
+        expiresAt: '2026-11-01T00:00:00.000Z',
+        createdAt: '2026-10-01T00:00:00.000Z',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      },
+    ]);
+
+    const result = await clearStripePaidTier({
+      userId: 'uid',
+      lastEventId: 'evt_cancel',
+      nowIso,
+      nowMs,
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        cleared: true,
+        reason: 'cleared',
+        stored: expect.objectContaining({
+          tier: 'FREE',
+          status: 'EXPIRED',
+          source: 'stripe',
+        }),
+      }),
+    );
+    expect(mockPutItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier: 'FREE',
+        status: 'EXPIRED',
+        source: 'stripe',
+        lastEventId: 'evt_cancel',
+      }),
+    );
+  });
+
+  it('does not clear an active ios plan', async () => {
+    mockQueryByPk.mockResolvedValue([
+      {
+        PK: 'USER#uid',
+        SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_ios',
+        entityType: 'ENTITLEMENT',
+        userId: 'uid',
+        tier: 'BASIC',
+        status: 'ACTIVE',
+        store: 'APP_STORE',
+        source: 'ios',
+        expiresAt: '2026-11-01T00:00:00.000Z',
+        createdAt: '2026-10-01T00:00:00.000Z',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      },
+    ]);
+
+    const result = await clearStripePaidTier({
+      userId: 'uid',
+      nowIso,
+      nowMs,
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ cleared: false, reason: 'not_stripe' }),
+    );
+    expect(mockPutItem).not.toHaveBeenCalled();
   });
 });
 

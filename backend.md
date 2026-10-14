@@ -226,7 +226,7 @@ Authorization: Bearer <firebase-id-token>
 - `success_url` = `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}`
 - `cancel_url` = `{origin}/app/billing/cancel`
 
-Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `200 { "url" }` only. An account that already has a paid tier from any source (`ios` / `android` / `stripe`) receives `409 ALREADY_SUBSCRIBED` with `error.source` when known. Webhook is a later story.
+Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `200 { "url" }` only. An account that already has a paid tier from any source (`ios` / `android` / `stripe`) receives `409 ALREADY_SUBSCRIBED` with `error.source` when known.
 
 ### Stripe Billing Portal (WARDROBE-191)
 
@@ -243,11 +243,23 @@ Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `
 
 Only an account whose current `paidTier.source` is `"stripe"` and that already has a stored `stripeCustomerId` may open the portal. Otherwise `409 NOT_STRIPE_PLAN` with `error.source` (`ios` / `android` / `stripe`, or `null` when the effective plan is Free). The handler never creates a Stripe customer.
 
-This is where a Basic Stripe subscriber upgrades to Premium. The Stripe Customer Portal configuration must allow switching between the Basic and Premium prices. Optionally set CDK context / env `stripePortalConfigurationId` (`STRIPE_PORTAL_CONFIGURATION_ID`) so the session uses that configuration. Webhook is a later story.
+This is where a Basic Stripe subscriber upgrades to Premium. The Stripe Customer Portal configuration must allow switching between the Basic and Premium prices. Optionally set CDK context / env `stripePortalConfigurationId` (`STRIPE_PORTAL_CONFIGURATION_ID`) so the session uses that configuration.
 
 ### Account delete Stripe cancel (WARDROBE-192)
 
 `DELETE /me` cancels Stripe subscriptions before wiping data. If `USER#{uid}/PROFILE.stripeCustomerId` is set, list that customer's `active` / `trialing` / `past_due` subscriptions and cancel each immediately (`subscriptions.cancel`, idempotency key `account-delete-cancel-{subscriptionId}`). Uses the dedicated Stripe secret via `getStripeConfig` / `getStripeClient`; Superwall `stripeSecretKey` is a compatibility fallback only. No `stripeCustomerId`: skip Stripe cancel and proceed. No matching subscriptions, `resource_missing`, or already-canceled: proceed. Stored `stripeCustomerId` with empty / placeholder / unavailable Stripe, or any other Stripe cancel failure: `503 BILLING_CANCEL_FAILED` and do not delete. On that error the client signs the user out, returns to login, and shows a try-again message (WARDROBE-152). App Store / Play cancel stays best-effort. Success body remains `{ "deleted": true }`.
+
+### Stripe webhook (WARDROBE-190)
+
+```http
+POST /billing/stripe-webhook
+```
+
+Public — no Firebase authorizer. Verify `Stripe-Signature` against the decoded raw body bytes (base64-decode when `isBase64Encoded`) before any JSON parse. `webhookSecret` is read from the active-mode Stripe secret. Bad or missing signature → 400 and no writes.
+
+Handle `checkout.session.completed` and `customer.subscription.created` / `updated` / `deleted`. Re-fetch the subscription from Stripe. Resolve uid from `subscription.metadata.uid`, then `customer.metadata.uid`, then `STRIPE_CUSTOMER#{cus_id} / UID`. Map Price lookup key → `basic` / `premium`. `active` / `trialing` → `setPaidTierStatus` with `source: 'stripe'` and `expiresAt = current_period_end`. `canceled` / `unpaid` / `incomplete_expired` / ended → clear the Stripe paid tier only when the current source is `stripe`. A different active source is kept; log `uid`, existing source, and Stripe subscription id; return 200. Record processed event ids (`STRIPE_EVENT#{id} / PROCESSED`, conditional write + TTL).
+
+After deploy, create the Stripe test webhook endpoint at `{ApiUrl}/billing/stripe-webhook` for those event types and put its `whsec_…` into `webhookSecret` of `wardrobe/{stage}/stripe-test`. `GET /me` gains no new fields. API CORS is unchanged.
 
 ---
 
@@ -665,6 +677,8 @@ Example:
 PK                         SK                         GSI1PK                GSI1SK
 ----------------------------------------------------
 USER#123                   PROFILE                    (optional stripeCustomerId)
+STRIPE_EVENT#{eventId}     PROCESSED                  (ttl; WARDROBE-190)
+STRIPE_CUSTOMER#{cus_id}   UID                        (WARDROBE-190)
 
 USER#123                   WARDROBE#wd1
 USER#123                   WARDROBE#wd2
@@ -1215,9 +1229,10 @@ Owner-only. Not entitlement-gated. See README “Related shopping links (WARDROB
 ```http
 POST /billing/checkout-session
 POST /billing/portal-session
+POST /billing/stripe-webhook
 ```
 
-Authenticated. Checkout is WARDROBE-189 (`{ "tier": "basic" | "premium" }` → `{ "url" }`). Portal is WARDROBE-191 (no body; Stripe-source paid tier + stored `stripeCustomerId` only; `{ "url" }`). Return URLs are server-built from `billingWebOrigin`. See **Stripe Checkout** and **Stripe Billing Portal** above.
+`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Return URLs for checkout and portal are server-built from `billingWebOrigin`.
 
 ### Uploads
 

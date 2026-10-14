@@ -49,6 +49,8 @@ export class WardrobeStack extends cdk.Stack {
     // Single-table PK/SK matches backend.md §16–17 access patterns:
     // USER#{uid}                 / PROFILE (stripeCustomerId) | WARDROBE#{wardrobeId} | AIPROFILE#{id}
     //                            / EVENT#{eventId} | DEVICE#{deviceId}
+    // STRIPE_EVENT#{eventId}     / PROCESSED (ttl)
+    // STRIPE_CUSTOMER#{cus_id}   / UID
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
     //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
     // SHARE#{token}              / SHARE
@@ -374,6 +376,14 @@ export class WardrobeStack extends cdk.Stack {
           : {}),
       },
     });
+    // WARDROBE-190: public Stripe webhook. No Firebase authorizer.
+    // Signature is verified against the raw body (base64-decoded when
+    // API Gateway sets isBase64Encoded). Active-mode secret is granted
+    // via grantStripeSecretRead only (below).
+    const stripeWebhookFn = this.lambda('StripeWebhookFn', 'stripe-webhook', {
+      ...commonLambdaProps,
+      timeout: cdk.Duration.seconds(15),
+    });
     // WARDROBE-114 job-done inbox + FCM device registration. Workers write
     // events; this Lambda only lists / acks / registers tokens.
     const eventsFn = this.lambda('EventsFn', 'events', commonLambdaProps);
@@ -509,6 +519,7 @@ export class WardrobeStack extends cdk.Stack {
     table.grantReadWriteData(meFn);
     firebaseAdminSecret.grantRead(meFn);
     table.grantReadWriteData(billingFn);
+    table.grantReadWriteData(stripeWebhookFn);
     table.grantReadWriteData(eventsFn);
     table.grantReadWriteData(wardrobesFn);
     table.grantReadWriteData(itemsFn);
@@ -745,6 +756,10 @@ export class WardrobeStack extends cdk.Stack {
       'BillingIntegration',
       billingFn,
     );
+    const stripeWebhookIntegration = new HttpLambdaIntegration(
+      'StripeWebhookIntegration',
+      stripeWebhookFn,
+    );
     const eventsIntegration = new HttpLambdaIntegration('EventsIntegration', eventsFn);
     const wardrobesIntegration = new HttpLambdaIntegration('WardrobesIntegration', wardrobesFn);
     const itemsIntegration = new HttpLambdaIntegration('ItemsIntegration', itemsFn);
@@ -792,6 +807,15 @@ export class WardrobeStack extends cdk.Stack {
       methods: [apigwv2.HttpMethod.POST],
       integration: billingIntegration,
       authorizer: firebaseAuthorizer,
+    });
+
+    // Public Stripe webhook — no Firebase authorizer (WARDROBE-190).
+    // HTTP API Lambda proxy (payload 2.0) forwards the raw body; the
+    // handler base64-decodes when isBase64Encoded before HMAC verify.
+    httpApi.addRoutes({
+      path: '/billing/stripe-webhook',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: stripeWebhookIntegration,
     });
 
     httpApi.addRoutes({
@@ -1110,8 +1134,8 @@ export class WardrobeStack extends cdk.Stack {
     // Isolated WARDROBE-187 Stripe secrets. Mode is CDK context stripeMode /
     // STRIPE_MODE (default test). Preview and dev cannot select live.
     // grantStripeSecretRead grants the **active** mode secret only.
-    // MeFn (account delete / WARDROBE-192 cancel) + BillingFn
-    // (checkout 189 + portal 191). Webhook (190) is not granted here.
+    // MeFn (account delete / WARDROBE-192 cancel), BillingFn
+    // (checkout 189 + portal 191), StripeWebhookFn (WARDROBE-190).
     const stripe = addStripeSecrets(this, { stage, removalPolicy });
     grantStripeSecretRead(meFn, stripe.activeSecret, {
       mode: stripe.mode,
@@ -1120,6 +1144,16 @@ export class WardrobeStack extends cdk.Stack {
     grantStripeSecretRead(billingFn, stripe.activeSecret, {
       mode: stripe.mode,
       lookupKeys: stripe.lookupKeys,
+    });
+    grantStripeSecretRead(stripeWebhookFn, stripe.activeSecret, {
+      mode: stripe.mode,
+      lookupKeys: stripe.lookupKeys,
+    });
+
+    new cdk.CfnOutput(this, 'StripeWebhookUrl', {
+      value: `${httpApi.apiEndpoint}/billing/stripe-webhook`,
+      description:
+        'Public Stripe webhook URL (no Firebase auth; Stripe-Signature verified against the raw body)',
     });
 
     new cdk.CfnOutput(this, 'ApiUrl', {
