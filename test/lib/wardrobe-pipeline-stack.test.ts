@@ -114,3 +114,35 @@ describe('WardrobePipelineStack upload CORS synth env (WARDROBE-176)', () => {
     }
   });
 });
+
+describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
+  test('bakes non-empty Stripe mode and lookup keys into the Synth project', () => {
+    const template = synthPipeline({
+      ...pipelineSource,
+      stripeMode: 'test',
+      stripeLookupKeyBasicMonthly: 'wardrobe_basic_monthly',
+      stripeLookupKeyPremiumMonthly: 'wardrobe_premium_monthly',
+    });
+
+    const env = synthStepEnv(template);
+    expect(env.STRIPE_MODE).toBe('test');
+    expect(env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY).toBe('wardrobe_basic_monthly');
+    expect(env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY).toBe(
+      'wardrobe_premium_monthly',
+    );
+  });
+
+  test('omits Stripe synth env vars when config does not set them', () => {
+    const template = synthPipeline(pipelineSource);
+    const env = synthStepEnv(template);
+
+    expect(env).not.toHaveProperty('STRIPE_MODE');
+    expect(env).not.toHaveProperty('STRIPE_LOOKUP_KEY_BASIC_MONTHLY');
+    expect(env).not.toHaveProperty('STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY');
+    for (const vars of codeBuildEnvMaps(template)) {
+      expect(vars).not.toHaveProperty('STRIPE_MODE');
+      expect(vars).not.toHaveProperty('STRIPE_LOOKUP_KEY_BASIC_MONTHLY');
+      expect(vars).not.toHaveProperty('STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY');
+    }
+  });
+});

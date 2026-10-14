@@ -56,6 +56,17 @@ export class WardrobePipelineStack extends cdk.Stack {
     if (config.uploadAllowedOrigins) {
       synthEnv.UPLOAD_ALLOWED_ORIGINS = config.uploadAllowedOrigins;
     }
+    if (config.stripeMode) {
+      synthEnv.STRIPE_MODE = config.stripeMode;
+    }
+    if (config.stripeLookupKeyBasicMonthly) {
+      synthEnv.STRIPE_LOOKUP_KEY_BASIC_MONTHLY =
+        config.stripeLookupKeyBasicMonthly;
+    }
+    if (config.stripeLookupKeyPremiumMonthly) {
+      synthEnv.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY =
+        config.stripeLookupKeyPremiumMonthly;
+    }
 
     const synth = new CodeBuildStep('Synth', {
       input: source,

@@ -100,6 +100,50 @@ describe('resolveAppConfig', () => {
     );
   });
 
+  it('prefers CDK context over env for stripeMode and lookup keys', () => {
+    process.env.STRIPE_MODE = 'live';
+    process.env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY = 'env_basic';
+    process.env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY = 'env_premium';
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) => {
+        if (key === 'stripeMode') return 'test';
+        if (key === 'stripeLookupKeyBasicMonthly') return 'ctx_basic';
+        if (key === 'stripeLookupKeyPremiumMonthly') return 'ctx_premium';
+        return undefined;
+      },
+    });
+    expect(config.stripeMode).toBe('test');
+    expect(config.stripeLookupKeyBasicMonthly).toBe('ctx_basic');
+    expect(config.stripeLookupKeyPremiumMonthly).toBe('ctx_premium');
+  });
+
+  it('reads stripe settings from env when context is empty', () => {
+    process.env.STRIPE_MODE = 'test';
+    process.env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY = 'env_basic';
+    process.env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY = 'env_premium';
+    const config = resolveAppConfig({ tryGetContext: () => undefined });
+    expect(config.stripeMode).toBe('test');
+    expect(config.stripeLookupKeyBasicMonthly).toBe('env_basic');
+    expect(config.stripeLookupKeyPremiumMonthly).toBe('env_premium');
+  });
+
+  it('leaves stripe settings undefined when context and env are empty', () => {
+    delete process.env.STRIPE_MODE;
+    delete process.env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY;
+    delete process.env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY;
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'stripeMode' ||
+        key === 'stripeLookupKeyBasicMonthly' ||
+        key === 'stripeLookupKeyPremiumMonthly'
+          ? '  '
+          : undefined,
+    });
+    expect(config.stripeMode).toBeUndefined();
+    expect(config.stripeLookupKeyBasicMonthly).toBeUndefined();
+    expect(config.stripeLookupKeyPremiumMonthly).toBeUndefined();
+  });
+
   it('leaves uploadAllowedOrigins undefined when context and env are empty', () => {
     delete process.env.UPLOAD_ALLOWED_ORIGINS;
     const config = resolveAppConfig({

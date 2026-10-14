@@ -22,6 +22,7 @@ import {
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
 import { addEntitlements } from './entitlements';
+import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
 import { resolveUploadAllowedOrigins } from './upload-cors';
 
@@ -1061,6 +1062,16 @@ export class WardrobeStack extends cdk.Stack {
       'SUPERWALL_SECRET_ARN',
       entitlements.superwallSecret.secretArn,
     );
+
+    // Isolated WARDROBE-187 Stripe secrets. Mode is CDK context stripeMode /
+    // STRIPE_MODE (default test). Preview and dev cannot select live.
+    // grantStripeSecretRead is the pattern for checkout / portal / webhook
+    // (WARDROBE-189–191). Account delete (MeFn) is granted now.
+    const stripe = addStripeSecrets(this, { stage, removalPolicy });
+    grantStripeSecretRead(meFn, stripe.activeSecret, {
+      mode: stripe.mode,
+      lookupKeys: stripe.lookupKeys,
+    });
 
     new cdk.CfnOutput(this, 'ApiUrl', {
       value: httpApi.apiEndpoint,

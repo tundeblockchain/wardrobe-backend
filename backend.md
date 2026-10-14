@@ -1282,7 +1282,7 @@ At minimum:
 - Use IAM least privilege for every Lambda.
 - Store secrets in Secrets Manager or Parameter Store.
 - Encrypt DynamoDB and S3 using AWS-managed or customer-managed keys as appropriate.
-- Log security-relevant failures without logging sensitive tokens.
+- Log security-relevant failures without logging sensitive tokens or Stripe secret keys.
 - Validate all request bodies.
 - Validate all route parameters.
 - Add API throttling/rate limiting where appropriate.
@@ -1505,6 +1505,7 @@ CloudWatch:
 Secrets Manager / Parameter Store:
 - External API credentials
 - AI provider credentials when required (Gemini background-removal, Gemini colour detection, optional classifier / recommender)
+- Stripe billing credentials as two secrets per stage (`wardrobe/{stage}/stripe-test` and `wardrobe/{stage}/stripe-live`). The stage selects one via CDK context `stripeMode` (default `test`). Preview and `dev` must not read live keys. Never commit or log the Stripe secret.
 ```
 
 Whether individual API operations use separate Lambdas or grouped domain Lambdas can be decided during implementation.
