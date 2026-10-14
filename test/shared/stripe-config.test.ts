@@ -98,6 +98,8 @@ describe('getStripeConfig', () => {
     expect(first.webhookSecret).toBe(webhookSecret);
     expect(first.lookupKeys.basicMonthly).toBe('wardrobe_basic_monthly');
     expect(first.lookupKeys.premiumMonthly).toBe('wardrobe_premium_monthly');
+    expect(first.lookupKeys.basicYearly).toBe('wardrobe_basic_yearly');
+    expect(first.lookupKeys.premiumYearly).toBe('wardrobe_premium_yearly');
     expect(second).toBe(first);
     expect(getSecretString).toHaveBeenCalledTimes(1);
   });

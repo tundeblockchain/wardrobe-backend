@@ -109,6 +109,14 @@ export function grantStripeSecretRead(
     'STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY',
     options.lookupKeys.premiumMonthly,
   );
+  fn.addEnvironment(
+    'STRIPE_LOOKUP_KEY_BASIC_YEARLY',
+    options.lookupKeys.basicYearly,
+  );
+  fn.addEnvironment(
+    'STRIPE_LOOKUP_KEY_PREMIUM_YEARLY',
+    options.lookupKeys.premiumYearly,
+  );
 }
 
 export function resolveStripeModeForConstruct(
@@ -130,6 +138,16 @@ function resolveStripeLookupKeysForConstruct(scope: Construct): StripeLookupKeys
       scope,
       'stripeLookupKeyPremiumMonthly',
       process.env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
+    ),
+    STRIPE_LOOKUP_KEY_BASIC_YEARLY: readContextOrEnv(
+      scope,
+      'stripeLookupKeyBasicYearly',
+      process.env.STRIPE_LOOKUP_KEY_BASIC_YEARLY,
+    ),
+    STRIPE_LOOKUP_KEY_PREMIUM_YEARLY: readContextOrEnv(
+      scope,
+      'stripeLookupKeyPremiumYearly',
+      process.env.STRIPE_LOOKUP_KEY_PREMIUM_YEARLY,
     ),
   };
   return resolveStripeLookupKeys(env);

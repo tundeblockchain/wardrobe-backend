@@ -123,6 +123,8 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
         STRIPE_MODE: 'test',
         STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'wardrobe_basic_monthly',
         STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'wardrobe_premium_monthly',
+        STRIPE_LOOKUP_KEY_BASIC_YEARLY: 'wardrobe_basic_yearly',
+        STRIPE_LOOKUP_KEY_PREMIUM_YEARLY: 'wardrobe_premium_yearly',
         STRIPE_SECRET_ARN: expect.anything(),
       }),
     );
@@ -139,6 +141,8 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
         STRIPE_MODE: 'test',
         STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'wardrobe_basic_monthly',
         STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'wardrobe_premium_monthly',
+        STRIPE_LOOKUP_KEY_BASIC_YEARLY: 'wardrobe_basic_yearly',
+        STRIPE_LOOKUP_KEY_PREMIUM_YEARLY: 'wardrobe_premium_yearly',
         STRIPE_SECRET_ARN: expect.anything(),
         BILLING_WEB_ORIGIN: 'https://wende-wardrobe.netlify.app',
       }),
@@ -189,6 +193,8 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
         STRIPE_MODE: 'test',
         STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'wardrobe_basic_monthly',
         STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'wardrobe_premium_monthly',
+        STRIPE_LOOKUP_KEY_BASIC_YEARLY: 'wardrobe_basic_yearly',
+        STRIPE_LOOKUP_KEY_PREMIUM_YEARLY: 'wardrobe_premium_yearly',
         STRIPE_SECRET_ARN: expect.anything(),
       }),
     );
@@ -273,12 +279,16 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     const custom = synthTemplate('dev', {
       stripeLookupKeyBasicMonthly: 'basic_from_context',
       stripeLookupKeyPremiumMonthly: 'premium_from_context',
+      stripeLookupKeyBasicYearly: 'basic_yearly_from_context',
+      stripeLookupKeyPremiumYearly: 'premium_yearly_from_context',
     });
     const meEnv = functionEnv(custom, (vars) => Boolean(vars.STRIPE_SECRET_ARN));
     expect(meEnv).toEqual(
       expect.objectContaining({
         STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'basic_from_context',
         STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'premium_from_context',
+        STRIPE_LOOKUP_KEY_BASIC_YEARLY: 'basic_yearly_from_context',
+        STRIPE_LOOKUP_KEY_PREMIUM_YEARLY: 'premium_yearly_from_context',
       }),
     );
   });

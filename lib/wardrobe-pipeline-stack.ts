@@ -67,6 +67,13 @@ export class WardrobePipelineStack extends cdk.Stack {
       synthEnv.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY =
         config.stripeLookupKeyPremiumMonthly;
     }
+    if (config.stripeLookupKeyBasicYearly) {
+      synthEnv.STRIPE_LOOKUP_KEY_BASIC_YEARLY = config.stripeLookupKeyBasicYearly;
+    }
+    if (config.stripeLookupKeyPremiumYearly) {
+      synthEnv.STRIPE_LOOKUP_KEY_PREMIUM_YEARLY =
+        config.stripeLookupKeyPremiumYearly;
+    }
     if (config.billingWebOrigin) {
       synthEnv.BILLING_WEB_ORIGIN = config.billingWebOrigin;
     }

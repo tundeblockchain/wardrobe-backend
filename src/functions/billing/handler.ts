@@ -8,6 +8,7 @@ import { logger } from '../../shared/logger';
 import { toPaidTierStatus } from '../../shared/paid-tier';
 import {
   createSubscriptionCheckoutSession,
+  parseCheckoutInterval,
   parseCheckoutTier,
   StripeCheckoutClient,
 } from '../../shared/stripe-checkout';
@@ -45,13 +46,15 @@ export interface BillingHandlerDeps {
 
 interface CheckoutSessionBody {
   tier?: unknown;
+  interval?: unknown;
 }
 
 /**
- * Authenticated Stripe Checkout (WARDROBE-189) and Billing Portal
- * (WARDROBE-191).
+ * Authenticated Stripe Checkout (WARDROBE-189 / WARDROBE-196) and
+ * Billing Portal (WARDROBE-191).
  *
- * POST /billing/checkout-session  { "tier": "basic" | "premium" }
+ * POST /billing/checkout-session
+ *   { "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }
  * POST /billing/portal-session    (no body required)
  *
  * Checkout reuses one Stripe customer per Firebase uid and rejects
@@ -96,6 +99,7 @@ async function createCheckoutSession(
 ): Promise<{ url: string }> {
   const body = parseJsonBody<CheckoutSessionBody>(event);
   const tier = parseCheckoutTier(body.tier);
+  const interval = parseCheckoutInterval(body.interval);
 
   const loadEntitlement = deps.resolveEntitlement ?? resolveEntitlement;
   const entitlement = await loadEntitlement(userId);
@@ -129,6 +133,7 @@ async function createCheckoutSession(
   return createSubscriptionCheckoutSession({
     userId,
     tier,
+    interval,
     customerId,
     stripe,
     config,

@@ -8,6 +8,8 @@ import { logger } from './logger';
 import { isPaidTier } from './paid-tier';
 import { StripeRuntimeConfig } from './stripe-config';
 import {
+  CheckoutInterval,
+  isCheckoutInterval,
   stripeLookupKeyForPaidTier,
   stripePriceIdForPaidTier,
 } from './stripe-plans';
@@ -52,12 +54,31 @@ export function parseCheckoutTier(value: unknown): PaidTier {
   throw Errors.validation('tier must be "basic" or "premium".');
 }
 
+/**
+ * Optional checkout `interval`. Missing / undefined defaults to monthly.
+ * Any other value, including non-strings, is `INVALID_INTERVAL`.
+ */
+export function parseCheckoutInterval(value: unknown): CheckoutInterval {
+  if (value === undefined) {
+    return 'monthly';
+  }
+  if (typeof value === 'string' && isCheckoutInterval(value.trim())) {
+    return value.trim() as CheckoutInterval;
+  }
+  throw Errors.invalidInterval();
+}
+
 export async function resolveCheckoutPriceId(
   tier: PaidTier,
   deps: ResolveCheckoutPriceDeps,
+  interval: CheckoutInterval = 'monthly',
 ): Promise<{ priceId: string; lookupKey: string }> {
-  const lookupKey = stripeLookupKeyForPaidTier(tier, deps.config.lookupKeys);
-  const pinned = stripePriceIdForPaidTier(tier, deps.config.priceIds);
+  const lookupKey = stripeLookupKeyForPaidTier(
+    tier,
+    deps.config.lookupKeys,
+    interval,
+  );
+  const pinned = stripePriceIdForPaidTier(tier, deps.config.priceIds, interval);
   if (pinned) {
     return { priceId: pinned, lookupKey };
   }
@@ -69,7 +90,7 @@ export async function resolveCheckoutPriceId(
   });
   const priceId = listed.data[0]?.id?.trim();
   if (!priceId) {
-    throw Errors.internal('Stripe price not found for the requested plan.');
+    throw Errors.billingPriceNotFound();
   }
   return { priceId, lookupKey };
 }
@@ -77,19 +98,25 @@ export async function resolveCheckoutPriceId(
 export async function createSubscriptionCheckoutSession(options: {
   userId: string;
   tier: PaidTier;
+  interval?: CheckoutInterval;
   customerId: string;
   stripe: StripeCheckoutClient;
   config: StripeRuntimeConfig;
   origin?: string;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<CheckoutSessionResult> {
+  const interval = options.interval ?? 'monthly';
   const origin = options.origin ?? resolveBillingWebOrigin();
   const successUrl = checkoutSuccessUrl(origin);
   const cancelUrl = checkoutCancelUrl(origin);
-  const { priceId, lookupKey } = await resolveCheckoutPriceId(options.tier, {
-    stripe: options.stripe,
-    config: options.config,
-  });
+  const { priceId, lookupKey } = await resolveCheckoutPriceId(
+    options.tier,
+    {
+      stripe: options.stripe,
+      config: options.config,
+    },
+    interval,
+  );
 
   const session = await options.stripe.checkout.sessions.create({
     mode: 'subscription',
@@ -112,6 +139,7 @@ export async function createSubscriptionCheckoutSession(options: {
   // Mode and lookup key only — never the secret key or session internals.
   log.info('Stripe checkout session created', {
     tier: options.tier,
+    interval,
     mode: options.config.mode,
     lookupKey,
   });

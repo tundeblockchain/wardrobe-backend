@@ -210,7 +210,7 @@ These should only be added when required.
 
 `USER#{uid} / PROFILE` may store `stripeCustomerId` (WARDROBE-189). One Stripe customer per Firebase uid: create with `metadata.uid` and idempotency key `customer-create-${uid}`, persist with `attribute_not_exists(stripeCustomerId)`, and re-read on a conditional-write conflict.
 
-### Stripe Checkout (WARDROBE-189)
+### Stripe Checkout (WARDROBE-189 / WARDROBE-196)
 
 ```http
 POST /billing/checkout-session
@@ -218,10 +218,10 @@ Authorization: Bearer <firebase-id-token>
 ```
 
 ```json
-{ "tier": "basic" }
+{ "tier": "basic", "interval": "yearly" }
 ```
 
-`tier` must be `"basic"` or `"premium"` (400 `VALIDATION_ERROR` otherwise). Return URLs are server-built from `billingWebOrigin` / `BILLING_WEB_ORIGIN` (default `https://wende-wardrobe.netlify.app`):
+`tier` must be `"basic"` or `"premium"` (400 `VALIDATION_ERROR` otherwise). Optional `interval` is `"monthly"` (default) or `"yearly"` (400 `INVALID_INTERVAL` for anything else, including non-strings; no Stripe calls). Yearly Prices use `wardrobe_basic_yearly` / `wardrobe_premium_yearly` (created in the Stripe dashboard, not by seed). A missing yearly Price is `503 BILLING_PRICE_NOT_FOUND`. Return URLs are server-built from `billingWebOrigin` / `BILLING_WEB_ORIGIN` (default `https://wende-wardrobe.netlify.app`):
 
 - `success_url` = `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}`
 - `cancel_url` = `{origin}/app/billing/cancel`
@@ -1232,7 +1232,7 @@ POST /billing/portal-session
 POST /billing/stripe-webhook
 ```
 
-`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Return URLs for checkout and portal are server-built from `billingWebOrigin`.
+`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from `billingWebOrigin`.
 
 ### Uploads
 
@@ -1299,6 +1299,8 @@ PROCESSING_IN_PROGRESS
 ITEM_NOT_RETRIABLE
 ALREADY_SUBSCRIBED
 NOT_STRIPE_PLAN
+INVALID_INTERVAL
+BILLING_PRICE_NOT_FOUND
 INTERNAL_ERROR
 ```
 

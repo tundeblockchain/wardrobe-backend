@@ -2,7 +2,10 @@ import { featuresForTier } from '../../src/shared/entitlements';
 import { FREE_CATALOG_LIMITS } from '../../src/shared/types';
 import {
   DEFAULT_STRIPE_LOOKUP_KEY_BASIC_MONTHLY,
+  DEFAULT_STRIPE_LOOKUP_KEY_BASIC_YEARLY,
   DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
+  DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_YEARLY,
+  paidTierFromStripeLookupKey,
   resolveStripeLookupKeys,
   resolveStripePlans,
   stripeLookupKeyForPaidTier,
@@ -59,12 +62,42 @@ describe('stripe plans (WARDROBE-187)', () => {
     const keys = resolveStripeLookupKeys({
       STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'basic_key',
       STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'premium_key',
+      STRIPE_LOOKUP_KEY_BASIC_YEARLY: 'basic_yearly_key',
+      STRIPE_LOOKUP_KEY_PREMIUM_YEARLY: 'premium_yearly_key',
     });
     expect(stripeLookupKeyForPaidTier('basic', keys)).toBe('basic_key');
     expect(stripeLookupKeyForPaidTier('premium', keys)).toBe('premium_key');
+    expect(stripeLookupKeyForPaidTier('basic', keys, 'monthly')).toBe('basic_key');
+    expect(stripeLookupKeyForPaidTier('basic', keys, 'yearly')).toBe(
+      'basic_yearly_key',
+    );
+    expect(stripeLookupKeyForPaidTier('premium', keys, 'yearly')).toBe(
+      'premium_yearly_key',
+    );
     expect(
       stripePriceIdForPaidTier('basic', { basicMonthly: 'price_test_basic' }),
     ).toBe('price_test_basic');
+    expect(
+      stripePriceIdForPaidTier(
+        'premium',
+        { premiumYearly: 'price_test_premium_yearly' },
+        'yearly',
+      ),
+    ).toBe('price_test_premium_yearly');
     expect(stripePriceIdForPaidTier('premium', {})).toBeUndefined();
+  });
+
+  it('defaults yearly lookup keys and maps monthly/yearly keys to the same tier', () => {
+    const keys = resolveStripeLookupKeys({});
+    expect(keys.basicYearly).toBe(DEFAULT_STRIPE_LOOKUP_KEY_BASIC_YEARLY);
+    expect(keys.premiumYearly).toBe(DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_YEARLY);
+    expect(paidTierFromStripeLookupKey(keys.basicMonthly, keys)).toBe('basic');
+    expect(paidTierFromStripeLookupKey(keys.basicYearly, keys)).toBe('basic');
+    expect(paidTierFromStripeLookupKey(keys.premiumMonthly, keys)).toBe(
+      'premium',
+    );
+    expect(paidTierFromStripeLookupKey(keys.premiumYearly, keys)).toBe(
+      'premium',
+    );
   });
 });

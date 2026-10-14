@@ -27,6 +27,8 @@ export type ErrorCode =
   | 'AUTH_DELETION_FAILED'
   | 'ALREADY_SUBSCRIBED'
   | 'NOT_STRIPE_PLAN'
+  | 'INVALID_INTERVAL'
+  | 'BILLING_PRICE_NOT_FOUND'
   | 'BILLING_CANCEL_FAILED';
 
 export class AppError extends Error {
@@ -184,6 +186,23 @@ export const Errors = {
     source?: string,
     message = 'This account already has a paid plan.',
   ) => new AppError('ALREADY_SUBSCRIBED', message, 409, undefined, undefined, source),
+
+  /**
+   * Checkout `interval` is present but not `"monthly"` | `"yearly"`
+   * (WARDROBE-196). Includes non-string values.
+   */
+  invalidInterval: (
+    message = 'interval must be "monthly" or "yearly".',
+  ) => new AppError('INVALID_INTERVAL', message, 400),
+
+  /**
+   * Checkout Price lookup key (or pinned id) is missing in Stripe
+   * (WARDROBE-196). Yearly prices are created in the dashboard, not
+   * by `stripe:seed`. Do not include Stripe ids or secrets.
+   */
+  billingPriceNotFound: (
+    message = 'The requested billing plan is not available.',
+  ) => new AppError('BILLING_PRICE_NOT_FOUND', message, 503),
 
   /**
    * Portal is Stripe-only (WARDROBE-191). `source` is the current

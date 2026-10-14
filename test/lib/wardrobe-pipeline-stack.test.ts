@@ -122,6 +122,8 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
       stripeMode: 'test',
       stripeLookupKeyBasicMonthly: 'wardrobe_basic_monthly',
       stripeLookupKeyPremiumMonthly: 'wardrobe_premium_monthly',
+      stripeLookupKeyBasicYearly: 'wardrobe_basic_yearly',
+      stripeLookupKeyPremiumYearly: 'wardrobe_premium_yearly',
     });
 
     const env = synthStepEnv(template);
@@ -129,6 +131,10 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
     expect(env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY).toBe('wardrobe_basic_monthly');
     expect(env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY).toBe(
       'wardrobe_premium_monthly',
+    );
+    expect(env.STRIPE_LOOKUP_KEY_BASIC_YEARLY).toBe('wardrobe_basic_yearly');
+    expect(env.STRIPE_LOOKUP_KEY_PREMIUM_YEARLY).toBe(
+      'wardrobe_premium_yearly',
     );
   });
 
