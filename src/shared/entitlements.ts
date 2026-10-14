@@ -9,6 +9,16 @@ import {
 } from './dynamodb';
 import { Errors } from './errors';
 import { nowIso } from './ids';
+import { logger } from './logger';
+import {
+  decidePaidTierWrite,
+  hydratePaidTierFields,
+  isPaidTierSource,
+  normalizePaidTier,
+  paidTierSourceFromStore,
+  storeFromPaidTierSource,
+  toPaidTierStatus,
+} from './paid-tier';
 import {
   DynamoItem,
   Entitlement,
@@ -17,6 +27,8 @@ import {
   EntitlementStatus,
   EntitlementStore,
   FREE_CATALOG_LIMITS,
+  PaidTier,
+  PaidTierSource,
   SUBSCRIPTION_TIERS,
   SubscriptionTier,
 } from './types';
@@ -44,6 +56,8 @@ export interface StoredEntitlement {
   status: EntitlementStatus;
   productId?: string;
   store?: EntitlementStore;
+  /** ios | android | stripe. Derived from `store` when missing (WARDROBE-188). */
+  source?: PaidTierSource;
   period?: EntitlementPeriod;
   expiresAt?: string;
   originalTransactionId?: string;
@@ -144,6 +158,7 @@ export function toEntitlementDto(
     limits: stored.tier === 'FREE' ? { ...FREE_CATALOG_LIMITS } : null,
     usage,
     updatedAt: stored.updatedAt,
+    paidTier: toPaidTierStatus(stored),
   };
   if (stored.productId) {
     dto.productId = stored.productId;
@@ -286,6 +301,7 @@ export function applySuperwallEvent(options: {
   const base = existing ?? freeEntitlement(options.userId, timestamp);
   const productId = options.productId?.trim() || undefined;
   const store = normalizeStore(options.store) ?? base.store;
+  const source = paidTierSourceFromStore(store) ?? base.source;
   const period = inferPeriod(productId) ?? base.period;
   const originalTransactionId =
     options.originalTransactionId?.trim() || base.originalTransactionId;
@@ -327,6 +343,7 @@ export function applySuperwallEvent(options: {
     status,
     productId: productId ?? base.productId,
     store,
+    source,
     period,
     expiresAt,
     originalTransactionId,
@@ -379,6 +396,98 @@ export async function persistEntitlement(
   await putItem(entitlementItem(stored, { history: true }));
 }
 
+export interface SetPaidTierStatusInput {
+  userId: string;
+  /** `basic` / `premium` or the existing Dynamo `BASIC` / `PREMIUM`. */
+  tier: PaidTier | 'BASIC' | 'PREMIUM';
+  source: PaidTierSource;
+  expiresAt?: string;
+  productId?: string;
+  originalTransactionId?: string;
+  lastEventId?: string;
+  lastEventAt?: number;
+  nowIso?: string;
+  nowMs?: number;
+}
+
+export type SetPaidTierStatusResult =
+  | {
+      applied: true;
+      reason: 'created' | 'upgraded' | 'renewed' | 'replaced_expired';
+      stored: StoredEntitlement;
+    }
+  | {
+      applied: false;
+      reason: 'source_clash';
+      stored: StoredEntitlement;
+    };
+
+/**
+ * Single write path for paid-tier status (WARDROBE-188). Stripe and store
+ * webhooks should call this so each account keeps one active plan.
+ *
+ * Clash: a different source does not overwrite an active plan (the
+ * current row is kept and the clash is logged). Same source may upgrade
+ * or renew. An expired plan may be replaced by any source.
+ */
+export async function setPaidTierStatus(
+  input: SetPaidTierStatusInput,
+): Promise<SetPaidTierStatusResult> {
+  const timestamp = input.nowIso ?? nowIso();
+  const nowMs = input.nowMs ?? Date.parse(timestamp);
+  const paidTier = normalizePaidTier(input.tier);
+  if (!paidTier) {
+    throw Errors.internal('setPaidTierStatus requires a basic or premium tier.');
+  }
+
+  const history = await listStoredEntitlements(input.userId);
+  const existing = pickLatestEntitlement(history);
+  const effective = existing
+    ? effectiveEntitlement(existing, Number.isFinite(nowMs) ? nowMs : Date.now())
+    : undefined;
+
+  const decision = decidePaidTierWrite({
+    existing,
+    incoming: { tier: paidTier, source: input.source },
+    nowMs: Number.isFinite(nowMs) ? nowMs : Date.now(),
+  });
+
+  if (decision.action === 'clash') {
+    const stored = effective ?? existing!;
+    logger.warn('Paid-tier source clash; keeping active plan', {
+      existingSource: stored.source ?? paidTierSourceFromStore(stored.store),
+      incomingSource: input.source,
+      existingTier: stored.tier,
+      incomingTier: paidTier,
+    });
+    return { applied: false, reason: 'source_clash', stored };
+  }
+
+  const subscriptionTier = paidTier === 'premium' ? 'PREMIUM' : 'BASIC';
+  const store = storeFromPaidTierSource(input.source);
+  const inheritExpiry =
+    decision.reason === 'renewed' || decision.reason === 'upgraded';
+  const stored: StoredEntitlement = {
+    userId: input.userId,
+    tier: subscriptionTier,
+    status: 'ACTIVE',
+    productId: input.productId?.trim() || existing?.productId,
+    store,
+    source: input.source,
+    period: inferPeriod(input.productId) ?? existing?.period,
+    expiresAt: input.expiresAt ?? (inheritExpiry ? existing?.expiresAt : undefined),
+    originalTransactionId:
+      input.originalTransactionId?.trim() || existing?.originalTransactionId,
+    lastEventId: input.lastEventId ?? existing?.lastEventId,
+    lastEventAt: input.lastEventAt ?? existing?.lastEventAt,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  await persistEntitlement(stored);
+  return { applied: true, reason: decision.reason, stored };
+}
+
 function entitlementItem(
   stored: StoredEntitlement,
   options?: { history?: boolean },
@@ -401,6 +510,10 @@ function entitlementItem(
   }
   if (stored.store) {
     item.store = stored.store;
+  }
+  const source = stored.source ?? paidTierSourceFromStore(stored.store);
+  if (source) {
+    item.source = source;
   }
   if (stored.period) {
     item.period = stored.period;
@@ -759,13 +872,17 @@ export function effectiveEntitlement(
 }
 
 function fromDynamo(item: DynamoItem): StoredEntitlement {
-  return {
+  const store = isStore(item.store) ? item.store : undefined;
+  const stored: StoredEntitlement = {
     userId: String(item.userId),
     sk: typeof item.SK === 'string' ? item.SK : undefined,
     tier: isTier(item.tier) ? item.tier : 'FREE',
     status: isStatus(item.status) ? item.status : 'NONE',
     productId: optionalString(item.productId),
-    store: isStore(item.store) ? item.store : undefined,
+    store,
+    source: isPaidTierSource(item.source)
+      ? item.source
+      : paidTierSourceFromStore(store),
     period: isPeriod(item.period) ? item.period : undefined,
     expiresAt: optionalString(item.expiresAt),
     originalTransactionId: optionalString(item.originalTransactionId),
@@ -775,6 +892,7 @@ function fromDynamo(item: DynamoItem): StoredEntitlement {
     createdAt: String(item.createdAt),
     updatedAt: String(item.updatedAt),
   };
+  return hydratePaidTierFields(stored);
 }
 
 /**

@@ -17,6 +17,7 @@
     "destroy": "node scripts/ensure-cdk-json.js && cdk destroy --app \"node -r ts-node/register/transpile-only bin/app.ts\"",
     "seed:generic-models": "ts-node --transpile-only scripts/seed-generic-models.ts",
     "stripe:seed": "ts-node --transpile-only scripts/seed-stripe.ts",
+    "backfill:paid-tier": "ts-node --transpile-only scripts/backfill-paid-tier.ts",
     "cdk": "cdk"
   },
   "engines": {

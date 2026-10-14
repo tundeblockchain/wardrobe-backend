@@ -408,7 +408,8 @@ Authorization: Bearer <firebase-id-token>
     "items": 0,
     "outfits": 0
   },
-  "updatedAt": "2026-09-16T12:00:00.000Z"
+  "updatedAt": "2026-09-16T12:00:00.000Z",
+  "paidTier": null
 }
 ```
 
@@ -422,8 +423,100 @@ Authorization: Bearer <firebase-id-token>
 | `limits` | object or `null` | Free caps. `null` = unlimited |
 | `usage` | object | Current owned counts (all wardrobes) |
 | `productId` / `store` / `period` / `expiresAt` | optional | Soft-omitted when unknown. `store` is `APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`. `period` is `MONTHLY` \| `YEARLY` \| `UNKNOWN` |
+| `paidTier` | object or `null` | Additive (WARDROBE-188). `null` on Free. Does not replace `tier` / `store` / `expiresAt`. See **Paid-tier status** below |
 
 Never includes Dynamo `PK` / `SK` / `lastEventId`. Soft-gate UX from this DTO; still handle the error codes below because the server enforces.
+
+#### Paid-tier status (WARDROBE-188)
+
+Each account has **one** paid-tier status on the existing `ENTITLEMENT` record (no extra table). `GET /me` keeps every existing field and **adds** `paidTier`.
+
+Existing records store uppercase `tier` (`FREE` \| `BASIC` \| `PREMIUM`) and Superwall `store` (`APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`). `source` is derived from `store` (`APP_STORE` → `ios`, `PLAY_STORE` → `android`, `STRIPE` → `stripe`). Expiry is the same `expiresAt` attribute.
+
+Catalog limits still come from the existing mapping: Free uses `limits` `{ wardrobes: 1, items: 5, outfits: 5 }`; Basic and Premium keep `limits: null` (unlimited catalog). Basic does not get Premium AI flags.
+
+Free:
+
+```json
+{
+  "userId": "firebase-uid",
+  "tier": "FREE",
+  "status": "NONE",
+  "features": {
+    "unlimitedCatalog": false,
+    "aiTryOn": false,
+    "otherAi": false
+  },
+  "limits": {
+    "wardrobes": 1,
+    "items": 5,
+    "outfits": 5
+  },
+  "usage": {
+    "wardrobes": 0,
+    "items": 0,
+    "outfits": 0
+  },
+  "updatedAt": "2026-09-16T12:00:00.000Z",
+  "paidTier": null
+}
+```
+
+App Store Premium (existing fields unchanged; `paidTier` added):
+
+```json
+{
+  "userId": "firebase-uid",
+  "tier": "PREMIUM",
+  "status": "ACTIVE",
+  "features": {
+    "unlimitedCatalog": true,
+    "aiTryOn": true,
+    "otherAi": true
+  },
+  "limits": null,
+  "usage": {
+    "wardrobes": 1,
+    "items": 1,
+    "outfits": 1
+  },
+  "productId": "premium_monthly",
+  "store": "APP_STORE",
+  "period": "MONTHLY",
+  "expiresAt": "2026-11-01T00:00:00.000Z",
+  "updatedAt": "2026-09-16T12:00:00.000Z",
+  "paidTier": {
+    "tier": "premium",
+    "source": "ios",
+    "expiresAt": "2026-11-01T00:00:00.000Z"
+  }
+}
+```
+
+| `paidTier` field | Type | Notes |
+| --- | --- | --- |
+| `tier` | `basic` \| `premium` | Lowercase. Omit the whole object (`null`) on Free |
+| `source` | `ios` \| `android` \| `stripe` | Soft-omitted when `store` is missing or `UNKNOWN` |
+| `expiresAt` | ISO 8601 | Same value as top-level `expiresAt`. Soft-omitted when unknown |
+
+Stripe / store webhooks must set paid-tier through `setPaidTierStatus` (one write helper):
+
+- Same source may change tier (Basic → Premium) or renew.
+- A **different** source must not overwrite an active plan (the active plan is kept; the clash is logged).
+- An expired plan may be replaced by any source.
+
+`GET /me` already derives `paidTier.source` on read when Dynamo has `store` but no `source`. Operators can persist those derived attributes with an idempotent backfill (does not change `updatedAt`):
+
+```bash
+# dry-run (default) — reports how many ENTITLEMENT rows would be patched
+TABLE_NAME=wardrobe-app-prod npm run backfill:paid-tier
+STAGE=prod npm run backfill:paid-tier
+
+# write source (and tier only when that attribute is missing / invalid)
+TABLE_NAME=wardrobe-app-prod npm run backfill:paid-tier -- --apply
+```
+
+Requires AWS credentials that can `Scan` and `UpdateItem` on `wardrobe-app-{stage}`. Re-running `--apply` reports `updated: 0`.
 
 Premium item create still enqueues `PROCESS_WARDROBE_ITEM` and returns `PENDING`. Free / Basic item create skips the AI pipeline, writes `processingStatus: READY`, and does not enqueue.
 
@@ -2400,9 +2493,10 @@ cdk.json.example
 scripts/ensure-cdk-json.js
 scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDROBE-45)
 scripts/seed-stripe.ts           idempotent Stripe Basic/Premium monthly prices (WARDROBE-187)
+scripts/backfill-paid-tier.ts    idempotent ENTITLEMENT source backfill (WARDROBE-188)
 src/functions/
   health/
-  me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154)
+  me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154 / WARDROBE-188)
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
@@ -2424,6 +2518,8 @@ src/shared/
   firebase-admin-auth.ts  Admin SDK auth().deleteUser for DELETE /me (WARDROBE-154)
   dynamodb.ts
   entitlements.ts
+  paid-tier.ts         paid-tier source mapping + clash rule (WARDROBE-188)
+  paid-tier-backfill.ts operator ENTITLEMENT source backfill (WARDROBE-188)
   superwall-config.ts  wardrobe/{stage}/superwall JSON (WARDROBE-91 webhook + WARDROBE-103 optional cancel)
   errors.ts
   http.ts

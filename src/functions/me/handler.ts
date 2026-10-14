@@ -36,11 +36,13 @@ export interface MeHandlerDeps {
 /**
  * Owner-only account APIs.
  *
- * GET    /me         — current entitlement (WARDROBE-91 / WARDROBE-159).
- *                      Flutter WARDROBE-90 reads this to soft-gate Superwall
- *                      UX. The first call for an account writes FREE / NONE
- *                      at SK=ENTITLEMENT. Superwall appends history rows;
- *                      this handler always returns the latest record.
+ * GET    /me         — current entitlement (WARDROBE-91 / WARDROBE-159 /
+ *                      WARDROBE-188). Flutter WARDROBE-90 reads this to
+ *                      soft-gate Superwall UX. Adds `paidTier` without
+ *                      changing existing fields. The first call for an
+ *                      account writes FREE / NONE at SK=ENTITLEMENT.
+ *                      Superwall appends history rows; this handler always
+ *                      returns the latest record.
  * DELETE /me/content — wipe wardrobes, items, outfits, worn-on dates,
  *                      personal AI profiles, job-done events, device tokens,
  *                      share tokens, and S3 under users/{uid}/. Entitlement +

@@ -154,6 +154,21 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     );
   });
 
+  it('derives paid-tier source from Superwall store (WARDROBE-188)', () => {
+    const granted = applySuperwallEvent({
+      userId: 'uid',
+      eventName: 'initial_purchase',
+      productId: 'premium_monthly',
+      productTiers: {},
+      store: 'APP_STORE',
+      eventId: 'evt_ios',
+      nowIso: '2026-09-16T00:00:00.000Z',
+    }).stored;
+
+    expect(granted.store).toBe('APP_STORE');
+    expect(granted.source).toBe('ios');
+  });
+
   it('grants PREMIUM on initial_purchase and keeps access on cancellation until expiry', () => {
     const granted = applySuperwallEvent({
       userId: 'uid',
@@ -229,6 +244,7 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     expect(free.features).toEqual(featuresForTier('FREE'));
     expect(free.limits).toEqual(FREE_CATALOG_LIMITS);
     expect(free.usage).toEqual(usage);
+    expect(free.paidTier).toBeNull();
 
     const premium = toEntitlementDto(
       {
@@ -244,6 +260,7 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     expect(premium.features.aiTryOn).toBe(true);
     expect(premium.limits).toBeNull();
     expect(premium.productId).toBe('sku');
+    expect(premium.paidTier).toEqual({ tier: 'premium' });
   });
 
   it('reads Superwall event name from data.name or type', () => {
@@ -311,6 +328,28 @@ describe('entitlement history (WARDROBE-159)', () => {
       }),
     );
     expect(mockPutItem.mock.calls[0][0].SK).not.toBe('ENTITLEMENT');
+  });
+
+  it('persists source derived from store on grant (WARDROBE-188)', async () => {
+    const granted = applySuperwallEvent({
+      userId: 'uid',
+      eventName: 'initial_purchase',
+      productId: 'premium_monthly',
+      productTiers: {},
+      store: 'APP_STORE',
+      eventId: 'evt_grant',
+      nowIso: '2026-10-02T00:00:00.000Z',
+    }).stored;
+
+    await persistEntitlement(granted);
+
+    expect(mockPutItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        store: 'APP_STORE',
+        source: 'ios',
+        tier: 'PREMIUM',
+      }),
+    );
   });
 
   it('resolves the latest ACTIVE paid row over an older expired one', async () => {
