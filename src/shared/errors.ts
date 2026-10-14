@@ -26,7 +26,8 @@ export type ErrorCode =
   | 'ACCOUNT_DELETION_FAILED'
   | 'AUTH_DELETION_FAILED'
   | 'ALREADY_SUBSCRIBED'
-  | 'NOT_STRIPE_PLAN';
+  | 'NOT_STRIPE_PLAN'
+  | 'BILLING_CANCEL_FAILED';
 
 export class AppError extends Error {
   readonly code: ErrorCode;
@@ -192,4 +193,12 @@ export const Errors = {
     source: string | null,
     message = 'Manage plan is only available for Stripe subscriptions.',
   ) => new AppError('NOT_STRIPE_PLAN', message, 409, undefined, undefined, source),
+
+  /**
+   * Stripe cancel failed on DELETE /me (WARDROBE-192). Account data and
+   * Auth stay so a retry cannot leave a paying subscription behind.
+   */
+  billingCancelFailed: (
+    message = 'The Stripe subscription could not be canceled. Please try again.',
+  ) => new AppError('BILLING_CANCEL_FAILED', message, 503, undefined, true),
 };

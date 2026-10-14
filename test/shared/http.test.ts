@@ -331,6 +331,19 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps BILLING_CANCEL_FAILED to a 503 envelope with retryable', () => {
+    const result = asResult(errorResponse(Errors.billingCancelFailed()));
+
+    expect(result.statusCode).toBe(503);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'BILLING_CANCEL_FAILED',
+        message: 'The Stripe subscription could not be canceled. Please try again.',
+        retryable: true,
+      },
+    });
+  });
+
   it('maps AUTH_DELETION_FAILED to a 502 envelope with retryable', () => {
     const result = asResult(errorResponse(Errors.authDeletionFailed()));
 

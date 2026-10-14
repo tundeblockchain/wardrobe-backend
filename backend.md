@@ -226,7 +226,7 @@ Authorization: Bearer <firebase-id-token>
 - `success_url` = `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}`
 - `cancel_url` = `{origin}/app/billing/cancel`
 
-Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `200 { "url" }` only. An account that already has a paid tier from any source (`ios` / `android` / `stripe`) receives `409 ALREADY_SUBSCRIBED` with `error.source` when known. Webhook and `DELETE /me` Stripe cancel are later stories.
+Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `200 { "url" }` only. An account that already has a paid tier from any source (`ios` / `android` / `stripe`) receives `409 ALREADY_SUBSCRIBED` with `error.source` when known. Webhook is a later story.
 
 ### Stripe Billing Portal (WARDROBE-191)
 
@@ -243,7 +243,11 @@ Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `
 
 Only an account whose current `paidTier.source` is `"stripe"` and that already has a stored `stripeCustomerId` may open the portal. Otherwise `409 NOT_STRIPE_PLAN` with `error.source` (`ios` / `android` / `stripe`, or `null` when the effective plan is Free). The handler never creates a Stripe customer.
 
-This is where a Basic Stripe subscriber upgrades to Premium. The Stripe Customer Portal configuration must allow switching between the Basic and Premium prices. Optionally set CDK context / env `stripePortalConfigurationId` (`STRIPE_PORTAL_CONFIGURATION_ID`) so the session uses that configuration. Webhook and `DELETE /me` Stripe cancel are later stories.
+This is where a Basic Stripe subscriber upgrades to Premium. The Stripe Customer Portal configuration must allow switching between the Basic and Premium prices. Optionally set CDK context / env `stripePortalConfigurationId` (`STRIPE_PORTAL_CONFIGURATION_ID`) so the session uses that configuration. Webhook is a later story.
+
+### Account delete Stripe cancel (WARDROBE-192)
+
+`DELETE /me` cancels Stripe subscriptions before wiping data. If `USER#{uid}/PROFILE.stripeCustomerId` is set, list that customer's `active` / `trialing` / `past_due` subscriptions and cancel each immediately (`subscriptions.cancel`, idempotency key `account-delete-cancel-{subscriptionId}`). Uses the dedicated Stripe secret via `getStripeConfig` / `getStripeClient`; Superwall `stripeSecretKey` is a compatibility fallback only. No customer, no matching subscriptions, or Stripe not configured (empty / placeholder secret): proceed and log a warning (never log secrets). `resource_missing` or already-canceled must not block delete. Any other Stripe cancel failure returns `503 BILLING_CANCEL_FAILED` and does not delete the account. App Store / Play cancel stays best-effort. Success body remains `{ "deleted": true }`.
 
 ---
 

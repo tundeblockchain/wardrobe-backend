@@ -3,6 +3,10 @@ import { StoredEntitlement } from '../../shared/entitlements';
 import { logger } from '../../shared/logger';
 import { getSecretString } from '../../shared/secrets';
 import {
+  getStripeConfig,
+  isStripeUnconfiguredError,
+} from '../../shared/stripe-config';
+import {
   looksLikePlaceholderCredential,
   parseSuperwallSecret,
   PlayServiceAccount,
@@ -71,12 +75,17 @@ const ACTIVE_BILLING_STATUSES = new Set([
 ]);
 
 /**
- * Attempt Superwall/store cancel for account delete (WARDROBE-103).
+ * Attempt Superwall/store cancel for account delete (WARDROBE-103 /
+ * WARDROBE-192).
  *
  * Superwall's public API cannot cancel App Store / Play / Stripe
  * subscriptions. This client talks to Stripe and Google Play when optional
- * credentials are present, then the handler always revokes Dynamo
- * entitlement regardless of the store outcome.
+ * credentials are present. App Store / Play outcomes stay best-effort —
+ * the handler still deletes. Web Stripe billing is canceled first via
+ * `cancelAccountStripeSubscriptions` (fail-closed). The entitlement
+ * Stripe path here uses the dedicated WARDROBE-187 secret
+ * (`getStripeConfig`) and keeps Superwall `stripeSecretKey` only as a
+ * compatibility fallback.
  */
 export async function cancelUserSubscription(
   input: CancelSubscriptionInput,
@@ -131,6 +140,19 @@ export async function cancelUserSubscription(
 }
 
 export async function loadSubscriptionCancelConfig(): Promise<SubscriptionCancelConfig> {
+  const superwall = await loadSuperwallCancelConfig();
+  const dedicatedKey = await loadDedicatedStripeSecretKey();
+  if (dedicatedKey) {
+    superwall.stripeSecretKey = dedicatedKey;
+  }
+  return superwall;
+}
+
+/**
+ * Superwall `stripeSecretKey` is a compatibility fallback only.
+ * Prefer the dedicated Stripe secret (WARDROBE-187) via getStripeConfig.
+ */
+export async function loadSuperwallCancelConfig(): Promise<SubscriptionCancelConfig> {
   const secretId = process.env.SUPERWALL_SECRET_ARN?.trim();
   if (!secretId) {
     return {};
@@ -144,6 +166,27 @@ export async function loadSubscriptionCancelConfig(): Promise<SubscriptionCancel
       reason: error instanceof Error ? error.message : 'unknown',
     });
     return {};
+  }
+}
+
+async function loadDedicatedStripeSecretKey(): Promise<string | undefined> {
+  try {
+    const config = await getStripeConfig();
+    if (
+      !config.secretKey?.trim() ||
+      looksLikePlaceholderCredential(config.secretKey)
+    ) {
+      return undefined;
+    }
+    return config.secretKey;
+  } catch (error) {
+    if (isStripeUnconfiguredError(error)) {
+      return undefined;
+    }
+    logger.warn('Dedicated Stripe cancel secret unreadable', {
+      reason: error instanceof Error ? error.message : 'unknown',
+    });
+    return undefined;
   }
 }
 
@@ -260,6 +303,8 @@ async function cancelStripe(
   fetchImpl: FetchLike,
   base: SubscriptionCancelResult,
 ): Promise<SubscriptionCancelResult> {
+  // config.stripeSecretKey is the dedicated WARDROBE-187 secret when
+  // present, else the Superwall stripeSecretKey fallback.
   const subscriptionId = entitlement.originalTransactionId?.trim();
   if (!config.stripeSecretKey || !subscriptionId) {
     logger.warn('Subscription cancel skipped; Stripe credentials or id missing', {

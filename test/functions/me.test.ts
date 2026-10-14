@@ -837,9 +837,9 @@ describe('me handler (WARDROBE-36)', () => {
       expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
     });
 
-    it('still deletes when the cancel client throws', async () => {
+    it('still deletes when the store cancel client throws (ios / android unchanged)', async () => {
       mockPopulatedWipe({ includeEntitlement: true });
-      const cancelSubscription = jest.fn().mockRejectedValue(new Error('stripe down'));
+      const cancelSubscription = jest.fn().mockRejectedValue(new Error('play down'));
       const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
 
       const result = asResult(
@@ -848,6 +848,231 @@ describe('me handler (WARDROBE-36)', () => {
 
       expect(result.statusCode).toBe(200);
       expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('cancels active Stripe subscriptions before deleting (WARDROBE-192)', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const cancel = jest.fn(async (id: string) => ({ id, status: 'canceled' }));
+      const list = jest.fn(async ({ status }: { status: string }) => {
+        if (status === 'active') {
+          return { data: [{ id: 'sub_active', status: 'active' }] };
+        }
+        if (status === 'trialing') {
+          return { data: [{ id: 'sub_trial', status: 'trialing' }] };
+        }
+        return { data: [] };
+      });
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+
+      const result = asResult(
+        await deleteMe({
+          deleteAuthUser,
+          stripeCancelDeps: {
+            loadStripeCustomerId: async () => 'cus_abc',
+            getStripeClient: async () => ({
+              subscriptions: { list, cancel },
+            }),
+          },
+        }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(cancel).toHaveBeenCalledWith(
+        'sub_active',
+        {},
+        { idempotencyKey: 'account-delete-cancel-sub_active' },
+      );
+      expect(cancel).toHaveBeenCalledWith(
+        'sub_trial',
+        {},
+        { idempotencyKey: 'account-delete-cancel-sub_trial' },
+      );
+      expect(cancel.mock.calls.every((call) => !('cancel_at_period_end' in (call[1] ?? {})))).toBe(
+        true,
+      );
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('deletes when the account has no stripeCustomerId', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const getStripeClient = jest.fn();
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+
+      const result = asResult(
+        await deleteMe({
+          deleteAuthUser,
+          stripeCancelDeps: {
+            loadStripeCustomerId: async () => undefined,
+            getStripeClient,
+          },
+        }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(getStripeClient).not.toHaveBeenCalled();
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('deletes and warns when Stripe is not configured', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+      const warn = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+      const result = asResult(
+        await deleteMe({
+          deleteAuthUser,
+          stripeCancelDeps: {
+            loadStripeCustomerId: async () => 'cus_abc',
+            getStripeConfig: async () => {
+              throw new Error('STRIPE_SECRET_ARN is not set.');
+            },
+            loadSuperwallStripeSecret: async () => undefined,
+          },
+        }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+      const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(logged).toContain('stripe_unconfigured');
+      expect(logged).not.toMatch(/sk_live_|sk_test_[A-Za-z0-9]{8,}|whsec_/);
+      warn.mockRestore();
+    });
+
+    it('does not delete when a Stripe cancel call fails (503 BILLING_CANCEL_FAILED)', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const deleteAuthUser = jest.fn();
+      const cancel = jest.fn(async () => {
+        throw Object.assign(new Error('Stripe API unavailable'), { statusCode: 500 });
+      });
+
+      const result = asResult(
+        await deleteMe({
+          deleteAuthUser,
+          stripeCancelDeps: {
+            loadStripeCustomerId: async () => 'cus_abc',
+            getStripeClient: async () => ({
+              subscriptions: {
+                list: async ({ status }: { status: string }) =>
+                  status === 'active'
+                    ? { data: [{ id: 'sub_live', status: 'active' }] }
+                    : { data: [] },
+                cancel,
+              },
+            }),
+          },
+        }),
+      );
+
+      expectEnvelope(result, 503, 'BILLING_CANCEL_FAILED', true);
+      expect(deleteAuthUser).not.toHaveBeenCalled();
+      expect(deletedKeys()).toEqual([]);
+    });
+
+    it('still deletes when Stripe reports resource_missing (already gone)', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+
+      const result = asResult(
+        await deleteMe({
+          deleteAuthUser,
+          stripeCancelDeps: {
+            loadStripeCustomerId: async () => 'cus_abc',
+            getStripeClient: async () => ({
+              subscriptions: {
+                list: async ({ status }: { status: string }) =>
+                  status === 'active'
+                    ? { data: [{ id: 'sub_gone', status: 'active' }] }
+                    : { data: [] },
+                cancel: async () => {
+                  throw Object.assign(new Error('No such subscription'), {
+                    code: 'resource_missing',
+                    statusCode: 404,
+                  });
+                },
+              },
+            }),
+          },
+        }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('still deletes when Stripe says the subscription is already canceled', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+
+      const result = asResult(
+        await deleteMe({
+          deleteAuthUser,
+          stripeCancelDeps: {
+            loadStripeCustomerId: async () => 'cus_abc',
+            getStripeClient: async () => ({
+              subscriptions: {
+                list: async ({ status }: { status: string }) =>
+                  status === 'active'
+                    ? { data: [{ id: 'sub_done', status: 'active' }] }
+                    : { data: [] },
+                cancel: async () => {
+                  throw Object.assign(new Error('already canceled'), {
+                    status: 'canceled',
+                  });
+                },
+              },
+            }),
+          },
+        }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
+    });
+
+    it('leaves an ios store-purchase user unaffected when Stripe has no customer', async () => {
+      mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
+      const cancelSubscription = jest.fn().mockResolvedValue({
+        status: 'CANCEL_FAILED',
+        store: 'APP_STORE',
+        retryInStore: true,
+      });
+      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
+      const getStripeClient = jest.fn();
+
+      const result = asResult(
+        await deleteMe({
+          cancelSubscription,
+          deleteAuthUser,
+          loadStoredEntitlement: async () => ({
+            userId: OWNER_ID,
+            tier: 'PREMIUM',
+            status: 'ACTIVE',
+            store: 'APP_STORE',
+            source: 'ios',
+            createdAt: '2026-09-16T00:00:00.000Z',
+            updatedAt: '2026-09-16T00:00:00.000Z',
+          }),
+          stripeCancelDeps: {
+            loadStripeCustomerId: async () => undefined,
+            getStripeClient,
+          },
+        }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ deleted: true });
+      expect(getStripeClient).not.toHaveBeenCalled();
+      expect(cancelSubscription).toHaveBeenCalledWith({
+        userId: OWNER_ID,
+        entitlement: expect.objectContaining({ store: 'APP_STORE' }),
+      });
       expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
     });
 

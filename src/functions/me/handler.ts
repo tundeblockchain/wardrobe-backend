@@ -14,6 +14,10 @@ import { errorResponse, ok, routeKey } from '../../shared/http';
 import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
 import {
+  cancelAccountStripeSubscriptions,
+  StripeCancelDeps,
+} from '../../shared/stripe-cancel';
+import {
   AccountDeleteResult,
   SubscriptionCancelResult,
 } from '../../shared/types';
@@ -30,6 +34,7 @@ export interface MeHandlerDeps {
     input: CancelSubscriptionInput,
   ) => Promise<SubscriptionCancelResult>;
   cancelDeps?: SubscriptionCancelDeps;
+  stripeCancelDeps?: StripeCancelDeps;
   deleteAuthUser?: (uid: string) => Promise<void>;
 }
 
@@ -47,12 +52,13 @@ export interface MeHandlerDeps {
  *                      personal AI profiles, job-done events, device tokens,
  *                      share tokens, and S3 under users/{uid}/. Entitlement +
  *                      Firebase Auth stay. No subscription cancel (WARDROBE-103).
- * DELETE /me         — cancel store subscription when possible, revoke
- *                      ENTITLEMENT, wipe Dynamo + S3 (plus PROFILE), then
- *                      delete the Firebase Auth user with Admin SDK
- *                      (WARDROBE-154). Data first, Auth last, so a retry can
- *                      still authenticate. Seeded GENERIC_MODEL catalog rows
- *                      are never deleted.
+ * DELETE /me         — cancel Stripe subscriptions first (WARDROBE-192;
+ *                      fail-closed), then best-effort store cancel for
+ *                      App Store / Play, revoke ENTITLEMENT, wipe Dynamo
+ *                      + S3 (plus PROFILE), then delete the Firebase Auth
+ *                      user with Admin SDK (WARDROBE-154). Data first, Auth
+ *                      last, so a retry can still authenticate. Seeded
+ *                      GENERIC_MODEL catalog rows are never deleted.
  *
  * Identity always comes from the Firebase authorizer (`getUserId`).
  */
@@ -101,6 +107,7 @@ async function deleteAccount(
 ): Promise<AccountDeleteResult> {
   const loadStored = deps.loadStoredEntitlement ?? loadStoredEntitlement;
   const entitlement = await loadStored(userId);
+  await cancelAccountStripeSubscriptions({ userId }, deps.stripeCancelDeps);
   await attemptCancel(userId, entitlement, deps);
 
   try {

@@ -63,7 +63,8 @@ interface CheckoutSessionBody {
  * Return URLs are server-built from `BILLING_WEB_ORIGIN` — body and
  * header URL fields are ignored.
  *
- * Does not implement the webhook or DELETE /me cancel (190 / 192).
+ * Does not implement the webhook (190). DELETE /me Stripe cancel is
+ * WARDROBE-192 on MeFn.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,

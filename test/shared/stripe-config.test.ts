@@ -2,6 +2,7 @@ import {
   assertStripeKeyMatchesMode,
   getStripeClient,
   getStripeConfig,
+  isStripeUnconfiguredError,
   parseStripeMode,
   parseStripeSecret,
   resetStripeCaches,
@@ -99,6 +100,24 @@ describe('getStripeConfig', () => {
     expect(first.lookupKeys.premiumMonthly).toBe('wardrobe_premium_monthly');
     expect(second).toBe(first);
     expect(getSecretString).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies missing / empty / placeholder secrets as unconfigured', () => {
+    expect(isStripeUnconfiguredError(new Error('STRIPE_SECRET_ARN is not set.'))).toBe(
+      true,
+    );
+    expect(isStripeUnconfiguredError(new Error('Stripe secret is empty.'))).toBe(true);
+    expect(
+      isStripeUnconfiguredError(new Error('Stripe secret is missing secretKey.')),
+    ).toBe(true);
+    expect(
+      isStripeUnconfiguredError(
+        new Error('Stripe secretKey is a placeholder; replace the Secrets Manager value.'),
+      ),
+    ).toBe(true);
+    expect(
+      isStripeUnconfiguredError(new Error('Stripe test mode cannot use a live secret key.')),
+    ).toBe(false);
   });
 
   it('throws a clear error when STRIPE_SECRET_ARN is missing', async () => {

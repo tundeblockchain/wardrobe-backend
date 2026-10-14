@@ -1110,8 +1110,8 @@ export class WardrobeStack extends cdk.Stack {
     // Isolated WARDROBE-187 Stripe secrets. Mode is CDK context stripeMode /
     // STRIPE_MODE (default test). Preview and dev cannot select live.
     // grantStripeSecretRead grants the **active** mode secret only.
-    // MeFn (account delete) + BillingFn (checkout 189 + portal 191).
-    // Webhook (190) is not granted here.
+    // MeFn (account delete / WARDROBE-192 cancel) + BillingFn
+    // (checkout 189 + portal 191). Webhook (190) is not granted here.
     const stripe = addStripeSecrets(this, { stage, removalPolicy });
     grantStripeSecretRead(meFn, stripe.activeSecret, {
       mode: stripe.mode,
