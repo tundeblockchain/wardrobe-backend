@@ -1,9 +1,11 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import {
-  DEFAULT_BILLING_WEB_ORIGIN,
+  BILLING_WEB_ORIGIN_UNCONFIGURED_WARN,
+  TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
   checkoutCancelUrl,
   checkoutSuccessUrl,
   portalReturnUrl,
+  resetTemporaryBillingOriginWarning,
 } from '../../src/shared/billing-urls';
 import { handler } from '../../src/functions/billing/handler';
 import { StoredEntitlement } from '../../src/shared/entitlements';
@@ -15,6 +17,7 @@ const CHECKOUT_URL = 'https://checkout.stripe.com/c/pay/cs_test_abc';
 const PORTAL_URL = 'https://billing.stripe.com/p/session/test_abc';
 const SECRET_KEY = 'sk_test_DO_NOT_LOG_THIS_VALUE_9f3a';
 const WEBHOOK_SECRET = 'whsec_DO_NOT_LOG_THIS_EITHER_4c2b';
+const CONFIGURED_ORIGIN = 'https://app.example';
 
 function asResult(
   result: Awaited<ReturnType<typeof handler>>,
@@ -76,6 +79,7 @@ function event(options: {
   headers?: Record<string, string>;
   method?: string;
   path?: string;
+  omitOrigin?: boolean;
 }): APIGatewayProxyEventV2 {
   const method = options.method ?? 'POST';
   const path = options.path ?? '/billing/checkout-session';
@@ -86,16 +90,22 @@ function event(options: {
           lambda: { sub: options.sub ?? UID },
         };
 
+  const headers: Record<string, string> = {
+    authorization: 'Bearer unused-in-handler',
+    ...(options.omitOrigin ? {} : { origin: 'https://evil.example' }),
+    ...options.headers,
+  };
+  if (options.omitOrigin) {
+    delete headers.origin;
+    delete headers.Origin;
+  }
+
   return {
     version: '2.0',
     routeKey: `${method} ${path}`,
     rawPath: path,
     rawQueryString: '',
-    headers: {
-      authorization: 'Bearer unused-in-handler',
-      origin: 'https://evil.example',
-      ...options.headers,
-    },
+    headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     requestContext: {
       accountId: '123',
@@ -153,6 +163,7 @@ function portalEvent(options: {
   sub?: string | null;
   headers?: Record<string, string>;
   method?: string;
+  omitOrigin?: boolean;
 } = {}): APIGatewayProxyEventV2 {
   return event({
     ...options,
@@ -160,6 +171,28 @@ function portalEvent(options: {
     body: options.body,
   });
 }
+
+const originalBillingOrigin = process.env.BILLING_WEB_ORIGIN;
+const originalAllowedOrigins = process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
+
+beforeEach(() => {
+  resetTemporaryBillingOriginWarning();
+  process.env.BILLING_WEB_ORIGIN = CONFIGURED_ORIGIN;
+  delete process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
+});
+
+afterEach(() => {
+  if (originalBillingOrigin === undefined) {
+    delete process.env.BILLING_WEB_ORIGIN;
+  } else {
+    process.env.BILLING_WEB_ORIGIN = originalBillingOrigin;
+  }
+  if (originalAllowedOrigins === undefined) {
+    delete process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
+  } else {
+    process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS = originalAllowedOrigins;
+  }
+});
 
 describe('POST /billing/checkout-session (WARDROBE-189)', () => {
   it('returns 401 when the authorizer context is missing', async () => {
@@ -369,8 +402,8 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
       customer: 'cus_123',
       client_reference_id: UID,
       line_items: [{ price: 'price_from_lookup', quantity: 1 }],
-      success_url: checkoutSuccessUrl(DEFAULT_BILLING_WEB_ORIGIN),
-      cancel_url: checkoutCancelUrl(DEFAULT_BILLING_WEB_ORIGIN),
+      success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
+      cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
       subscription_data: { metadata: { uid: UID, tier: 'premium' } },
     });
   });
@@ -495,7 +528,7 @@ describe('POST /billing/portal-session (WARDROBE-191)', () => {
     expect(loadCustomer).toHaveBeenCalledWith(UID);
     expect(stripe.portalCreate).toHaveBeenCalledWith({
       customer: 'cus_123',
-      return_url: portalReturnUrl(DEFAULT_BILLING_WEB_ORIGIN),
+      return_url: portalReturnUrl(CONFIGURED_ORIGIN),
     });
     expect(log.info).toHaveBeenCalledWith(
       'Stripe billing portal session created',
@@ -642,7 +675,7 @@ describe('POST /billing/portal-session (WARDROBE-191)', () => {
 
     expect(stripe.portalCreate).toHaveBeenCalledWith({
       customer: 'cus_123',
-      return_url: portalReturnUrl(DEFAULT_BILLING_WEB_ORIGIN),
+      return_url: portalReturnUrl(CONFIGURED_ORIGIN),
       configuration: 'bpc_configured',
     });
   });
@@ -668,5 +701,218 @@ describe('POST /billing/portal-session (WARDROBE-191)', () => {
     expect(serialized).not.toContain(WEBHOOK_SECRET);
     expect(serialized).not.toContain('sk_test_');
     expect(serialized).not.toContain('whsec_');
+  });
+});
+
+describe('billing return origins (WARDROBE-198)', () => {
+  it('uses the configured domain for checkout success and cancel URLs', async () => {
+    const stripe = mockStripe();
+    await handler(event({ body: { tier: 'basic' }, omitOrigin: true }), {
+      resolveEntitlement: async () => freeEntitlement(),
+      ensureStripeCustomer: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripeClient: async () => stripe,
+    });
+
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
+        cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
+      }),
+    );
+  });
+
+  it('uses the configured domain for portal return_url', async () => {
+    const stripe = mockPortal();
+    await handler(portalEvent({ omitOrigin: true }), {
+      resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+      loadStripeCustomerId: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripePortalClient: async () => stripe,
+    });
+
+    expect(stripe.portalCreate).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      return_url: portalReturnUrl(CONFIGURED_ORIGIN),
+    });
+  });
+
+  it('uses an allowlisted Origin for checkout and portal', async () => {
+    const checkout = mockStripe();
+    const portal = mockPortal();
+    const allowed = ['https://preview.example'];
+
+    await handler(
+      event({
+        body: { tier: 'basic' },
+        headers: { origin: 'https://preview.example' },
+      }),
+      {
+        resolveEntitlement: async () => freeEntitlement(),
+        ensureStripeCustomer: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => checkout,
+        allowedOrigins: allowed,
+      },
+    );
+    expect(checkout.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: checkoutSuccessUrl('https://preview.example'),
+        cancel_url: checkoutCancelUrl('https://preview.example'),
+      }),
+    );
+
+    await handler(
+      portalEvent({ headers: { origin: 'https://preview.example' } }),
+      {
+        resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+        loadStripeCustomerId: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripePortalClient: async () => portal,
+        allowedOrigins: allowed,
+      },
+    );
+    expect(portal.portalCreate).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      return_url: portalReturnUrl('https://preview.example'),
+    });
+  });
+
+  it('rejects a non-allowlisted Origin and falls back to the configured base', async () => {
+    const stripe = mockStripe();
+    await handler(
+      event({
+        body: { tier: 'basic' },
+        headers: { origin: 'https://evil.example' },
+      }),
+      {
+        resolveEntitlement: async () => freeEntitlement(),
+        ensureStripeCustomer: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => stripe,
+        allowedOrigins: ['https://preview.example'],
+      },
+    );
+
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
+        cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
+      }),
+    );
+  });
+
+  it('falls back to the configured base when Origin is missing', async () => {
+    const stripe = mockStripe();
+    await handler(event({ body: { tier: 'basic' }, omitOrigin: true }), {
+      resolveEntitlement: async () => freeEntitlement(),
+      ensureStripeCustomer: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripeClient: async () => stripe,
+      allowedOrigins: ['https://preview.example'],
+    });
+
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
+        cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
+      }),
+    );
+  });
+
+  it('rejects a non-https Origin and falls back to the configured base', async () => {
+    const stripe = mockStripe();
+    await handler(
+      event({
+        body: { tier: 'basic' },
+        headers: { origin: 'http://preview.example' },
+      }),
+      {
+        resolveEntitlement: async () => freeEntitlement(),
+        ensureStripeCustomer: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => stripe,
+        allowedOrigins: ['http://preview.example', 'https://preview.example'],
+      },
+    );
+
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
+        cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
+      }),
+    );
+  });
+
+  it('rejects lookalike prefix and suffix Origins', async () => {
+    const stripe = mockStripe();
+    for (const origin of [
+      'https://evil-custom.com',
+      'https://custom.com.evil.com',
+      'https://prefixcustom.com',
+    ]) {
+      stripe.sessionsCreate.mockClear();
+      await handler(
+        event({
+          body: { tier: 'basic' },
+          headers: { origin },
+        }),
+        {
+          resolveEntitlement: async () => freeEntitlement(),
+          ensureStripeCustomer: async () => 'cus_123',
+          getStripeConfig: async () => stripeConfig(),
+          getStripeClient: async () => stripe,
+          allowedOrigins: ['https://custom.com'],
+        },
+      );
+
+      expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
+          cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
+        }),
+      );
+    }
+  });
+
+  it('uses the TEMPORARY fallback and warns once when the base URL is not set', async () => {
+    delete process.env.BILLING_WEB_ORIGIN;
+    const stripe = mockStripe();
+    const portal = mockPortal();
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    const checkout = asResult(
+      await handler(event({ body: { tier: 'basic' }, omitOrigin: true }), {
+        resolveEntitlement: async () => freeEntitlement(),
+        ensureStripeCustomer: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => stripe,
+        log,
+      }),
+    );
+    expect(checkout.statusCode).toBe(200);
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: checkoutSuccessUrl(TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK),
+        cancel_url: checkoutCancelUrl(TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK),
+      }),
+    );
+
+    const portalResult = asResult(
+      await handler(portalEvent({ omitOrigin: true }), {
+        resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+        loadStripeCustomerId: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripePortalClient: async () => portal,
+        log,
+      }),
+    );
+    expect(portalResult.statusCode).toBe(200);
+    expect(portal.portalCreate).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      return_url: portalReturnUrl(TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK),
+    });
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(BILLING_WEB_ORIGIN_UNCONFIGURED_WARN);
   });
 });

@@ -2,8 +2,8 @@
  * Writes a local cdk.json from the committed example.
  *
  * cdk.json is gitignored so local/project IDs stay off the repo.
- * CI/CodeBuild always regenerates it from env vars so the pipeline
- * can synth and deploy without a committed cdk.json.
+ * CI/CodeBuild always regenerates it from the committed cdk.json.example
+ * context (including billingWebOrigin) plus any non-empty env overlays.
  */
 const fs = require('fs');
 const path = require('path');

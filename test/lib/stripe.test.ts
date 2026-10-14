@@ -81,6 +81,26 @@ function functionEnv(
   })?.Properties.Environment?.Variables;
 }
 
+function functionEnvById(
+  template: Template,
+  idIncludes: string,
+): Record<string, unknown> | undefined {
+  const functions = Object.entries(
+    template.findResources('AWS::Lambda::Function'),
+  ) as Array<
+    [
+      string,
+      {
+        Properties: {
+          Environment?: { Variables?: Record<string, unknown> };
+        };
+      },
+    ]
+  >;
+  return functions.find(([id]) => id.includes(idIncludes))?.[1].Properties
+    .Environment?.Variables;
+}
+
 describe('Stripe secrets and grants (WARDROBE-187)', () => {
   const template = synthTemplate('dev');
 
@@ -131,10 +151,7 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(meEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
     expect(meEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
 
-    const billingEnv = functionEnv(
-      template,
-      (vars) => Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
-    );
+    const billingEnv = functionEnvById(template, 'BillingFn');
     expect(billingEnv).toBeDefined();
     expect(billingEnv).toEqual(
       expect.objectContaining({
@@ -144,9 +161,10 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
         STRIPE_LOOKUP_KEY_BASIC_YEARLY: 'wardrobe_basic_yearly',
         STRIPE_LOOKUP_KEY_PREMIUM_YEARLY: 'wardrobe_premium_yearly',
         STRIPE_SECRET_ARN: expect.anything(),
-        BILLING_WEB_ORIGIN: 'https://wende-wardrobe.netlify.app',
       }),
     );
+    expect(billingEnv).not.toHaveProperty('BILLING_WEB_ORIGIN');
+    expect(JSON.stringify(billingEnv)).not.toMatch(/netlify\.app/);
     expect(billingEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
     expect(billingEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
     expect(billingEnv).not.toHaveProperty('SUPERWALL_SECRET_ARN');
@@ -181,13 +199,7 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(JSON.stringify(webhookPolicies)).toContain('StripeTestSecret');
     expect(JSON.stringify(webhookPolicies)).not.toContain('StripeLiveSecret');
 
-    const webhookEnv = functionEnv(
-      template,
-      (vars) =>
-        Boolean(vars.STRIPE_SECRET_ARN) &&
-        !vars.BILLING_WEB_ORIGIN &&
-        !vars.SUPERWALL_SECRET_ARN,
-    );
+    const webhookEnv = functionEnvById(template, 'StripeWebhookFn');
     expect(webhookEnv).toEqual(
       expect.objectContaining({
         STRIPE_MODE: 'test',
@@ -251,19 +263,21 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
 
     const custom = synthTemplate('dev', {
       billingWebOrigin: 'https://preview.example',
+      supportContactAllowedOrigins: 'https://preview.example,https://app.example',
       stripePortalConfigurationId: 'bpc_from_context',
     });
-    const billingEnv = functionEnv(custom, (vars) =>
-      Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
-    );
+    const billingEnv = functionEnvById(custom, 'BillingFn');
     expect(billingEnv?.BILLING_WEB_ORIGIN).toBe('https://preview.example');
+    expect(billingEnv?.SUPPORT_CONTACT_ALLOWED_ORIGINS).toBe(
+      'https://preview.example,https://app.example',
+    );
     expect(billingEnv?.STRIPE_PORTAL_CONFIGURATION_ID).toBe('bpc_from_context');
     expect(billingEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
     expect(billingEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
 
-    const defaultEnv = functionEnv(template, (vars) =>
-      Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
-    );
+    const defaultEnv = functionEnvById(template, 'BillingFn');
+    expect(defaultEnv).not.toHaveProperty('BILLING_WEB_ORIGIN');
+    expect(defaultEnv).not.toHaveProperty('SUPPORT_CONTACT_ALLOWED_ORIGINS');
     expect(defaultEnv).not.toHaveProperty('STRIPE_PORTAL_CONFIGURATION_ID');
   });
 
@@ -308,18 +322,10 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     );
     expect(meEnv?.STRIPE_MODE).toBe('live');
 
-    const billingEnv = functionEnv(prod, (vars) =>
-      Boolean(vars.BILLING_WEB_ORIGIN && vars.STRIPE_SECRET_ARN),
-    );
+    const billingEnv = functionEnvById(prod, 'BillingFn');
     expect(billingEnv?.STRIPE_MODE).toBe('live');
 
-    const webhookEnv = functionEnv(
-      prod,
-      (vars) =>
-        Boolean(vars.STRIPE_SECRET_ARN) &&
-        !vars.BILLING_WEB_ORIGIN &&
-        !vars.SUPERWALL_SECRET_ARN,
-    );
+    const webhookEnv = functionEnvById(prod, 'StripeWebhookFn');
     expect(webhookEnv?.STRIPE_MODE).toBe('live');
 
     const mePolicies = (

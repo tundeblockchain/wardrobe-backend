@@ -21,7 +21,6 @@ import {
 } from '../src/functions/ai-profiles/catalog';
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
-import { normalizeBillingWebOrigin } from '../src/shared/billing-urls';
 import { addEntitlements } from './entitlements';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
@@ -352,13 +351,24 @@ export class WardrobeStack extends cdk.Stack {
         FIREBASE_ADMIN_SECRET_ARN: firebaseAdminSecret.secretArn,
       },
     });
-    // WARDROBE-189 / WARDROBE-191: Stripe customer + Checkout + Billing
-    // Portal. Active-mode secret is granted via grantStripeSecretRead only
-    // (below). Return URLs use BILLING_WEB_ORIGIN — never request body/
-    // header URLs. Optional portal configuration lets operators allow
-    // Basic ↔ Premium switches in the Stripe Customer Portal.
-    const billingWebOrigin = normalizeBillingWebOrigin(
-      this.node.tryGetContext('billingWebOrigin') ?? process.env.BILLING_WEB_ORIGIN,
+    // WARDROBE-189 / WARDROBE-191 / WARDROBE-198: Stripe customer +
+    // Checkout + Billing Portal. Active-mode secret is granted via
+    // grantStripeSecretRead only (below). Return URLs use cdk.json
+    // context billingWebOrigin. If unset, BillingFn omits the env var
+    // and the runtime uses the TEMPORARY WARDROBE-198 fallback.
+    // Request Origin is used only when it exactly matches
+    // supportContactAllowedOrigins (https, scheme+host+port). Optional
+    // portal configuration lets operators allow Basic ↔ Premium
+    // switches in the Stripe Customer Portal.
+    const billingWebOrigin = readOptionalContextOrEnv(
+      this,
+      'billingWebOrigin',
+      process.env.BILLING_WEB_ORIGIN,
+    );
+    const supportContactAllowedOrigins = readOptionalContextOrEnv(
+      this,
+      'supportContactAllowedOrigins',
+      process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS,
     );
     const stripePortalConfigurationId = readOptionalContextOrEnv(
       this,
@@ -370,7 +380,12 @@ export class WardrobeStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(15),
       environment: {
         ...commonLambdaProps.environment,
-        BILLING_WEB_ORIGIN: billingWebOrigin,
+        ...(billingWebOrigin
+          ? { BILLING_WEB_ORIGIN: billingWebOrigin.replace(/\/+$/, '') }
+          : {}),
+        ...(supportContactAllowedOrigins
+          ? { SUPPORT_CONTACT_ALLOWED_ORIGINS: supportContactAllowedOrigins }
+          : {}),
         ...(stripePortalConfigurationId
           ? { STRIPE_PORTAL_CONFIGURATION_ID: stripePortalConfigurationId }
           : {}),

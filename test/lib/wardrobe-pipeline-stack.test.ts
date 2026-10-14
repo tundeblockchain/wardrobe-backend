@@ -43,6 +43,21 @@ function codeBuildEnvMaps(template: Template): Array<Record<string, string>> {
   });
 }
 
+function synthBuildSpec(template: Template): string {
+  const projects = Object.values(
+    template.findResources('AWS::CodeBuild::Project'),
+  ) as Array<{
+    Properties?: { Source?: { BuildSpec?: string } };
+  }>;
+  const spec = projects
+    .map((project) => project.Properties?.Source?.BuildSpec)
+    .find((value) => value && value.includes('cdk synth'));
+  if (!spec) {
+    throw new Error('Synth CodeBuild buildspec not found');
+  }
+  return spec;
+}
+
 function synthStepEnv(template: Template): Record<string, string> {
   const env = codeBuildEnvMaps(template).find(
     (vars) =>
@@ -146,6 +161,9 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
 
     const env = synthStepEnv(template);
     expect(env.BILLING_WEB_ORIGIN).toBe('https://preview.example');
+    const spec = synthBuildSpec(template);
+    expect(spec).toMatch(/-c billingWebOrigin=/);
+    expect(spec).toContain('https://preview.example');
   });
 
   test('bakes a non-empty stripePortalConfigurationId into the Synth project', () => {

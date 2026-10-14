@@ -1,40 +1,67 @@
 import {
+  BILLING_WEB_ORIGIN_UNCONFIGURED_WARN,
   CHECKOUT_SESSION_ID_PLACEHOLDER,
-  DEFAULT_BILLING_WEB_ORIGIN,
+  TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
   checkoutCancelUrl,
   checkoutReturnUrls,
   checkoutSuccessUrl,
+  isAllowlistedHttpsOrigin,
   normalizeBillingWebOrigin,
+  originsEqualExactly,
   portalReturnUrl,
+  resetTemporaryBillingOriginWarning,
+  resolveBillingReturnOrigin,
   resolveBillingWebOrigin,
 } from '../../src/shared/billing-urls';
 
-describe('billing return URLs (WARDROBE-189)', () => {
-  const original = process.env.BILLING_WEB_ORIGIN;
+const CONFIGURED = 'https://app.example';
+
+describe('billing return URLs (WARDROBE-198)', () => {
+  const originalOrigin = process.env.BILLING_WEB_ORIGIN;
+  const originalAllowlist = process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
 
   afterEach(() => {
-    if (original === undefined) {
+    resetTemporaryBillingOriginWarning();
+    if (originalOrigin === undefined) {
       delete process.env.BILLING_WEB_ORIGIN;
     } else {
-      process.env.BILLING_WEB_ORIGIN = original;
+      process.env.BILLING_WEB_ORIGIN = originalOrigin;
+    }
+    if (originalAllowlist === undefined) {
+      delete process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
+    } else {
+      process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS = originalAllowlist;
     }
   });
 
-  it('defaults the web origin and strips trailing slashes', () => {
-    expect(normalizeBillingWebOrigin(undefined)).toBe(DEFAULT_BILLING_WEB_ORIGIN);
-    expect(normalizeBillingWebOrigin('  ')).toBe(DEFAULT_BILLING_WEB_ORIGIN);
-    expect(normalizeBillingWebOrigin('https://preview.example/')).toBe(
-      'https://preview.example',
+  it('does not treat an empty or non-https value as configured', () => {
+    expect(normalizeBillingWebOrigin(undefined)).toBeUndefined();
+    expect(normalizeBillingWebOrigin('  ')).toBeUndefined();
+    expect(normalizeBillingWebOrigin('http://app.example')).toBeUndefined();
+    expect(normalizeBillingWebOrigin(CONFIGURED + '/')).toBe(CONFIGURED);
+  });
+
+  it('falls back to the TEMPORARY origin and warns once when unset', () => {
+    delete process.env.BILLING_WEB_ORIGIN;
+    const log = { warn: jest.fn() };
+
+    expect(resolveBillingWebOrigin(process.env, log)).toBe(
+      TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
     );
+    expect(resolveBillingWebOrigin(process.env, log)).toBe(
+      TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
+    );
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(BILLING_WEB_ORIGIN_UNCONFIGURED_WARN);
   });
 
   it('builds success_url with the literal Stripe session placeholder', () => {
-    const urls = checkoutReturnUrls(DEFAULT_BILLING_WEB_ORIGIN);
+    const urls = checkoutReturnUrls(CONFIGURED);
     expect(urls.successUrl).toBe(
-      `${DEFAULT_BILLING_WEB_ORIGIN}/app/billing/success?session_id=${CHECKOUT_SESSION_ID_PLACEHOLDER}`,
+      `${CONFIGURED}/app/billing/success?session_id=${CHECKOUT_SESSION_ID_PLACEHOLDER}`,
     );
     expect(urls.successUrl).toContain('{CHECKOUT_SESSION_ID}');
-    expect(urls.cancelUrl).toBe(`${DEFAULT_BILLING_WEB_ORIGIN}/app/billing/cancel`);
+    expect(urls.cancelUrl).toBe(`${CONFIGURED}/app/billing/cancel`);
     expect(checkoutSuccessUrl('https://preview.example')).toBe(
       'https://preview.example/app/billing/success?session_id={CHECKOUT_SESSION_ID}',
     );
@@ -49,11 +76,84 @@ describe('billing return URLs (WARDROBE-189)', () => {
   });
 
   it('builds the Billing Portal return URL from the web origin', () => {
-    expect(portalReturnUrl(DEFAULT_BILLING_WEB_ORIGIN)).toBe(
-      `${DEFAULT_BILLING_WEB_ORIGIN}/app/settings#plan`,
-    );
+    expect(portalReturnUrl(CONFIGURED)).toBe(`${CONFIGURED}/app/settings#plan`);
     expect(portalReturnUrl('https://preview.example/')).toBe(
       'https://preview.example/app/settings#plan',
     );
+  });
+
+  it('uses the configured domain when Origin is missing', () => {
+    expect(
+      resolveBillingReturnOrigin({
+        configured: CONFIGURED,
+        requestOrigin: undefined,
+        allowlist: [CONFIGURED],
+      }),
+    ).toBe(CONFIGURED);
+  });
+
+  it('uses an allowlisted https Origin', () => {
+    expect(
+      resolveBillingReturnOrigin({
+        configured: CONFIGURED,
+        requestOrigin: 'https://preview.example',
+        allowlist: ['https://preview.example'],
+      }),
+    ).toBe('https://preview.example');
+  });
+
+  it('rejects a non-https Origin and falls back to the configured base', () => {
+    expect(
+      resolveBillingReturnOrigin({
+        configured: CONFIGURED,
+        requestOrigin: 'http://preview.example',
+        allowlist: ['http://preview.example', 'https://preview.example'],
+      }),
+    ).toBe(CONFIGURED);
+  });
+
+  it('rejects lookalike prefix and suffix Origins', () => {
+    const allowlist = ['https://custom.com'];
+    expect(
+      isAllowlistedHttpsOrigin('https://evil-custom.com', allowlist),
+    ).toBe(false);
+    expect(isAllowlistedHttpsOrigin('https://custom.com.evil.com', allowlist)).toBe(
+      false,
+    );
+    expect(isAllowlistedHttpsOrigin('https://notcustom.com', allowlist)).toBe(
+      false,
+    );
+    expect(isAllowlistedHttpsOrigin('https://custom.com.attacker.com', allowlist)).toBe(
+      false,
+    );
+    expect(originsEqualExactly('https://evil-custom.com', 'https://custom.com')).toBe(
+      false,
+    );
+    expect(
+      resolveBillingReturnOrigin({
+        configured: CONFIGURED,
+        requestOrigin: 'https://evil-custom.com',
+        allowlist: ['https://custom.com'],
+      }),
+    ).toBe(CONFIGURED);
+    expect(
+      resolveBillingReturnOrigin({
+        configured: CONFIGURED,
+        requestOrigin: 'https://prefixcustom.com',
+        allowlist: ['https://custom.com'],
+      }),
+    ).toBe(CONFIGURED);
+  });
+
+  it('treats https default port 443 as the same origin', () => {
+    expect(
+      originsEqualExactly('https://custom.com', 'https://custom.com:443'),
+    ).toBe(true);
+    expect(
+      isAllowlistedHttpsOrigin('https://custom.com:443', ['https://custom.com']),
+    ).toBe(true);
+    expect(
+      isAllowlistedHttpsOrigin('https://custom.com:444', ['https://custom.com']),
+    ).toBe(false);
   });
 });

@@ -2613,7 +2613,7 @@ JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook si
 | `stripeLookupKeyPremiumMonthly` | `STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY` | `wardrobe_premium_monthly` |
 | `stripeLookupKeyBasicYearly` | `STRIPE_LOOKUP_KEY_BASIC_YEARLY` | `wardrobe_basic_yearly` |
 | `stripeLookupKeyPremiumYearly` | `STRIPE_LOOKUP_KEY_PREMIUM_YEARLY` | `wardrobe_premium_yearly` |
-| `billingWebOrigin` | `BILLING_WEB_ORIGIN` | `https://wende-wardrobe.netlify.app` |
+| `billingWebOrigin` | `BILLING_WEB_ORIGIN` | cdk.json context (TEMPORARY fallback if unset) |
 | `stripePortalConfigurationId` | `STRIPE_PORTAL_CONFIGURATION_ID` | unset (Stripe default portal configuration) |
 
 Seed Products and monthly Prices against whichever key is supplied (use a **test** key first):
@@ -2630,7 +2630,7 @@ Checkout looks up `stripeCustomerId` on `USER#{uid} / PROFILE`. If it is missing
 
 ### `POST /billing/checkout-session`
 
-Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }`. `interval` defaults to `"monthly"` when omitted. Return URLs are **server-built** from `billingWebOrigin` — any `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` in the body or `Origin` / `Referer` headers is ignored. Response remains `{ "url" }` only.
+Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }`. `interval` defaults to `"monthly"` when omitted. Return URLs are **server-built** from cdk.json context `billingWebOrigin` (`BILLING_WEB_ORIGIN`). Body `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` fields are ignored. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` (or the configured base) exactly on scheme + host + port. Otherwise the configured base is used. If `billingWebOrigin` is unset, the TEMPORARY WARDROBE-198 fallback (`https://wende-wardrobe.netlify.app`) is used and a WARN is logged once per cold start. Response remains `{ "url" }` only.
 
 ```http
 POST /billing/checkout-session
@@ -2662,13 +2662,7 @@ Return URLs (not taken from the client):
 | `success_url` | `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}` (`{CHECKOUT_SESSION_ID}` is the literal Stripe placeholder) |
 | `cancel_url` | `{origin}/app/billing/cancel` |
 
-Default `origin` is `https://wende-wardrobe.netlify.app`. Override at synth/deploy:
-
-```bash
-npm run deploy -- -c billingWebOrigin="https://preview.example"
-```
-
-Or export `BILLING_WEB_ORIGIN`. API CORS stays `allowOrigins: ['*']`.
+Set the web origin in cdk.json context `billingWebOrigin` (committed in `cdk.json.example`; CI copies it to `cdk.json`). A later custom-domain change is a one-line PR to that context value. If the value is empty, checkout and portal temporarily return users to `https://wende-wardrobe.netlify.app` and log `billingWebOrigin not configured; using temporary fallback` once per cold start. Optional Origin override reuses `supportContactAllowedOrigins` / `SUPPORT_CONTACT_ALLOWED_ORIGINS` (exact https scheme + host + port only). API CORS stays `allowOrigins: ['*']`.
 
 If `GET /me` `paidTier` is already set from **any** source (`ios` / `android` / `stripe` — WARDROBE-188 derivation, including an unexpired canceled plan), checkout is refused. It does not create a session.
 
@@ -2694,7 +2688,7 @@ Existing responses are unchanged except this additive `source` field on `ALREADY
 
 ### `POST /billing/portal-session`
 
-Authenticated (Firebase authorizer). **No body is required.** This is the web path for a Basic Stripe subscriber to upgrade to Premium (and to manage or cancel the Stripe subscription). Return URL is **server-built** from `billingWebOrigin` — any `returnUrl` / `return_url` / `url` / `successUrl` / `cancelUrl` in the body or `Origin` / `Referer` headers is ignored.
+Authenticated (Firebase authorizer). **No body is required.** This is the web path for a Basic Stripe subscriber to upgrade to Premium (and to manage or cancel the Stripe subscription). Return URL is **server-built** from cdk.json context `billingWebOrigin` using the same Origin rules as checkout. Body `returnUrl` / `return_url` / `url` / `successUrl` / `cancelUrl` fields are ignored.
 
 Only accounts whose current `GET /me` `paidTier.source` is `"stripe"` **and** that already have `USER#{uid} / PROFILE.stripeCustomerId` may open the portal. The handler never creates a Stripe customer. iOS, Android, and Free accounts are refused.
 
@@ -2709,7 +2703,7 @@ Authorization: Bearer <firebase-id-token>
 { "url": "https://billing.stripe.com/p/session/…" }
 ```
 
-`return_url` is `{origin}/app/settings#plan`. Default `origin` is `https://wende-wardrobe.netlify.app` (same `billingWebOrigin` as checkout).
+`return_url` is `{origin}/app/settings#plan` (same cdk.json context `billingWebOrigin` as checkout, including the TEMPORARY fallback when unset).
 
 Operators must configure the Stripe Customer Portal so customers can switch between the Basic and Premium monthly prices (`wardrobe_basic_monthly` / `wardrobe_premium_monthly`). Optionally pin a portal configuration:
 
@@ -2860,7 +2854,7 @@ npm run deploy:pipeline -- \
   -c uploadAllowedOrigins="https://wende-wardrobe.netlify.app,https://deploy-preview-*--wende-wardrobe.netlify.app,http://localhost:5173"
 ```
 
-Optional: `-c supportContactRateLimit=5` and `-c supportContactRateWindowSeconds=3600`, or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` / `SUPPORT_CONTACT_RATE_LIMIT` / `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `UPLOAD_ALLOWED_ORIGINS` before `npm run deploy:pipeline`. Empty values are not baked into the Synth step. If `UPLOAD_ALLOWED_ORIGINS` is omitted, `WardrobeStack-prod` uses the default upload origin list from code. After a merge to `master` / `main`, the pipeline deploys the MediaBucket CORS change; a pipeline self-mutation is only required when changing the baked origin override.
+Optional: `-c supportContactRateLimit=5` and `-c supportContactRateWindowSeconds=3600`, or export `SUPPORT_CONTACT_ALLOWED_ORIGINS` / `SUPPORT_CONTACT_RATE_LIMIT` / `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `UPLOAD_ALLOWED_ORIGINS` before `npm run deploy:pipeline`. Empty values are not baked into the Synth step. Stripe return URLs read cdk.json context `billingWebOrigin` from the committed `cdk.json.example` (copied to `cdk.json` in CodeBuild). Set that context key to the custom domain in a later PR; if it is empty, the TEMPORARY WARDROBE-198 fallback is used. If `UPLOAD_ALLOWED_ORIGINS` is omitted, `WardrobeStack-prod` uses the default upload origin list from code. After a merge to `master` / `main`, the pipeline deploys the MediaBucket CORS change; a pipeline self-mutation is only required when changing the baked origin override.
 
 A direct `npm run deploy` of `WardrobeStack-prod` is overwritten by the next pipeline run.
 
@@ -3061,7 +3055,7 @@ Public website contact (WARDROBE-143) — CDK context / env, empty-origins defau
 | `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
 | `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
 | `UPLOAD_ALLOWED_ORIGINS` / `uploadAllowedOrigins` | Netlify site, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173` | S3 media-bucket CORS origins for browser presigned PUTs. Never `*` |
-| `BILLING_WEB_ORIGIN` / `billingWebOrigin` | `https://wende-wardrobe.netlify.app` | Web origin for Stripe Checkout success/cancel URLs and Billing Portal `return_url`. Server-built only |
+| `BILLING_WEB_ORIGIN` / `billingWebOrigin` | cdk.json context; TEMPORARY fallback if unset | Web origin for Stripe Checkout success/cancel URLs and Billing Portal `return_url`. Server-built. Set in cdk.json context `billingWebOrigin`. |
 | `STRIPE_PORTAL_CONFIGURATION_ID` / `stripePortalConfigurationId` | unset | Optional Stripe Billing Portal configuration id so Basic ↔ Premium switches are allowed |
 
 Conceptual keys (loaded from those secrets; env overrides win — useful in unit tests only):
