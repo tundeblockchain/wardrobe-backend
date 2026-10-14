@@ -267,7 +267,7 @@ No body. Identity comes from the Firebase authorizer. Body / query `userId` is i
 Server order (Stripe cancel first, then data, Auth last — safe to retry):
 
 1. Load `USER#{uid}/ENTITLEMENT` if present and `USER#{uid}/PROFILE.stripeCustomerId` if present.
-2. If `stripeCustomerId` is set, list that customer's Stripe subscriptions with status `active` / `trialing` / `past_due` and **cancel each immediately** (`subscriptions.cancel`, not `cancel_at_period_end`) using idempotency key `account-delete-cancel-{subscriptionId}`. Uses `getStripeConfig` / `getStripeClient` (WARDROBE-187 secret). Superwall `stripeSecretKey` is a compatibility fallback only. No customer, no matching subs, or Stripe not configured (empty / placeholder secret): proceed and log a structured warning (no secrets). `resource_missing` or already-canceled: proceed. Any other Stripe cancel failure: **stop** — `503` `BILLING_CANCEL_FAILED`, nothing is deleted.
+2. If `stripeCustomerId` is set, list that customer's Stripe subscriptions with status `active` / `trialing` / `past_due` and **cancel each immediately** (`subscriptions.cancel`, not `cancel_at_period_end`) using idempotency key `account-delete-cancel-{subscriptionId}`. Uses `getStripeConfig` / `getStripeClient` (WARDROBE-187 secret). Superwall `stripeSecretKey` is a compatibility fallback only. No `stripeCustomerId`: skip Stripe cancel and continue. No matching subs, `resource_missing`, or already-canceled: proceed. Stored `stripeCustomerId` with empty / placeholder / unavailable Stripe config, or any other Stripe cancel failure: **stop** — `503` `BILLING_CANCEL_FAILED`, nothing is deleted.
 3. Attempt App Store / Play store cancel when the backend can. Superwall has no cancel API. **App Store and Play subscriptions cannot be cancelled by this server** when store APIs are unavailable or Apple-only — entitlement is still revoked; the user may need Settings → Subscriptions to stop billing. This is not faked as a successful store cancel. Store-purchase (ios / android) behaviour is unchanged: cancel failure does **not** block delete.
 4. Delete all caller-owned Dynamo rows (wardrobes, items, outfits, worn-on, personal Virtual Profiles, try-on metadata on those rows, shopping cache, job-done events, FCM devices, share links, PROFILE, ENTITLEMENT) using paginated queries and batched `BatchWriteItem` (25). Seeded `GENERIC_MODEL` rows are never deleted.
 5. Delete every S3 object under `users/{uid}/` (originals, processed / background-removed images, Virtual Profile images, Virtual Try On renders). Paginated list + batched delete. Failures fail the request.
@@ -291,7 +291,7 @@ Errors use the existing `{ "error": { "code", "message" } }` envelope. Account-d
 | Status | `error.code` | When | `retryable` |
 | --- | --- | --- | --- |
 | `401` | `UNAUTHENTICATED` or `UNAUTHORIZED` | Missing or invalid Firebase token (same as other owner routes) | omitted |
-| `503` | `BILLING_CANCEL_FAILED` | Stripe cancel failed. Account data and Auth are untouched so a retry cannot leave a paying subscription behind. | `true` |
+| `503` | `BILLING_CANCEL_FAILED` | Stripe cancel failed, including a stored `stripeCustomerId` when Stripe is empty / placeholder / unavailable. Account data and Auth are untouched so a retry cannot leave a paying subscription behind. | `true` |
 | `500` | `ACCOUNT_DELETION_FAILED` | Dynamo / S3 (or other data) step failed. Auth user is still present. | `true` |
 | `502` | `AUTH_DELETION_FAILED` | AWS data is gone; Firebase Auth delete failed (including a missing / placeholder Admin secret). | `true` |
 
@@ -311,8 +311,9 @@ Flutter:
 
 1. Call `DELETE /me` with the current ID token.
 2. On `200 { "deleted": true }`, clear local state and sign out. Do not call Firebase `deleteUser` on the device.
-3. On `BILLING_CANCEL_FAILED`, `ACCOUNT_DELETION_FAILED`, or `AUTH_DELETION_FAILED` (`retryable: true`), stay signed in and offer Retry. Do not sign out.
-4. App Store / Play billing may continue until the user cancels in store settings. Show that copy in the confirm dialog if needed — the API no longer returns `subscription.status`.
+3. On `BILLING_CANCEL_FAILED` (WARDROBE-152): sign the user out, return to login, and show a try-again message. Account data was not deleted.
+4. On `ACCOUNT_DELETION_FAILED` or `AUTH_DELETION_FAILED` (`retryable: true`), offer Retry. Do not sign out.
+5. App Store / Play billing may continue until the user cancels in store settings. Show that copy in the confirm dialog if needed — the API no longer returns `subscription.status`.
 
 Store cancel capabilities (do not invent product IDs):
 
@@ -321,9 +322,9 @@ Store cancel capabilities (do not invent product IDs):
 | Superwall | No cancel API | Webhook already writes `ENTITLEMENT`. Not used to cancel. Server entitlement is deleted. |
 | App Store | No developer-initiated cancel (user must use Settings → Subscriptions) | Skip HTTP. Entitlement still revoked. Not reported as a successful store cancel. |
 | Play Store | Immediate revoke (`subscriptionsv2.revoke`) or period-end cancel | Attempted when optional Play credentials are present. Token is Superwall's `originalTransactionId`, which is an Apple-style subscription id analog — **not** reliably a Play purchase token. Google 4xx is logged and ignored for the HTTP outcome. |
-| Stripe | Immediate `subscriptions.cancel` for `active` / `trialing` / `past_due` on `PROFILE.stripeCustomerId` | Dedicated WARDROBE-187 secret via `getStripeConfig` / `getStripeClient` (`MeFn` already has the grant). Superwall `stripeSecretKey` is a compatibility fallback only. Failure returns `503` `BILLING_CANCEL_FAILED` and does **not** delete. Empty / placeholder secret: proceed with a structured warning (no secrets). |
+| Stripe | Immediate `subscriptions.cancel` for `active` / `trialing` / `past_due` on `PROFILE.stripeCustomerId` | Dedicated WARDROBE-187 secret via `getStripeConfig` / `getStripeClient` (`MeFn` already has the grant). Superwall `stripeSecretKey` is a compatibility fallback only. Skip Stripe cancel only when there is no `stripeCustomerId`. Stored customer id with empty / placeholder / unavailable Stripe, or any cancel failure: `503` `BILLING_CANCEL_FAILED` and does **not** delete. |
 
-If Play cancel credentials are missing or Play HTTP fails, the handler still deletes AWS data + entitlement + the Auth user. If **Stripe** is configured and a cancel call fails, the handler does **not** delete. CloudWatch **WARN** / **ERROR** on cancel (`status`, `reason` — no secrets / tokens / private keys).
+If Play cancel credentials are missing or Play HTTP fails, the handler still deletes AWS data + entitlement + the Auth user. If the account has a stored `stripeCustomerId` and Stripe cannot cancel (unconfigured secret or API failure), the handler does **not** delete. CloudWatch **WARN** / **ERROR** on cancel (`status`, `reason` — no secrets / tokens / private keys).
 
 Optional Play (and legacy Stripe fallback) fields live on the **existing** Superwall secret `wardrobe/{stage}/superwall`. Stripe account-delete cancel prefers the dedicated secret `wardrobe/{stage}/stripe-{test|live}`:
 
@@ -2711,11 +2712,12 @@ Webhook is not implemented here. `DELETE /me` Stripe cancel is WARDROBE-192 on `
 
 Authenticated account delete cancels Stripe **before** Dynamo / S3 / Auth delete. `MeFn` already has `grantStripeSecretRead`.
 
-1. Read `USER#{uid}/PROFILE.stripeCustomerId`. No customer → continue.
-2. Resolve Stripe via `getStripeConfig` / `getStripeClient`. If the dedicated secret is empty or a placeholder, fall back to Superwall `stripeSecretKey` for compatibility. If neither is configured, log `stripe_unconfigured` (no secrets) and continue.
+1. Read `USER#{uid}/PROFILE.stripeCustomerId`. No customer → continue (skip Stripe cancel).
+2. Resolve Stripe via `getStripeConfig` / `getStripeClient`. If the dedicated secret is empty or a placeholder, fall back to Superwall `stripeSecretKey` for compatibility. If neither is configured while a `stripeCustomerId` is stored, return `503 BILLING_CANCEL_FAILED` and delete nothing (log `stripe_unconfigured`, no secrets).
 3. List subscriptions with status `active`, `trialing`, and `past_due`. Cancel each immediately with idempotency key `account-delete-cancel-{id}`. Never `cancel_at_period_end`.
 4. `resource_missing` or already-canceled must not block delete. Any other Stripe cancel failure returns `503 { "error": { "code": "BILLING_CANCEL_FAILED", "message": "…", "retryable": true } }` and leaves the account intact.
-5. App Store / Play cancel stays best-effort. Success body of `DELETE /me` is unchanged (`{ "deleted": true }`). API CORS is unchanged.
+5. On `BILLING_CANCEL_FAILED` the client signs the user out, returns to login, and shows a try-again message (WARDROBE-152).
+6. App Store / Play cancel stays best-effort. Success body of `DELETE /me` is unchanged (`{ "deleted": true }`). API CORS is unchanged.
 
 ## Environments
 

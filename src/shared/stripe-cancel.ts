@@ -65,7 +65,7 @@ export interface StripeCancelDeps {
 }
 
 export type StripeAccountCancelResult =
-  | { status: 'SKIPPED'; reason: 'no_customer' | 'stripe_unconfigured' | 'no_subscriptions' }
+  | { status: 'SKIPPED'; reason: 'no_customer' | 'no_subscriptions' }
   | { status: 'CANCELED'; canceledIds: string[] };
 
 /**
@@ -77,10 +77,11 @@ export type StripeAccountCancelResult =
  * compatibility fallback only — prefer the dedicated secret.
  *
  * Immediate cancel (`subscriptions.cancel`), never cancel_at_period_end.
- * Missing customer, empty/placeholder Stripe secret, or no matching
- * subscriptions: proceed. `resource_missing` / already-canceled: proceed.
- * Any other Stripe cancel failure: throw BILLING_CANCEL_FAILED (503) and
- * do not delete the account.
+ * Missing customer or no matching subscriptions: proceed.
+ * `resource_missing` / already-canceled: proceed.
+ * Stored `stripeCustomerId` with empty / placeholder / unavailable Stripe
+ * config, or any other Stripe cancel failure: throw BILLING_CANCEL_FAILED
+ * (503) and do not delete the account.
  */
 export async function cancelAccountStripeSubscriptions(
   input: { userId: string; stripeCustomerId?: string },
@@ -97,7 +98,10 @@ export async function cancelAccountStripeSubscriptions(
 
   const stripe = await resolveStripeCancelClient(deps, log);
   if (!stripe) {
-    return { status: 'SKIPPED', reason: 'stripe_unconfigured' };
+    log.error('Stripe cancel failed; Stripe is not configured', {
+      reason: 'stripe_unconfigured',
+    });
+    throw Errors.billingCancelFailed();
   }
 
   let subscriptionIds: string[];
@@ -174,7 +178,7 @@ export async function resolveStripeCancelClient(
     return create(fallbackKey);
   }
 
-  log.warn('Stripe cancel skipped; Stripe is not configured', {
+  log.warn('Stripe client unavailable; dedicated secret empty and no Superwall fallback', {
     reason: 'stripe_unconfigured',
   });
   return undefined;

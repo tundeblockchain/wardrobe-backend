@@ -922,14 +922,15 @@ describe('me handler (WARDROBE-36)', () => {
       expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
     });
 
-    it('deletes and warns when Stripe is not configured', async () => {
+    it('returns 503 BILLING_CANCEL_FAILED and deletes nothing when stripeCustomerId is set but Stripe is not configured', async () => {
       mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
-      const deleteAuthUser = jest.fn().mockResolvedValue(undefined);
-      const warn = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const deleteAuthUser = jest.fn();
+      const cancelSubscription = jest.fn();
 
       const result = asResult(
         await deleteMe({
           deleteAuthUser,
+          cancelSubscription,
           stripeCancelDeps: {
             loadStripeCustomerId: async () => 'cus_abc',
             getStripeConfig: async () => {
@@ -940,13 +941,10 @@ describe('me handler (WARDROBE-36)', () => {
         }),
       );
 
-      expect(result.statusCode).toBe(200);
-      expect(bodyOf(result)).toEqual({ deleted: true });
-      expect(deleteAuthUser).toHaveBeenCalledWith(OWNER_ID);
-      const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
-      expect(logged).toContain('stripe_unconfigured');
-      expect(logged).not.toMatch(/sk_live_|sk_test_[A-Za-z0-9]{8,}|whsec_/);
-      warn.mockRestore();
+      expectEnvelope(result, 503, 'BILLING_CANCEL_FAILED', true);
+      expect(deleteAuthUser).not.toHaveBeenCalled();
+      expect(cancelSubscription).not.toHaveBeenCalled();
+      expect(deletedKeys()).toEqual([]);
     });
 
     it('does not delete when a Stripe cancel call fails (503 BILLING_CANCEL_FAILED)', async () => {

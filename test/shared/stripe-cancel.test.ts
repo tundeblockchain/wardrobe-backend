@@ -94,7 +94,7 @@ describe('stripe account-delete cancel (WARDROBE-192)', () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
-  it('skips Stripe and warns when the dedicated secret is empty', async () => {
+  it('throws BILLING_CANCEL_FAILED when a customer id is stored but Stripe is not configured', async () => {
     const { client, cancel } = mockStripe({});
     await expect(
       cancelAccountStripeSubscriptions(
@@ -107,12 +107,17 @@ describe('stripe account-delete cancel (WARDROBE-192)', () => {
           loadSuperwallStripeSecret: async () => undefined,
         },
       ),
-    ).resolves.toEqual({ status: 'SKIPPED', reason: 'stripe_unconfigured' });
+    ).rejects.toMatchObject({
+      code: 'BILLING_CANCEL_FAILED',
+      statusCode: 503,
+      retryable: true,
+    });
     expect(cancel).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(
-      'Stripe cancel skipped; Stripe is not configured',
+    expect(error).toHaveBeenCalledWith(
+      'Stripe cancel failed; Stripe is not configured',
       expect.objectContaining({ reason: 'stripe_unconfigured' }),
     );
+    expect(JSON.stringify(error.mock.calls)).not.toContain(SECRET);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET);
   });
 
