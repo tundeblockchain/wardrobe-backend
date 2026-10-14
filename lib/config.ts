@@ -8,6 +8,9 @@ export interface AppConfig {
   supportContactRateLimit?: string;
   supportContactRateWindowSeconds?: string;
   uploadAllowedOrigins?: string;
+  stripeMode?: string;
+  stripeLookupKeyBasicMonthly?: string;
+  stripeLookupKeyPremiumMonthly?: string;
 }
 
 interface ContextReader {
@@ -62,6 +65,17 @@ export function resolveAppConfig(node: ContextReader): AppConfig {
       node,
       'uploadAllowedOrigins',
       process.env.UPLOAD_ALLOWED_ORIGINS,
+    ),
+    stripeMode: readString(node, 'stripeMode', process.env.STRIPE_MODE),
+    stripeLookupKeyBasicMonthly: readString(
+      node,
+      'stripeLookupKeyBasicMonthly',
+      process.env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY,
+    ),
+    stripeLookupKeyPremiumMonthly: readString(
+      node,
+      'stripeLookupKeyPremiumMonthly',
+      process.env.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
     ),
   };
 }

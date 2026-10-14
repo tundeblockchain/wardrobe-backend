@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Firebase Admin service account (account delete), optional Firebase FCM service account, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, OpenAI shopping keywords, Bright Data SERP, Resend support mail, and Superwall webhook credentials (placeholders) |
+| Secrets Manager | Firebase project ID, Firebase Admin service account (account delete), optional Firebase FCM service account, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, OpenAI shopping keywords, Bright Data SERP, Resend support mail, Superwall webhook credentials, and Stripe billing credentials (separate test and live placeholders) |
 
 Working in this first cut:
 
@@ -337,7 +337,7 @@ Optional cancel fields live on the **existing** Superwall secret `wardrobe/{stag
 }
 ```
 
-`stripeSecretKey`, `playPackageName`, and `playServiceAccount` are optional. Omit them until operators have real Stripe / Play Developer credentials. CDK still creates only a placeholder secret — never commit live keys or product IDs. `MeFn` reads `SUPERWALL_SECRET_ARN` at runtime on `DELETE /me`.
+`stripeSecretKey`, `playPackageName`, and `playServiceAccount` are optional. Omit them until operators have real Stripe / Play Developer credentials. CDK still creates only a placeholder secret — never commit live keys or product IDs. `MeFn` reads `SUPERWALL_SECRET_ARN` at runtime on `DELETE /me`. Dedicated Stripe secrets for web checkout (WARDROBE-187) are documented under **Stripe billing** below; `DELETE /me` still uses the Superwall field until a later story wires `getStripeConfig`.
 
 ### Entitlements (WARDROBE-91) — Flutter WARDROBE-90 contract
 
@@ -374,6 +374,8 @@ There is no fallback to `userAttributes` alone, to the receipt owner, or to a st
 | `PREMIUM` | £15/mo or £150/yr | unlimited (`limits: null`) | true | true |
 
 App Store / Play product IDs are **TBD**. Do not hardcode them in the app or this repo. Operators fill `productTiers` in Secrets Manager after the IDs exist.
+
+Stripe web prices (Basic / Premium monthly) are created with `npm run stripe:seed` using **lookup keys** from config (`stripeLookupKeyBasicMonthly` / `stripeLookupKeyPremiumMonthly`). Do not hard-code live Stripe price ids. Catalog limits stay the table above — paid tiers are unlimited (`limits: null`); do not add a second limits table.
 
 #### `GET /me`
 
@@ -2390,12 +2392,14 @@ API responses never expose `PK` / `SK` / `GSI1PK` / `GSI1SK`.
 bin/app.ts
 lib/wardrobe-stack.ts
 lib/entitlements.ts    isolated WARDROBE-91 Superwall webhook wiring
+lib/stripe.ts          isolated WARDROBE-187 Stripe secrets + grantStripeSecretRead
 lib/support-mail.ts    isolated WARDROBE-38 / WARDROBE-143 Resend wiring (rebase-friendly)
 lib/wardrobe-pipeline-stack.ts
 lib/wardrobe-stage.ts
 cdk.json.example
 scripts/ensure-cdk-json.js
 scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDROBE-45)
+scripts/seed-stripe.ts           idempotent Stripe Basic/Premium monthly prices (WARDROBE-187)
 src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154)
@@ -2430,8 +2434,65 @@ src/shared/
   sqs.ts
   svix.ts
   types.ts
+  stripe-config.ts   getStripeConfig / getStripeClient (WARDROBE-187; cached; never logs the secret)
+  stripe-plans.ts    Basic / Premium lookup keys; reuses featuresForTier
+  stripe-seed.ts     idempotent Product + monthly Price seed
   validation.ts
 ```
+
+## Stripe billing (WARDROBE-187)
+
+Infrastructure and config only. Checkout, customer portal, and the Stripe webhook land in later stories. This stack creates **two** Secrets Manager secrets per stage and chooses which one Lambdas may read.
+
+| Secret | Purpose |
+| --- | --- |
+| `wardrobe/{stage}/stripe-test` | Stripe **test** secret API key + webhook signing secret |
+| `wardrobe/{stage}/stripe-live` | Stripe **live** secret API key + webhook signing secret |
+
+Which secret a stage uses comes from CDK context `stripeMode` (or env `STRIPE_MODE`). The default is `test`. `dev`, preview, and any non-`prod` / non-`production` stage **cannot** select `live` — synth fails — so those stages never receive the live secret ARN or IAM grant.
+
+```bash
+# Default: test secret, even on prod, until operators opt in
+npm run deploy -- -c stage=prod
+# Live keys only on prod / production
+npm run deploy -- -c stage=prod -c stripeMode=live
+```
+
+CDK creates both secrets as placeholders. Never commit secret values. After deploy, replace the **test** secret first:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/dev/stripe-test \
+  --secret-string '{"secretKey":"sk_test_...","webhookSecret":"whsec_..."}'
+```
+
+Live (prod only, after `stripeMode=live`):
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/stripe-live \
+  --secret-string '{"secretKey":"sk_live_...","webhookSecret":"whsec_..."}'
+```
+
+JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook signing secret). Snake_case aliases are accepted. Lambdas receive `STRIPE_SECRET_ARN` and `STRIPE_MODE` only — never the raw key. Runtime helpers `getStripeConfig` / `getStripeClient` cache the result and **must not log** the secret key or signing secret.
+
+**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). This story grants the **active** mode secret to `MeFn` only. Other Lambdas cannot read Stripe secrets.
+
+**Plans.** Two paid tiers — Basic and Premium — matching the existing entitlement matrix (unlimited catalog; Premium-only AI). Limits are not duplicated. Price **lookup keys** (not live `price_…` ids) come from config:
+
+| Context key | Env | Default |
+| --- | --- | --- |
+| `stripeMode` | `STRIPE_MODE` | `test` |
+| `stripeLookupKeyBasicMonthly` | `STRIPE_LOOKUP_KEY_BASIC_MONTHLY` | `wardrobe_basic_monthly` |
+| `stripeLookupKeyPremiumMonthly` | `STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY` | `wardrobe_premium_monthly` |
+
+Seed Products and monthly Prices against whichever key is supplied (use a **test** key first):
+
+```bash
+STRIPE_SECRET_KEY=sk_test_... npm run stripe:seed
+```
+
+The script is idempotent: it finds an existing Price by `lookup_key` or creates Product + Price. It prints `productId` / `priceId` / `lookupKey`. It does not print the secret key. Optional amount / currency overrides: `STRIPE_UNIT_AMOUNT_BASIC_MONTHLY` (default `500`), `STRIPE_UNIT_AMOUNT_PREMIUM_MONTHLY` (default `1500`), `STRIPE_CURRENCY` (default `gbp`). Optional `STRIPE_PRICE_ID_*` pins an id in runtime config only — do not commit live price ids.
 
 ## Environments
 
@@ -2461,11 +2522,13 @@ Or export `UPLOAD_ALLOWED_ORIGINS`. Empty / unset uses the default list. Never s
 
 Dev stacks use `RemovalPolicy.DESTROY` so `npx cdk destroy` can clean them up. Staging and production retain data.
 
+Stripe mode defaults to **test** on every stage. Preview and `dev` stacks cannot set `stripeMode=live`. See **Stripe billing** above.
+
 ## CI/CD pipeline
 
 Pushes to `master` trigger an AWS CodePipeline that synths and deploys `WardrobeStack-prod`.
 
-`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings, and any non-empty `SUPPORT_CONTACT_*` or `UPLOAD_ALLOWED_ORIGINS` values). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID stays in Secrets Manager.
+`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings, and any non-empty `SUPPORT_CONTACT_*`, `UPLOAD_ALLOWED_ORIGINS`, or `STRIPE_*` values). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID and Stripe keys stay in Secrets Manager.
 
 ### One-time setup
 

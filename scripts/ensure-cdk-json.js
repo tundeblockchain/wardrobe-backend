@@ -35,6 +35,9 @@ const envToContext = {
   SUPPORT_CONTACT_RATE_LIMIT: 'supportContactRateLimit',
   SUPPORT_CONTACT_RATE_WINDOW_SECONDS: 'supportContactRateWindowSeconds',
   UPLOAD_ALLOWED_ORIGINS: 'uploadAllowedOrigins',
+  STRIPE_MODE: 'stripeMode',
+  STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'stripeLookupKeyBasicMonthly',
+  STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'stripeLookupKeyPremiumMonthly',
 };
 
 for (const [envName, contextKey] of Object.entries(envToContext)) {
