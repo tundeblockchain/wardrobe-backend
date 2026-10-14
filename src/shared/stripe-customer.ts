@@ -1,4 +1,3 @@
-import Stripe from 'stripe';
 import {
   getItem,
   keys,
@@ -15,7 +14,7 @@ export function stripeCustomerIdempotencyKey(uid: string): string {
   return `${STRIPE_CUSTOMER_IDEMPOTENCY_PREFIX}${uid}`;
 }
 
-export interface StripeCustomerClient {
+export interface StripeCustomerApi {
   customers: {
     create: (
       params: { metadata: { uid: string } },
@@ -30,7 +29,7 @@ export interface StripeCustomerDeps {
     userId: string,
     stripeCustomerId: string,
   ) => Promise<boolean>;
-  getStripeClient?: () => Promise<StripeCustomerClient | Stripe>;
+  getStripeClient?: () => Promise<StripeCustomerApi>;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 

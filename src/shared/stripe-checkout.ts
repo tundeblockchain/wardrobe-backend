@@ -1,4 +1,3 @@
-import Stripe from 'stripe';
 import {
   checkoutCancelUrl,
   checkoutSuccessUrl,
@@ -42,7 +41,7 @@ export interface StripeCheckoutClient {
 }
 
 export interface ResolveCheckoutPriceDeps {
-  stripe: StripeCheckoutClient | Stripe;
+  stripe: StripeCheckoutClient;
   config: StripeRuntimeConfig;
 }
 
@@ -79,7 +78,7 @@ export async function createSubscriptionCheckoutSession(options: {
   userId: string;
   tier: PaidTier;
   customerId: string;
-  stripe: StripeCheckoutClient | Stripe;
+  stripe: StripeCheckoutClient;
   config: StripeRuntimeConfig;
   origin?: string;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;

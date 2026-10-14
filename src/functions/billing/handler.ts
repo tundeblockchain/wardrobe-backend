@@ -81,7 +81,9 @@ export async function handler(
       ((uid: string) =>
         ensureStripeCustomer(uid, {
           ...deps.stripeCustomerDeps,
-          getStripeClient: loadClient,
+          getStripeClient:
+            deps.stripeCustomerDeps?.getStripeClient ??
+            (() => getStripeClient(configDeps)),
           log,
         }));
 
