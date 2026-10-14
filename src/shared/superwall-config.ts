@@ -5,8 +5,10 @@ import { parseJsonObjectOrString } from './secrets';
  * Secrets Manager JSON for `wardrobe/{stage}/superwall`.
  *
  * WARDROBE-91: `webhookSecret` + optional `productTiers`.
- * WARDROBE-103: optional Stripe / Play cancel credentials. Superwall has no
- * subscription-cancel API; App Store has none either. Placeholders only in CDK.
+ * WARDROBE-103 / WARDROBE-192: optional Play cancel credentials. Superwall
+ * `stripeSecretKey` is a compatibility fallback only; DELETE /me prefers
+ * getStripeConfig (WARDROBE-187). Superwall has no subscription-cancel API;
+ * App Store has none either. Placeholders only in CDK.
  */
 export interface PlayServiceAccount {
   clientEmail: string;

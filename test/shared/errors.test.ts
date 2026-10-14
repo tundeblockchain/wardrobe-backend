@@ -56,6 +56,15 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(error.message).toBe('This account already has a paid plan.');
   });
 
+  it('marks BILLING_CANCEL_FAILED as a retryable 503', () => {
+    const error = Errors.billingCancelFailed();
+
+    expect(error.code).toBe('BILLING_CANCEL_FAILED');
+    expect(error.statusCode).toBe(503);
+    expect(error.retryable).toBe(true);
+    expect(error.message).toContain('Stripe subscription');
+  });
+
   it('marks account and auth deletion failures as retryable', () => {
     expect(Errors.accountDeletionFailed().code).toBe('ACCOUNT_DELETION_FAILED');
     expect(Errors.accountDeletionFailed().statusCode).toBe(500);

@@ -115,6 +115,21 @@ export function parseStripeSecret(secretString: string): StripeSecretFields {
   return { secretKey, webhookSecret };
 }
 
+/**
+ * True when getStripeConfig failed because no usable secret is set
+ * (missing ARN, empty key, or CDK placeholder). Callers may proceed
+ * without Stripe rather than treating this as a hard failure.
+ */
+export function isStripeUnconfiguredError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : '';
+  return (
+    message.includes('STRIPE_SECRET_ARN is not set') ||
+    message.includes('Stripe secret is empty') ||
+    message.includes('Stripe secret is missing secretKey') ||
+    message.includes('placeholder')
+  );
+}
+
 export function assertStripeKeyMatchesMode(mode: StripeMode, secretKey: string): void {
   if (mode === 'test' && secretKey.startsWith('sk_live_')) {
     throw new Error('Stripe test mode cannot use a live secret key.');
