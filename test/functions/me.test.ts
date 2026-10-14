@@ -853,7 +853,13 @@ describe('me handler (WARDROBE-36)', () => {
 
     it('cancels active Stripe subscriptions before deleting (WARDROBE-192)', async () => {
       mockPopulatedWipe({ includeProfile: true, includeEntitlement: true });
-      const cancel = jest.fn(async (id: string) => ({ id, status: 'canceled' }));
+      const cancel = jest.fn(
+        async (
+          id: string,
+          _params?: Record<string, never>,
+          _options?: { idempotencyKey: string },
+        ) => ({ id, status: 'canceled' }),
+      );
       const list = jest.fn(async ({ status }: { status: string }) => {
         if (status === 'active') {
           return { data: [{ id: 'sub_active', status: 'active' }] };
