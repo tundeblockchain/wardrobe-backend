@@ -24,13 +24,16 @@ export type ErrorCode =
   | 'NOT_IMPLEMENTED'
   | 'INTERNAL_ERROR'
   | 'ACCOUNT_DELETION_FAILED'
-  | 'AUTH_DELETION_FAILED';
+  | 'AUTH_DELETION_FAILED'
+  | 'ALREADY_SUBSCRIBED';
 
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly statusCode: number;
   readonly headers?: Record<string, string>;
   readonly retryable?: boolean;
+  /** Present on `ALREADY_SUBSCRIBED` when the paid-tier source is known. */
+  readonly source?: string;
 
   constructor(
     code: ErrorCode,
@@ -38,6 +41,7 @@ export class AppError extends Error {
     statusCode: number,
     headers?: Record<string, string>,
     retryable?: boolean,
+    source?: string,
   ) {
     super(message);
     this.name = 'AppError';
@@ -46,6 +50,9 @@ export class AppError extends Error {
     this.headers = headers;
     if (retryable !== undefined) {
       this.retryable = retryable;
+    }
+    if (source !== undefined) {
+      this.source = source;
     }
   }
 }
@@ -162,4 +169,13 @@ export const Errors = {
   authDeletionFailed: (
     message = 'Account data was removed but the auth user could not be deleted. Please try again.',
   ) => new AppError('AUTH_DELETION_FAILED', message, 502, undefined, true),
+
+  /**
+   * Account already has a paid plan from any source (WARDROBE-189).
+   * `source` is ios | android | stripe when known.
+   */
+  alreadySubscribed: (
+    source?: string,
+    message = 'This account already has a paid plan.',
+  ) => new AppError('ALREADY_SUBSCRIBED', message, 409, undefined, undefined, source),
 };

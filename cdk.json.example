@@ -27,6 +27,7 @@
     "stripeMode": "test",
     "stripeLookupKeyBasicMonthly": "wardrobe_basic_monthly",
     "stripeLookupKeyPremiumMonthly": "wardrobe_premium_monthly",
+    "billingWebOrigin": "",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/core:target-partitions": ["aws"],

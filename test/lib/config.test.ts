@@ -100,6 +100,30 @@ describe('resolveAppConfig', () => {
     );
   });
 
+  it('prefers CDK context over env for billingWebOrigin', () => {
+    process.env.BILLING_WEB_ORIGIN = 'https://env.example';
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'billingWebOrigin' ? 'https://ctx.example' : undefined,
+    });
+    expect(config.billingWebOrigin).toBe('https://ctx.example');
+  });
+
+  it('reads billingWebOrigin from env when context is empty', () => {
+    process.env.BILLING_WEB_ORIGIN = 'https://env.example';
+    const config = resolveAppConfig({ tryGetContext: () => undefined });
+    expect(config.billingWebOrigin).toBe('https://env.example');
+  });
+
+  it('leaves billingWebOrigin undefined when context and env are empty', () => {
+    delete process.env.BILLING_WEB_ORIGIN;
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'billingWebOrigin' ? '  ' : undefined,
+    });
+    expect(config.billingWebOrigin).toBeUndefined();
+  });
+
   it('prefers CDK context over env for stripeMode and lookup keys', () => {
     process.env.STRIPE_MODE = 'live';
     process.env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY = 'env_basic';

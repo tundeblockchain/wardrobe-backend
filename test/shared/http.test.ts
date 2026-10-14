@@ -296,6 +296,19 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps ALREADY_SUBSCRIBED to a 409 envelope and adds source', () => {
+    const result = asResult(errorResponse(Errors.alreadySubscribed('ios')));
+
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'ALREADY_SUBSCRIBED',
+        message: 'This account already has a paid plan.',
+        source: 'ios',
+      },
+    });
+  });
+
   it('maps AUTH_DELETION_FAILED to a 502 envelope with retryable', () => {
     const result = asResult(errorResponse(Errors.authDeletionFailed()));
 

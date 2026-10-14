@@ -411,6 +411,45 @@ export async function incrementCounter(input: {
   return typeof count === 'number' ? count : 0;
 }
 
+/**
+ * Persist `stripeCustomerId` on `USER#{uid} / PROFILE` only when missing
+ * (WARDROBE-189). Creates a minimal PROFILE row when the uid record does
+ * not exist. Returns false on ConditionalCheckFailed so the caller can
+ * re-read the stored id.
+ */
+export async function setStripeCustomerIdIfAbsent(
+  userId: string,
+  stripeCustomerId: string,
+): Promise<boolean> {
+  const now = nowIso();
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName(),
+        Key: { PK: keys.userPk(userId), SK: keys.profileSk },
+        UpdateExpression:
+          'SET stripeCustomerId = :stripeCustomerId, entityType = if_not_exists(entityType, :entityType), #userId = if_not_exists(#userId, :userId), createdAt = if_not_exists(createdAt, :now), updatedAt = if_not_exists(updatedAt, :now)',
+        ConditionExpression: 'attribute_not_exists(stripeCustomerId)',
+        ExpressionAttributeNames: {
+          '#userId': 'userId',
+        },
+        ExpressionAttributeValues: {
+          ':stripeCustomerId': stripeCustomerId,
+          ':entityType': 'PROFILE',
+          ':userId': userId,
+          ':now': now,
+        },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (isConditionalCheckFailed(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 export async function updateAttributes(
   pk: string,
   sk: string,

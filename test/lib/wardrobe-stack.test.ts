@@ -326,6 +326,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     for (const fnId of [
       'HealthFn',
       'MeFn',
+      'BillingFn',
       'EventsFn',
       'WardrobesFn',
       'RecommendationsFn',
@@ -1489,6 +1490,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'GET /me',
       'DELETE /me',
       'DELETE /me/content',
+      'POST /billing/checkout-session',
       'GET /me/events',
       'POST /me/events/ack',
       'POST /me/events/{eventId}/ack',

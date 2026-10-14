@@ -208,6 +208,26 @@ aiProfileId
 
 These should only be added when required.
 
+`USER#{uid} / PROFILE` may store `stripeCustomerId` (WARDROBE-189). One Stripe customer per Firebase uid: create with `metadata.uid` and idempotency key `customer-create-${uid}`, persist with `attribute_not_exists(stripeCustomerId)`, and re-read on a conditional-write conflict.
+
+### Stripe Checkout (WARDROBE-189)
+
+```http
+POST /billing/checkout-session
+Authorization: Bearer <firebase-id-token>
+```
+
+```json
+{ "tier": "basic" }
+```
+
+`tier` must be `"basic"` or `"premium"` (400 `VALIDATION_ERROR` otherwise). Return URLs are server-built from `billingWebOrigin` / `BILLING_WEB_ORIGIN` (default `https://wende-wardrobe.netlify.app`):
+
+- `success_url` = `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}`
+- `cancel_url` = `{origin}/app/billing/cancel`
+
+Ignore any URL fields on the body or `Origin` / `Referer` headers. Response is `200 { "url" }` only. An account that already has a paid tier from any source (`ios` / `android` / `stripe`) receives `409 ALREADY_SUBSCRIBED` with `error.source` when known. Webhook, portal, and `DELETE /me` Stripe cancel are later stories.
+
 ---
 
 ## 7. Wardrobe Entity
@@ -623,7 +643,7 @@ Example:
 ```text
 PK                         SK                         GSI1PK                GSI1SK
 ----------------------------------------------------
-USER#123                   PROFILE
+USER#123                   PROFILE                    (optional stripeCustomerId)
 
 USER#123                   WARDROBE#wd1
 USER#123                   WARDROBE#wd2
@@ -1232,6 +1252,7 @@ UPLOAD_INVALID
 PROCESSING_FAILED
 PROCESSING_IN_PROGRESS
 ITEM_NOT_RETRIABLE
+ALREADY_SUBSCRIBED
 INTERNAL_ERROR
 ```
 

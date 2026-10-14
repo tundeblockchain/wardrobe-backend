@@ -3,7 +3,10 @@ import { FREE_CATALOG_LIMITS } from '../../src/shared/types';
 import {
   DEFAULT_STRIPE_LOOKUP_KEY_BASIC_MONTHLY,
   DEFAULT_STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY,
+  resolveStripeLookupKeys,
   resolveStripePlans,
+  stripeLookupKeyForPaidTier,
+  stripePriceIdForPaidTier,
 } from '../../src/shared/stripe-plans';
 
 describe('stripe plans (WARDROBE-187)', () => {
@@ -50,5 +53,18 @@ describe('stripe plans (WARDROBE-187)', () => {
     expect(plans[1]?.monthly.priceId).toBeUndefined();
     expect(plans[1]?.monthly.unitAmount).toBe(2000);
     expect(plans[0]?.monthly.currency).toBe('usd');
+  });
+
+  it('maps checkout basic/premium onto lookup keys and optional price ids', () => {
+    const keys = resolveStripeLookupKeys({
+      STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'basic_key',
+      STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'premium_key',
+    });
+    expect(stripeLookupKeyForPaidTier('basic', keys)).toBe('basic_key');
+    expect(stripeLookupKeyForPaidTier('premium', keys)).toBe('premium_key');
+    expect(
+      stripePriceIdForPaidTier('basic', { basicMonthly: 'price_test_basic' }),
+    ).toBe('price_test_basic');
+    expect(stripePriceIdForPaidTier('premium', {})).toBeUndefined();
   });
 });

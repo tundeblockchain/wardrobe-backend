@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (Stripe Checkout session), events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
@@ -20,6 +20,7 @@ Working in this first cut:
 
 - `GET /health` (no auth)
 - `GET /me` (entitlement for Flutter WARDROBE-90)
+- `POST /billing/checkout-session` (Stripe Checkout for web Basic / Premium; WARDROBE-189)
 - `DELETE /me/content` (clear content; keeps account + entitlement)
 - `DELETE /me` (cancel subscription when possible, revoke entitlement, delete AWS data + Firebase Auth user; Flutter WARDROBE-154)
 - `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
@@ -2497,6 +2498,7 @@ scripts/backfill-paid-tier.ts    idempotent ENTITLEMENT source backfill (WARDROB
 src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154 / WARDROBE-188)
+  billing/             Stripe customer + Checkout Session (WARDROBE-189)
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
@@ -2533,12 +2535,17 @@ src/shared/
   stripe-config.ts   getStripeConfig / getStripeClient (WARDROBE-187; cached; never logs the secret)
   stripe-plans.ts    Basic / Premium lookup keys; reuses featuresForTier
   stripe-seed.ts     idempotent Product + monthly Price seed
+  stripe-customer.ts one Stripe customer per Firebase uid (WARDROBE-189)
+  stripe-checkout.ts Checkout Session + lookup-key price resolve (WARDROBE-189)
+  billing-urls.ts    server-built success/cancel URLs (WARDROBE-189)
   validation.ts
 ```
 
-## Stripe billing (WARDROBE-187)
+## Stripe billing (WARDROBE-187 / WARDROBE-189)
 
-Infrastructure and config only. Checkout, customer portal, and the Stripe webhook land in later stories. This stack creates **two** Secrets Manager secrets per stage and chooses which one Lambdas may read.
+WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. The customer portal, Stripe webhook, and `DELETE /me` Stripe cancel land in later stories (190–192).
+
+This stack creates **two** Secrets Manager secrets per stage and chooses which one Lambdas may read.
 
 | Secret | Purpose |
 | --- | --- |
@@ -2572,7 +2579,7 @@ aws secretsmanager put-secret-value \
 
 JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook signing secret). Snake_case aliases are accepted. Lambdas receive `STRIPE_SECRET_ARN` and `STRIPE_MODE` only — never the raw key. Runtime helpers `getStripeConfig` / `getStripeClient` cache the result and **must not log** the secret key or signing secret.
 
-**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). This story grants the **active** mode secret to `MeFn` only. Other Lambdas cannot read Stripe secrets.
+**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). It grants the **active** mode secret only. `MeFn` (WARDROBE-187) and `BillingFn` (WARDROBE-189) have that grant. Other Lambdas cannot read Stripe secrets.
 
 **Plans.** Two paid tiers — Basic and Premium — matching the existing entitlement matrix (unlimited catalog; Premium-only AI). Limits are not duplicated. Price **lookup keys** (not live `price_…` ids) come from config:
 
@@ -2581,6 +2588,7 @@ JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook si
 | `stripeMode` | `STRIPE_MODE` | `test` |
 | `stripeLookupKeyBasicMonthly` | `STRIPE_LOOKUP_KEY_BASIC_MONTHLY` | `wardrobe_basic_monthly` |
 | `stripeLookupKeyPremiumMonthly` | `STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY` | `wardrobe_premium_monthly` |
+| `billingWebOrigin` | `BILLING_WEB_ORIGIN` | `https://wende-wardrobe.netlify.app` |
 
 Seed Products and monthly Prices against whichever key is supplied (use a **test** key first):
 
@@ -2589,6 +2597,65 @@ STRIPE_SECRET_KEY=sk_test_... npm run stripe:seed
 ```
 
 The script is idempotent: it finds an existing Price by `lookup_key` or creates Product + Price. It prints `productId` / `priceId` / `lookupKey`. It does not print the secret key. Optional amount / currency overrides: `STRIPE_UNIT_AMOUNT_BASIC_MONTHLY` (default `500`), `STRIPE_UNIT_AMOUNT_PREMIUM_MONTHLY` (default `1500`), `STRIPE_CURRENCY` (default `gbp`). Optional `STRIPE_PRICE_ID_*` pins an id in runtime config only — do not commit live price ids.
+
+### Stripe customer (one per Firebase uid)
+
+Checkout looks up `stripeCustomerId` on `USER#{uid} / PROFILE`. If it is missing, the handler creates a Stripe Customer with `metadata: { uid }` and idempotency key `customer-create-${uid}`, then persists the id with a DynamoDB conditional write (`attribute_not_exists(stripeCustomerId)`). A `ConditionalCheckFailedException` re-reads the stored id. Concurrent requests therefore share one customer.
+
+### `POST /billing/checkout-session`
+
+Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium" }` only. Return URLs are **server-built** from `billingWebOrigin` — any `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` in the body or `Origin` / `Referer` headers is ignored.
+
+```http
+POST /billing/checkout-session
+Authorization: Bearer <firebase-id-token>
+Content-Type: application/json
+
+{ "tier": "premium" }
+```
+
+**200** — Checkout Session URL only:
+
+```json
+{ "url": "https://checkout.stripe.com/c/pay/cs_test_…" }
+```
+
+The session is `mode=subscription`. `customer` is the uid's Stripe customer. `client_reference_id` is the Firebase uid. `subscription_data.metadata` is `{ "uid", "tier" }`. The Price is resolved from the plan lookup key (`wardrobe_basic_monthly` / `wardrobe_premium_monthly`, overridable) via `stripe.prices.list({ lookup_keys })`, or from an optional `STRIPE_PRICE_ID_*` pin.
+
+Return URLs (not taken from the client):
+
+| Stripe field | Value |
+| --- | --- |
+| `success_url` | `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}` (`{CHECKOUT_SESSION_ID}` is the literal Stripe placeholder) |
+| `cancel_url` | `{origin}/app/billing/cancel` |
+
+Default `origin` is `https://wende-wardrobe.netlify.app`. Override at synth/deploy:
+
+```bash
+npm run deploy -- -c billingWebOrigin="https://preview.example"
+```
+
+Or export `BILLING_WEB_ORIGIN`. API CORS stays `allowOrigins: ['*']`.
+
+If `GET /me` `paidTier` is already set from **any** source (`ios` / `android` / `stripe` — WARDROBE-188 derivation, including an unexpired canceled plan), checkout is refused. It does not create a session.
+
+| HTTP | `code` | When |
+| --- | --- | --- |
+| 400 | `VALIDATION_ERROR` | Missing / invalid JSON, or `tier` is not `"basic"` \| `"premium"` |
+| 401 | `UNAUTHENTICATED` | Missing Firebase authorizer identity |
+| 409 | `ALREADY_SUBSCRIBED` | Account already has a paid tier. Error body includes `source` (`ios` \| `android` \| `stripe`) when known |
+
+```json
+{
+  "error": {
+    "code": "ALREADY_SUBSCRIBED",
+    "message": "This account already has a paid plan.",
+    "source": "ios"
+  }
+}
+```
+
+Existing responses are unchanged except this additive `source` field on `ALREADY_SUBSCRIBED`. Webhook, customer portal, and `DELETE /me` Stripe cancel are not implemented here.
 
 ## Environments
 
@@ -2624,7 +2691,7 @@ Stripe mode defaults to **test** on every stage. Preview and `dev` stacks cannot
 
 Pushes to `master` trigger an AWS CodePipeline that synths and deploys `WardrobeStack-prod`.
 
-`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings, and any non-empty `SUPPORT_CONTACT_*`, `UPLOAD_ALLOWED_ORIGINS`, or `STRIPE_*` values). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID and Stripe keys stay in Secrets Manager.
+`cdk.json` is not in git. The pipeline rebuilds it in CodeBuild from `cdk.json.example` plus environment variables baked into the pipeline (`STAGE`, GitHub source settings, and any non-empty `SUPPORT_CONTACT_*`, `UPLOAD_ALLOWED_ORIGINS`, `STRIPE_*`, or `BILLING_WEB_ORIGIN` values). Synth also passes `--app`, so CDK does not need a committed `cdk.json`. The Firebase project ID and Stripe keys stay in Secrets Manager.
 
 ### One-time setup
 
@@ -2856,6 +2923,7 @@ Public website contact (WARDROBE-143) — CDK context / env, empty-origins defau
 | `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
 | `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
 | `UPLOAD_ALLOWED_ORIGINS` / `uploadAllowedOrigins` | Netlify site, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173` | S3 media-bucket CORS origins for browser presigned PUTs. Never `*` |
+| `BILLING_WEB_ORIGIN` / `billingWebOrigin` | `https://wende-wardrobe.netlify.app` | Web origin for Stripe Checkout success/cancel URLs. Server-built only |
 
 Conceptual keys (loaded from those secrets; env overrides win — useful in unit tests only):
 

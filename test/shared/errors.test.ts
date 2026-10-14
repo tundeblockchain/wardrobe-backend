@@ -33,6 +33,15 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(error.message).toContain('Virtual Profile');
   });
 
+  it('keeps ALREADY_SUBSCRIBED as a 409 with the paid-tier source', () => {
+    const error = Errors.alreadySubscribed('android');
+
+    expect(error.code).toBe('ALREADY_SUBSCRIBED');
+    expect(error.statusCode).toBe(409);
+    expect(error.source).toBe('android');
+    expect(error.message).toBe('This account already has a paid plan.');
+  });
+
   it('marks account and auth deletion failures as retryable', () => {
     expect(Errors.accountDeletionFailed().code).toBe('ACCOUNT_DELETION_FAILED');
     expect(Errors.accountDeletionFailed().statusCode).toBe(500);

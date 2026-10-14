@@ -1,5 +1,5 @@
 import { featuresForTier } from './entitlements';
-import { SubscriptionTier } from './types';
+import { PaidTier, SubscriptionTier } from './types';
 
 /**
  * Paid Stripe tiers. Limits and feature flags come from the existing
@@ -94,6 +94,23 @@ export function isStripePaidTier(value: string): value is StripePaidTier {
   return (STRIPE_PAID_TIERS as readonly SubscriptionTier[]).includes(
     value as SubscriptionTier,
   );
+}
+
+/** Lookup key for a checkout `basic` / `premium` body tier. */
+export function stripeLookupKeyForPaidTier(
+  tier: PaidTier,
+  keys: StripeLookupKeys,
+): string {
+  return tier === 'premium' ? keys.premiumMonthly : keys.basicMonthly;
+}
+
+/** Optional operator price-id override. Never invent a live `price_…` id. */
+export function stripePriceIdForPaidTier(
+  tier: PaidTier,
+  ids: StripePriceIds,
+): string | undefined {
+  const priceId = tier === 'premium' ? ids.premiumMonthly : ids.basicMonthly;
+  return priceId?.trim() || undefined;
 }
 
 function planDefinition(

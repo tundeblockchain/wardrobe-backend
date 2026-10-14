@@ -67,6 +67,9 @@ export class WardrobePipelineStack extends cdk.Stack {
       synthEnv.STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY =
         config.stripeLookupKeyPremiumMonthly;
     }
+    if (config.billingWebOrigin) {
+      synthEnv.BILLING_WEB_ORIGIN = config.billingWebOrigin;
+    }
 
     const synth = new CodeBuildStep('Synth', {
       input: source,
