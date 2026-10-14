@@ -1,5 +1,7 @@
 import {
+  BILLING_WEB_ORIGIN_UNCONFIGURED_WARN,
   CHECKOUT_SESSION_ID_PLACEHOLDER,
+  TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
   checkoutCancelUrl,
   checkoutReturnUrls,
   checkoutSuccessUrl,
@@ -7,10 +9,10 @@ import {
   normalizeBillingWebOrigin,
   originsEqualExactly,
   portalReturnUrl,
+  resetTemporaryBillingOriginWarning,
   resolveBillingReturnOrigin,
   resolveBillingWebOrigin,
 } from '../../src/shared/billing-urls';
-import { Errors } from '../../src/shared/errors';
 
 const CONFIGURED = 'https://app.example';
 
@@ -19,6 +21,7 @@ describe('billing return URLs (WARDROBE-198)', () => {
   const originalAllowlist = process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
 
   afterEach(() => {
+    resetTemporaryBillingOriginWarning();
     if (originalOrigin === undefined) {
       delete process.env.BILLING_WEB_ORIGIN;
     } else {
@@ -31,16 +34,25 @@ describe('billing return URLs (WARDROBE-198)', () => {
     }
   });
 
-  it('does not default an empty origin to any domain', () => {
+  it('does not treat an empty or non-https value as configured', () => {
     expect(normalizeBillingWebOrigin(undefined)).toBeUndefined();
     expect(normalizeBillingWebOrigin('  ')).toBeUndefined();
     expect(normalizeBillingWebOrigin('http://app.example')).toBeUndefined();
     expect(normalizeBillingWebOrigin(CONFIGURED + '/')).toBe(CONFIGURED);
   });
 
-  it('throws BILLING_NOT_CONFIGURED when BILLING_WEB_ORIGIN is missing', () => {
+  it('falls back to the TEMPORARY origin and warns once when unset', () => {
     delete process.env.BILLING_WEB_ORIGIN;
-    expect(() => resolveBillingWebOrigin()).toThrow(Errors.billingNotConfigured());
+    const log = { warn: jest.fn() };
+
+    expect(resolveBillingWebOrigin(process.env, log)).toBe(
+      TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
+    );
+    expect(resolveBillingWebOrigin(process.env, log)).toBe(
+      TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
+    );
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(BILLING_WEB_ORIGIN_UNCONFIGURED_WARN);
   });
 
   it('builds success_url with the literal Stripe session placeholder', () => {

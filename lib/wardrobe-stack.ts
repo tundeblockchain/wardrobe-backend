@@ -353,11 +353,13 @@ export class WardrobeStack extends cdk.Stack {
     });
     // WARDROBE-189 / WARDROBE-191 / WARDROBE-198: Stripe customer +
     // Checkout + Billing Portal. Active-mode secret is granted via
-    // grantStripeSecretRead only (below). Return URLs use configured
-    // BILLING_WEB_ORIGIN — no hardcoded domain. Request Origin is used
-    // only when it exactly matches supportContactAllowedOrigins (https,
-    // scheme+host+port). Optional portal configuration lets operators
-    // allow Basic ↔ Premium switches in the Stripe Customer Portal.
+    // grantStripeSecretRead only (below). Return URLs use cdk.json
+    // context billingWebOrigin. If unset, BillingFn omits the env var
+    // and the runtime uses the TEMPORARY WARDROBE-198 fallback.
+    // Request Origin is used only when it exactly matches
+    // supportContactAllowedOrigins (https, scheme+host+port). Optional
+    // portal configuration lets operators allow Basic ↔ Premium
+    // switches in the Stripe Customer Portal.
     const billingWebOrigin = readOptionalContextOrEnv(
       this,
       'billingWebOrigin',

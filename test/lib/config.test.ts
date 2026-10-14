@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { hasPipelineSource, isCiEnvironment, resolveAppConfig } from '../../lib/config';
 
 describe('resolveAppConfig', () => {
@@ -113,6 +115,13 @@ describe('resolveAppConfig', () => {
     process.env.BILLING_WEB_ORIGIN = 'https://env.example';
     const config = resolveAppConfig({ tryGetContext: () => undefined });
     expect(config.billingWebOrigin).toBe('https://env.example');
+  });
+
+  it('reads billingWebOrigin from committed cdk.json.example context', () => {
+    const example = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../../cdk.json.example'), 'utf8'),
+    ) as { context?: { billingWebOrigin?: string } };
+    expect(example.context).toHaveProperty('billingWebOrigin');
   });
 
   it('leaves billingWebOrigin undefined when context and env are empty', () => {

@@ -221,7 +221,7 @@ Authorization: Bearer <firebase-id-token>
 { "tier": "basic", "interval": "yearly" }
 ```
 
-`tier` must be `"basic"` or `"premium"` (400 `VALIDATION_ERROR` otherwise). Optional `interval` is `"monthly"` (default) or `"yearly"` (400 `INVALID_INTERVAL` for anything else, including non-strings; no Stripe calls). Yearly Prices use `wardrobe_basic_yearly` / `wardrobe_premium_yearly` (created in the Stripe dashboard, not by seed). A missing yearly Price is `503 BILLING_PRICE_NOT_FOUND`. Return URLs are server-built from required `billingWebOrigin` / `BILLING_WEB_ORIGIN` (no hardcoded default; missing config is `503 BILLING_NOT_CONFIGURED`):
+`tier` must be `"basic"` or `"premium"` (400 `VALIDATION_ERROR` otherwise). Optional `interval` is `"monthly"` (default) or `"yearly"` (400 `INVALID_INTERVAL` for anything else, including non-strings; no Stripe calls). Yearly Prices use `wardrobe_basic_yearly` / `wardrobe_premium_yearly` (created in the Stripe dashboard, not by seed). A missing yearly Price is `503 BILLING_PRICE_NOT_FOUND`. Return URLs are server-built from cdk.json context `billingWebOrigin` / `BILLING_WEB_ORIGIN`. If unset, the TEMPORARY WARDROBE-198 fallback `https://wende-wardrobe.netlify.app` is used and a WARN is logged once per cold start:
 
 - `success_url` = `{origin}/app/billing/success?session_id={CHECKOUT_SESSION_ID}`
 - `cancel_url` = `{origin}/app/billing/cancel`
@@ -235,7 +235,7 @@ POST /billing/portal-session
 Authorization: Bearer <firebase-id-token>
 ```
 
-No body is required. `return_url` is server-built from required `billingWebOrigin` / `BILLING_WEB_ORIGIN` (same rules as checkout; `503 BILLING_NOT_CONFIGURED` when unset):
+No body is required. `return_url` is server-built from cdk.json context `billingWebOrigin` / `BILLING_WEB_ORIGIN` (same rules as checkout, including the TEMPORARY fallback when unset):
 
 - `return_url` = `{origin}/app/settings#plan`
 
@@ -1232,7 +1232,7 @@ POST /billing/portal-session
 POST /billing/stripe-webhook
 ```
 
-`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from required `billingWebOrigin` / `BILLING_WEB_ORIGIN` (WARDROBE-198). Missing config is `503 BILLING_NOT_CONFIGURED`. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` exactly on scheme + host + port.
+`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from cdk.json context `billingWebOrigin` (WARDROBE-198). If unset, the TEMPORARY fallback is used. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` exactly on scheme + host + port.
 
 ### Uploads
 
@@ -1301,7 +1301,6 @@ ALREADY_SUBSCRIBED
 NOT_STRIPE_PLAN
 INVALID_INTERVAL
 BILLING_PRICE_NOT_FOUND
-BILLING_NOT_CONFIGURED
 INTERNAL_ERROR
 ```
 

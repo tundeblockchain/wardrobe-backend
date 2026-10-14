@@ -74,20 +74,29 @@ export class WardrobePipelineStack extends cdk.Stack {
       synthEnv.STRIPE_LOOKUP_KEY_PREMIUM_YEARLY =
         config.stripeLookupKeyPremiumYearly;
     }
+    const synthContextFlags: string[] = [];
     if (config.billingWebOrigin) {
       synthEnv.BILLING_WEB_ORIGIN = config.billingWebOrigin;
+      synthContextFlags.push(
+        `-c billingWebOrigin="${config.billingWebOrigin}"`,
+      );
     }
     if (config.stripePortalConfigurationId) {
       synthEnv.STRIPE_PORTAL_CONFIGURATION_ID =
         config.stripePortalConfigurationId;
     }
 
+    const synthCommand = [
+      `npx cdk synth --app "${CDK_APP}"`,
+      ...synthContextFlags,
+    ].join(' ');
+
     const synth = new CodeBuildStep('Synth', {
       input: source,
       commands: [
         'npm ci',
         'node scripts/ensure-cdk-json.js',
-        `npx cdk synth --app "${CDK_APP}"`,
+        synthCommand,
       ],
       env: synthEnv,
       primaryOutputDirectory: 'cdk.out',

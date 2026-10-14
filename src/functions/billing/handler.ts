@@ -65,9 +65,11 @@ interface CheckoutSessionBody {
  * and `USER#{uid} / PROFILE.stripeCustomerId` must already be stored
  * (this handler never creates a customer).
  *
- * Return URLs are server-built from `BILLING_WEB_ORIGIN`. Body URL
- * fields are ignored. Request `Origin` is used only when it is https
- * and matches the allowlist exactly on scheme + host + port.
+ * Return URLs are server-built from cdk.json context `billingWebOrigin`
+ * (`BILLING_WEB_ORIGIN`). Body URL fields are ignored. Request `Origin`
+ * is used only when it is https and matches the allowlist exactly on
+ * scheme + host + port. Unset config uses the TEMPORARY WARDROBE-198
+ * fallback and logs a WARN once per cold start.
  *
  * The webhook is StripeWebhookFn (WARDROBE-190). DELETE /me Stripe
  * cancel is WARDROBE-192 on MeFn.
@@ -197,6 +199,7 @@ function resolveReturnOrigin(
     allowlist:
       deps.allowedOrigins ??
       parseAllowedOrigins(process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS),
+    log: deps.log,
   });
 }
 

@@ -1,8 +1,11 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import {
+  BILLING_WEB_ORIGIN_UNCONFIGURED_WARN,
+  TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
   checkoutCancelUrl,
   checkoutSuccessUrl,
   portalReturnUrl,
+  resetTemporaryBillingOriginWarning,
 } from '../../src/shared/billing-urls';
 import { handler } from '../../src/functions/billing/handler';
 import { StoredEntitlement } from '../../src/shared/entitlements';
@@ -173,6 +176,7 @@ const originalBillingOrigin = process.env.BILLING_WEB_ORIGIN;
 const originalAllowedOrigins = process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
 
 beforeEach(() => {
+  resetTemporaryBillingOriginWarning();
   process.env.BILLING_WEB_ORIGIN = CONFIGURED_ORIGIN;
   delete process.env.SUPPORT_CONTACT_ALLOWED_ORIGINS;
 });
@@ -871,43 +875,44 @@ describe('billing return origins (WARDROBE-198)', () => {
     }
   });
 
-  it('returns 503 BILLING_NOT_CONFIGURED when the base URL is not set', async () => {
+  it('uses the TEMPORARY fallback and warns once when the base URL is not set', async () => {
     delete process.env.BILLING_WEB_ORIGIN;
     const stripe = mockStripe();
     const portal = mockPortal();
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
     const checkout = asResult(
-      await handler(event({ body: { tier: 'basic' } }), {
+      await handler(event({ body: { tier: 'basic' }, omitOrigin: true }), {
         resolveEntitlement: async () => freeEntitlement(),
         ensureStripeCustomer: async () => 'cus_123',
         getStripeConfig: async () => stripeConfig(),
         getStripeClient: async () => stripe,
+        log,
       }),
     );
-    expect(checkout.statusCode).toBe(503);
-    expect(bodyOf(checkout)).toEqual({
-      error: {
-        code: 'BILLING_NOT_CONFIGURED',
-        message: 'Billing return URL is not configured.',
-      },
-    });
-    expect(stripe.sessionsCreate).not.toHaveBeenCalled();
+    expect(checkout.statusCode).toBe(200);
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: checkoutSuccessUrl(TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK),
+        cancel_url: checkoutCancelUrl(TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK),
+      }),
+    );
 
     const portalResult = asResult(
-      await handler(portalEvent(), {
+      await handler(portalEvent({ omitOrigin: true }), {
         resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
         loadStripeCustomerId: async () => 'cus_123',
         getStripeConfig: async () => stripeConfig(),
         getStripePortalClient: async () => portal,
+        log,
       }),
     );
-    expect(portalResult.statusCode).toBe(503);
-    expect(bodyOf(portalResult)).toEqual({
-      error: {
-        code: 'BILLING_NOT_CONFIGURED',
-        message: 'Billing return URL is not configured.',
-      },
+    expect(portalResult.statusCode).toBe(200);
+    expect(portal.portalCreate).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      return_url: portalReturnUrl(TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK),
     });
-    expect(portal.portalCreate).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(BILLING_WEB_ORIGIN_UNCONFIGURED_WARN);
   });
 });
