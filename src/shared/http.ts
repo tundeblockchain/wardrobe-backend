@@ -50,7 +50,7 @@ export function errorResponse(error: unknown): APIGatewayProxyResultV2 {
       code: ErrorCode;
       message: string;
       retryable?: boolean;
-      source?: string;
+      source?: string | null;
     } = {
       code: error.code,
       message: error.message,

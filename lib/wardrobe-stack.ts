@@ -350,11 +350,18 @@ export class WardrobeStack extends cdk.Stack {
         FIREBASE_ADMIN_SECRET_ARN: firebaseAdminSecret.secretArn,
       },
     });
-    // WARDROBE-189: Stripe customer + Checkout Session. Active-mode secret
-    // is granted via grantStripeSecretRead only (below). Return URLs use
-    // BILLING_WEB_ORIGIN — never request body/header URLs.
+    // WARDROBE-189 / WARDROBE-191: Stripe customer + Checkout + Billing
+    // Portal. Active-mode secret is granted via grantStripeSecretRead only
+    // (below). Return URLs use BILLING_WEB_ORIGIN — never request body/
+    // header URLs. Optional portal configuration lets operators allow
+    // Basic ↔ Premium switches in the Stripe Customer Portal.
     const billingWebOrigin = normalizeBillingWebOrigin(
       this.node.tryGetContext('billingWebOrigin') ?? process.env.BILLING_WEB_ORIGIN,
+    );
+    const stripePortalConfigurationId = readOptionalContextOrEnv(
+      this,
+      'stripePortalConfigurationId',
+      process.env.STRIPE_PORTAL_CONFIGURATION_ID,
     );
     const billingFn = this.lambda('BillingFn', 'billing', {
       ...commonLambdaProps,
@@ -362,6 +369,9 @@ export class WardrobeStack extends cdk.Stack {
       environment: {
         ...commonLambdaProps.environment,
         BILLING_WEB_ORIGIN: billingWebOrigin,
+        ...(stripePortalConfigurationId
+          ? { STRIPE_PORTAL_CONFIGURATION_ID: stripePortalConfigurationId }
+          : {}),
       },
     });
     // WARDROBE-114 job-done inbox + FCM device registration. Workers write
@@ -785,6 +795,13 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     httpApi.addRoutes({
+      path: '/billing/portal-session',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: billingIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
       path: '/me/events',
       methods: [apigwv2.HttpMethod.GET],
       integration: eventsIntegration,
@@ -1093,8 +1110,8 @@ export class WardrobeStack extends cdk.Stack {
     // Isolated WARDROBE-187 Stripe secrets. Mode is CDK context stripeMode /
     // STRIPE_MODE (default test). Preview and dev cannot select live.
     // grantStripeSecretRead grants the **active** mode secret only.
-    // MeFn (account delete) + BillingFn (WARDROBE-189 checkout). Portal /
-    // webhook (190–191) are not granted here.
+    // MeFn (account delete) + BillingFn (checkout 189 + portal 191).
+    // Webhook (190) is not granted here.
     const stripe = addStripeSecrets(this, { stage, removalPolicy });
     grantStripeSecretRead(meFn, stripe.activeSecret, {
       mode: stripe.mode,
@@ -1246,6 +1263,21 @@ function parseEnabledFlag(value: unknown): boolean {
     return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
   }
   return false;
+}
+
+function readOptionalContextOrEnv(
+  scope: Construct,
+  contextKey: string,
+  envValue: string | undefined,
+): string | undefined {
+  const fromContext = scope.node.tryGetContext(contextKey);
+  if (typeof fromContext === 'string' && fromContext.trim()) {
+    return fromContext.trim();
+  }
+  if (typeof envValue === 'string' && envValue.trim()) {
+    return envValue.trim();
+  }
+  return undefined;
 }
 
 function resolveRecommenderStrategy(node: Construct): string {

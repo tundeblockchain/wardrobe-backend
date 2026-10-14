@@ -33,6 +33,20 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(error.message).toContain('Virtual Profile');
   });
 
+  it('keeps NOT_STRIPE_PLAN as a 409 with source or null for Free', () => {
+    const ios = Errors.notStripePlan('ios');
+    expect(ios.code).toBe('NOT_STRIPE_PLAN');
+    expect(ios.statusCode).toBe(409);
+    expect(ios.source).toBe('ios');
+    expect(ios.message).toBe(
+      'Manage plan is only available for Stripe subscriptions.',
+    );
+
+    const free = Errors.notStripePlan(null);
+    expect(free.code).toBe('NOT_STRIPE_PLAN');
+    expect(free.source).toBeNull();
+  });
+
   it('keeps ALREADY_SUBSCRIBED as a 409 with the paid-tier source', () => {
     const error = Errors.alreadySubscribed('android');
 

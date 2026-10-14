@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (Stripe Checkout session), events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (Stripe Checkout + customer portal), events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
@@ -21,6 +21,7 @@ Working in this first cut:
 - `GET /health` (no auth)
 - `GET /me` (entitlement for Flutter WARDROBE-90)
 - `POST /billing/checkout-session` (Stripe Checkout for web Basic / Premium; WARDROBE-189)
+- `POST /billing/portal-session` (Stripe Billing Portal for an existing Stripe subscriber; WARDROBE-191)
 - `DELETE /me/content` (clear content; keeps account + entitlement)
 - `DELETE /me` (cancel subscription when possible, revoke entitlement, delete AWS data + Firebase Auth user; Flutter WARDROBE-154)
 - `POST /webhooks/superwall` (Svix-signed Superwall subscription updates; no Firebase auth)
@@ -2498,7 +2499,7 @@ scripts/backfill-paid-tier.ts    idempotent ENTITLEMENT source backfill (WARDROB
 src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154 / WARDROBE-188)
-  billing/             Stripe customer + Checkout Session (WARDROBE-189)
+  billing/             Stripe customer + Checkout Session (WARDROBE-189) + Billing Portal (WARDROBE-191)
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
@@ -2537,13 +2538,14 @@ src/shared/
   stripe-seed.ts     idempotent Product + monthly Price seed
   stripe-customer.ts one Stripe customer per Firebase uid (WARDROBE-189)
   stripe-checkout.ts Checkout Session + lookup-key price resolve (WARDROBE-189)
-  billing-urls.ts    server-built success/cancel URLs (WARDROBE-189)
+  stripe-portal.ts   Billing Portal session (WARDROBE-191)
+  billing-urls.ts    server-built checkout + portal return URLs (WARDROBE-189 / WARDROBE-191)
   validation.ts
 ```
 
-## Stripe billing (WARDROBE-187 / WARDROBE-189)
+## Stripe billing (WARDROBE-187 / WARDROBE-189 / WARDROBE-191)
 
-WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. The customer portal, Stripe webhook, and `DELETE /me` Stripe cancel land in later stories (190–192).
+WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. WARDROBE-191 adds authenticated `POST /billing/portal-session` for an existing Stripe subscriber. The Stripe webhook and `DELETE /me` Stripe cancel land in later stories (190 / 192).
 
 This stack creates **two** Secrets Manager secrets per stage and chooses which one Lambdas may read.
 
@@ -2579,7 +2581,7 @@ aws secretsmanager put-secret-value \
 
 JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook signing secret). Snake_case aliases are accepted. Lambdas receive `STRIPE_SECRET_ARN` and `STRIPE_MODE` only — never the raw key. Runtime helpers `getStripeConfig` / `getStripeClient` cache the result and **must not log** the secret key or signing secret.
 
-**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). It grants the **active** mode secret only. `MeFn` (WARDROBE-187) and `BillingFn` (WARDROBE-189) have that grant. Other Lambdas cannot read Stripe secrets.
+**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). It grants the **active** mode secret only. `MeFn` (WARDROBE-187) and `BillingFn` (WARDROBE-189 checkout + WARDROBE-191 portal) have that grant. Other Lambdas cannot read Stripe secrets. The webhook Lambda is not granted here.
 
 **Plans.** Two paid tiers — Basic and Premium — matching the existing entitlement matrix (unlimited catalog; Premium-only AI). Limits are not duplicated. Price **lookup keys** (not live `price_…` ids) come from config:
 
@@ -2589,6 +2591,7 @@ JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook si
 | `stripeLookupKeyBasicMonthly` | `STRIPE_LOOKUP_KEY_BASIC_MONTHLY` | `wardrobe_basic_monthly` |
 | `stripeLookupKeyPremiumMonthly` | `STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY` | `wardrobe_premium_monthly` |
 | `billingWebOrigin` | `BILLING_WEB_ORIGIN` | `https://wende-wardrobe.netlify.app` |
+| `stripePortalConfigurationId` | `STRIPE_PORTAL_CONFIGURATION_ID` | unset (Stripe default portal configuration) |
 
 Seed Products and monthly Prices against whichever key is supplied (use a **test** key first):
 
@@ -2655,7 +2658,51 @@ If `GET /me` `paidTier` is already set from **any** source (`ios` / `android` / 
 }
 ```
 
-Existing responses are unchanged except this additive `source` field on `ALREADY_SUBSCRIBED`. Webhook, customer portal, and `DELETE /me` Stripe cancel are not implemented here.
+Existing responses are unchanged except this additive `source` field on `ALREADY_SUBSCRIBED`. Webhook and `DELETE /me` Stripe cancel are not implemented here.
+
+### `POST /billing/portal-session`
+
+Authenticated (Firebase authorizer). **No body is required.** This is the web path for a Basic Stripe subscriber to upgrade to Premium (and to manage or cancel the Stripe subscription). Return URL is **server-built** from `billingWebOrigin` — any `returnUrl` / `return_url` / `url` / `successUrl` / `cancelUrl` in the body or `Origin` / `Referer` headers is ignored.
+
+Only accounts whose current `GET /me` `paidTier.source` is `"stripe"` **and** that already have `USER#{uid} / PROFILE.stripeCustomerId` may open the portal. The handler never creates a Stripe customer. iOS, Android, and Free accounts are refused.
+
+```http
+POST /billing/portal-session
+Authorization: Bearer <firebase-id-token>
+```
+
+**200** — Billing Portal URL only:
+
+```json
+{ "url": "https://billing.stripe.com/p/session/…" }
+```
+
+`return_url` is `{origin}/app/settings#plan`. Default `origin` is `https://wende-wardrobe.netlify.app` (same `billingWebOrigin` as checkout).
+
+Operators must configure the Stripe Customer Portal so customers can switch between the Basic and Premium monthly prices (`wardrobe_basic_monthly` / `wardrobe_premium_monthly`). Optionally pin a portal configuration:
+
+```bash
+npm run deploy -- -c stripePortalConfigurationId="bpc_..."
+```
+
+Or export `STRIPE_PORTAL_CONFIGURATION_ID`. When unset, Stripe uses the default portal configuration for the account. API CORS stays `allowOrigins: ['*']`. Checkout responses are unchanged.
+
+| HTTP | `code` | When |
+| --- | --- | --- |
+| 401 | `UNAUTHENTICATED` | Missing Firebase authorizer identity |
+| 409 | `NOT_STRIPE_PLAN` | Effective plan is not an active Stripe paid tier, or `stripeCustomerId` is missing. Error body always includes `source` (`ios` \| `android` \| `stripe`, or `null` when Free) |
+
+```json
+{
+  "error": {
+    "code": "NOT_STRIPE_PLAN",
+    "message": "Manage plan is only available for Stripe subscriptions.",
+    "source": "ios"
+  }
+}
+```
+
+Webhook and `DELETE /me` Stripe cancel are not implemented here.
 
 ## Environments
 
@@ -2923,7 +2970,8 @@ Public website contact (WARDROBE-143) — CDK context / env, empty-origins defau
 | `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
 | `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
 | `UPLOAD_ALLOWED_ORIGINS` / `uploadAllowedOrigins` | Netlify site, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173` | S3 media-bucket CORS origins for browser presigned PUTs. Never `*` |
-| `BILLING_WEB_ORIGIN` / `billingWebOrigin` | `https://wende-wardrobe.netlify.app` | Web origin for Stripe Checkout success/cancel URLs. Server-built only |
+| `BILLING_WEB_ORIGIN` / `billingWebOrigin` | `https://wende-wardrobe.netlify.app` | Web origin for Stripe Checkout success/cancel URLs and Billing Portal `return_url`. Server-built only |
+| `STRIPE_PORTAL_CONFIGURATION_ID` / `stripePortalConfigurationId` | unset | Optional Stripe Billing Portal configuration id so Basic ↔ Premium switches are allowed |
 
 Conceptual keys (loaded from those secrets; env overrides win — useful in unit tests only):
 

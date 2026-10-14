@@ -20,9 +20,9 @@ import {
  * (default test). Preview and dev cannot select live, so they never
  * receive the live secret ARN or grant.
  *
- * Checkout (`BillingFn`) is granted in WARDROBE-189. Portal / webhook
- * Lambdas (WARDROBE-190–191) should call `grantStripeSecretRead` when
- * those functions exist. Account delete (`MeFn`) is already granted.
+ * Checkout and portal share `BillingFn` (WARDROBE-189 / WARDROBE-191).
+ * The webhook Lambda (WARDROBE-190) should call `grantStripeSecretRead`
+ * when it exists. Account delete (`MeFn`) is already granted.
  */
 export interface StripeSecretsProps {
   stage: string;
@@ -88,8 +88,8 @@ export function addStripeSecrets(
 
 /**
  * Least-privilege read of the active Stripe secret, plus env for
- * `getStripeConfig` / `getStripeClient`. Use this for checkout
- * (`BillingFn`), portal, webhook, and account-delete Lambdas
+ * `getStripeConfig` / `getStripeClient`. Use this for BillingFn
+ * (checkout + portal), webhook, and account-delete Lambdas
  * (WARDROBE-189–192). Grants the **active** mode secret only.
  */
 export function grantStripeSecretRead(

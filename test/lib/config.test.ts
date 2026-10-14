@@ -124,6 +124,30 @@ describe('resolveAppConfig', () => {
     expect(config.billingWebOrigin).toBeUndefined();
   });
 
+  it('prefers CDK context over env for stripePortalConfigurationId', () => {
+    process.env.STRIPE_PORTAL_CONFIGURATION_ID = 'bpc_env';
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'stripePortalConfigurationId' ? 'bpc_ctx' : undefined,
+    });
+    expect(config.stripePortalConfigurationId).toBe('bpc_ctx');
+  });
+
+  it('reads stripePortalConfigurationId from env when context is empty', () => {
+    process.env.STRIPE_PORTAL_CONFIGURATION_ID = 'bpc_env';
+    const config = resolveAppConfig({ tryGetContext: () => undefined });
+    expect(config.stripePortalConfigurationId).toBe('bpc_env');
+  });
+
+  it('leaves stripePortalConfigurationId undefined when context and env are empty', () => {
+    delete process.env.STRIPE_PORTAL_CONFIGURATION_ID;
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'stripePortalConfigurationId' ? '  ' : undefined,
+    });
+    expect(config.stripePortalConfigurationId).toBeUndefined();
+  });
+
   it('prefers CDK context over env for stripeMode and lookup keys', () => {
     process.env.STRIPE_MODE = 'live';
     process.env.STRIPE_LOOKUP_KEY_BASIC_MONTHLY = 'env_basic';

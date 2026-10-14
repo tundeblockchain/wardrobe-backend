@@ -3,6 +3,7 @@ import {
   DEFAULT_BILLING_WEB_ORIGIN,
   checkoutCancelUrl,
   checkoutSuccessUrl,
+  portalReturnUrl,
 } from '../../src/shared/billing-urls';
 import { handler } from '../../src/functions/billing/handler';
 import { StoredEntitlement } from '../../src/shared/entitlements';
@@ -11,6 +12,7 @@ import { PaidTierSource } from '../../src/shared/types';
 
 const UID = 'firebase-uid-owner';
 const CHECKOUT_URL = 'https://checkout.stripe.com/c/pay/cs_test_abc';
+const PORTAL_URL = 'https://billing.stripe.com/p/session/test_abc';
 const SECRET_KEY = 'sk_test_DO_NOT_LOG_THIS_VALUE_9f3a';
 const WEBHOOK_SECRET = 'whsec_DO_NOT_LOG_THIS_EITHER_4c2b';
 
@@ -132,6 +134,29 @@ function mockStripe(options?: {
     pricesList,
     sessionsCreate,
   };
+}
+
+function mockPortal(options?: { url?: string | null }) {
+  const portalCreate = jest.fn().mockResolvedValue({
+    url: options?.url === undefined ? PORTAL_URL : options.url,
+  });
+  return {
+    billingPortal: { sessions: { create: portalCreate } },
+    portalCreate,
+  };
+}
+
+function portalEvent(options: {
+  body?: unknown;
+  sub?: string | null;
+  headers?: Record<string, string>;
+  method?: string;
+} = {}): APIGatewayProxyEventV2 {
+  return event({
+    ...options,
+    path: '/billing/portal-session',
+    body: options.body,
+  });
 }
 
 describe('POST /billing/checkout-session (WARDROBE-189)', () => {
@@ -304,6 +329,213 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
       ensureStripeCustomer: async () => 'cus_123',
       getStripeConfig: async () => stripeConfig(),
       getStripeClient: async () => stripe,
+      log,
+    });
+
+    const serialized = JSON.stringify({
+      info: log.info.mock.calls,
+      warn: log.warn.mock.calls,
+      error: log.error.mock.calls,
+    });
+    expect(serialized).not.toContain(SECRET_KEY);
+    expect(serialized).not.toContain(WEBHOOK_SECRET);
+    expect(serialized).not.toContain('sk_test_');
+    expect(serialized).not.toContain('whsec_');
+  });
+});
+
+describe('POST /billing/portal-session (WARDROBE-191)', () => {
+  it('returns 401 when the authorizer context is missing', async () => {
+    const result = asResult(await handler(portalEvent({ sub: null })));
+    expect(result.statusCode).toBe(401);
+    expect(bodyOf(result)).toEqual({
+      error: { code: 'UNAUTHENTICATED', message: expect.any(String) },
+    });
+  });
+
+  it('creates a portal session and returns { url } only for a Stripe subscriber', async () => {
+    const stripe = mockPortal();
+    const loadCustomer = jest.fn().mockResolvedValue('cus_123');
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    const result = asResult(
+      await handler(portalEvent(), {
+        resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+        loadStripeCustomerId: loadCustomer,
+        ensureStripeCustomer: async () => 'cus_should_not_run',
+        getStripeConfig: async () => stripeConfig(),
+        getStripePortalClient: async () => stripe,
+        log,
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ url: PORTAL_URL });
+    expect(Object.keys(bodyOf(result) as object)).toEqual(['url']);
+    expect(loadCustomer).toHaveBeenCalledWith(UID);
+    expect(stripe.portalCreate).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      return_url: portalReturnUrl(DEFAULT_BILLING_WEB_ORIGIN),
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      'Stripe billing portal session created',
+      expect.objectContaining({ mode: 'test', hasConfiguration: false }),
+    );
+  });
+
+  it.each([
+    ['ios', 'APP_STORE', 'ios'] as const,
+    ['android', 'PLAY_STORE', 'android'] as const,
+  ])(
+    'returns 409 NOT_STRIPE_PLAN for an active %s plan',
+    async (source, store, expectedSource) => {
+      const stripe = mockPortal();
+      const result = asResult(
+        await handler(portalEvent(), {
+          resolveEntitlement: async () => paidEntitlement(source, store),
+          loadStripeCustomerId: async () => 'cus_should_not_run',
+          getStripeConfig: async () => stripeConfig(),
+          getStripePortalClient: async () => stripe,
+        }),
+      );
+
+      expect(result.statusCode).toBe(409);
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'NOT_STRIPE_PLAN',
+          message: 'Manage plan is only available for Stripe subscriptions.',
+          source: expectedSource,
+        },
+      });
+      expect(stripe.portalCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns 409 NOT_STRIPE_PLAN with source null for a free account', async () => {
+    const stripe = mockPortal();
+    const result = asResult(
+      await handler(portalEvent(), {
+        resolveEntitlement: async () => freeEntitlement(),
+        loadStripeCustomerId: async () => 'cus_should_not_run',
+        getStripeConfig: async () => stripeConfig(),
+        getStripePortalClient: async () => stripe,
+      }),
+    );
+
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'NOT_STRIPE_PLAN',
+        message: 'Manage plan is only available for Stripe subscriptions.',
+        source: null,
+      },
+    });
+    expect(stripe.portalCreate).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 NOT_STRIPE_PLAN when a Stripe plan has no stored customer id', async () => {
+    const stripe = mockPortal();
+    const result = asResult(
+      await handler(portalEvent(), {
+        resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+        loadStripeCustomerId: async () => undefined,
+        ensureStripeCustomer: async () => 'cus_should_not_create',
+        getStripeConfig: async () => stripeConfig(),
+        getStripePortalClient: async () => stripe,
+      }),
+    );
+
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'NOT_STRIPE_PLAN',
+        message: 'Manage plan is only available for Stripe subscriptions.',
+        source: 'stripe',
+      },
+    });
+    expect(stripe.portalCreate).not.toHaveBeenCalled();
+  });
+
+  it('builds return_url server-side and ignores body and header URLs', async () => {
+    const stripe = mockPortal();
+    const result = asResult(
+      await handler(
+        portalEvent({
+          body: {
+            return_url: 'https://evil.example/return_url',
+            returnUrl: 'https://evil.example/returnUrl',
+            url: 'https://evil.example/url',
+            successUrl: 'https://evil.example/success',
+            cancelUrl: 'https://evil.example/cancel',
+          },
+          headers: {
+            origin: 'https://evil.example',
+            referer: 'https://evil.example/settings',
+          },
+        }),
+        {
+          resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+          loadStripeCustomerId: async () => 'cus_123',
+          getStripeConfig: async () => stripeConfig(),
+          getStripePortalClient: async () => stripe,
+          origin: 'https://preview.example',
+        },
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(stripe.portalCreate).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      return_url: 'https://preview.example/app/settings#plan',
+    });
+    const created = stripe.portalCreate.mock.calls[0]?.[0] as {
+      return_url: string;
+    };
+    expect(created.return_url).not.toContain('evil.example');
+    expect(created.return_url).toBe(portalReturnUrl('https://preview.example'));
+  });
+
+  it('accepts an empty body', async () => {
+    const stripe = mockPortal();
+    const result = asResult(
+      await handler(portalEvent(), {
+        resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+        loadStripeCustomerId: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripePortalClient: async () => stripe,
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ url: PORTAL_URL });
+  });
+
+  it('passes a configured portal configuration id through to Stripe', async () => {
+    const stripe = mockPortal();
+    await handler(portalEvent(), {
+      resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+      loadStripeCustomerId: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripePortalClient: async () => stripe,
+      portalConfigurationId: 'bpc_configured',
+    });
+
+    expect(stripe.portalCreate).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      return_url: portalReturnUrl(DEFAULT_BILLING_WEB_ORIGIN),
+      configuration: 'bpc_configured',
+    });
+  });
+
+  it('never logs the Stripe secret key or webhook secret', async () => {
+    const stripe = mockPortal();
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    await handler(portalEvent(), {
+      resolveEntitlement: async () => paidEntitlement('stripe', 'STRIPE'),
+      loadStripeCustomerId: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripePortalClient: async () => stripe,
       log,
     });
 

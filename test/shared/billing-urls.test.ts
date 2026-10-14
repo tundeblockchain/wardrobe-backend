@@ -5,6 +5,7 @@ import {
   checkoutReturnUrls,
   checkoutSuccessUrl,
   normalizeBillingWebOrigin,
+  portalReturnUrl,
   resolveBillingWebOrigin,
 } from '../../src/shared/billing-urls';
 
@@ -45,5 +46,14 @@ describe('billing return URLs (WARDROBE-189)', () => {
   it('reads BILLING_WEB_ORIGIN from env', () => {
     process.env.BILLING_WEB_ORIGIN = 'https://env.example/';
     expect(resolveBillingWebOrigin()).toBe('https://env.example');
+  });
+
+  it('builds the Billing Portal return URL from the web origin', () => {
+    expect(portalReturnUrl(DEFAULT_BILLING_WEB_ORIGIN)).toBe(
+      `${DEFAULT_BILLING_WEB_ORIGIN}/app/settings#plan`,
+    );
+    expect(portalReturnUrl('https://preview.example/')).toBe(
+      'https://preview.example/app/settings#plan',
+    );
   });
 });
