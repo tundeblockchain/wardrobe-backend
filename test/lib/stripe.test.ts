@@ -1,6 +1,10 @@
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
-import { WardrobeStack } from '../../lib/wardrobe-stack';
+import {
+  BILLING_PLANS_THROTTLE_BURST_LIMIT,
+  BILLING_PLANS_THROTTLE_RATE_LIMIT,
+  WardrobeStack,
+} from '../../lib/wardrobe-stack';
 
 jest.setTimeout(180_000);
 
@@ -239,7 +243,7 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     }
   });
 
-  test('BillingFn checkout and portal are owner-auth; Stripe webhook is public', () => {
+  test('BillingFn checkout and portal are owner-auth; plans and webhook are public', () => {
     const routes = Object.values(
       template.findResources('AWS::ApiGatewayV2::Route'),
     ) as Array<{ Properties: { RouteKey: string; AuthorizationType?: string } }>;
@@ -252,11 +256,26 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     expect(checkout?.Properties.AuthorizationType).toBe('CUSTOM');
     expect(portal?.Properties.AuthorizationType).toBe('CUSTOM');
 
+    const plans = routes.find(
+      (route) => route.Properties.RouteKey === 'GET /billing/plans',
+    );
+    expect(plans).toBeDefined();
+    expect(plans?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
     const webhook = routes.find(
       (route) => route.Properties.RouteKey === 'POST /billing/stripe-webhook',
     );
     expect(webhook).toBeDefined();
     expect(webhook?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
+    template.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
+      RouteSettings: {
+        'GET /billing/plans': {
+          ThrottlingRateLimit: BILLING_PLANS_THROTTLE_RATE_LIMIT,
+          ThrottlingBurstLimit: BILLING_PLANS_THROTTLE_BURST_LIMIT,
+        },
+      },
+    });
     template.hasOutput('StripeWebhookUrl', {
       Description: Match.stringLikeRegexp('raw body'),
     });

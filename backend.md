@@ -210,6 +210,68 @@ These should only be added when required.
 
 `USER#{uid} / PROFILE` may store `stripeCustomerId` (WARDROBE-189). One Stripe customer per Firebase uid: create with `metadata.uid` and idempotency key `customer-create-${uid}`, persist with `attribute_not_exists(stripeCustomerId)`, and re-read on a conditional-write conflict.
 
+### Public billing plans (WARDROBE-207)
+
+```http
+GET /billing/plans
+```
+
+Public — no Firebase authorizer. API CORS stays `allowOrigins: ['*']`. API Gateway throttles this route at 10 requests/second with a burst of 20. Resolves the four configured lookup keys (`resolveStripeLookupKeys`; defaults `wardrobe_basic_monthly`, `wardrobe_basic_yearly`, `wardrobe_premium_monthly`, `wardrobe_premium_yearly`) via Stripe `prices.list` (`active` only, `expand=data.product`). Amounts are never hardcoded.
+
+**200** (example values; order is always basic monthly, basic yearly, premium monthly, premium yearly):
+
+```json
+{
+  "plans": [
+    {
+      "tier": "basic",
+      "interval": "monthly",
+      "lookupKey": "wardrobe_basic_monthly",
+      "unitAmount": 500,
+      "currency": "gbp",
+      "productName": "Wardrobe Basic"
+    },
+    {
+      "tier": "basic",
+      "interval": "yearly",
+      "lookupKey": "wardrobe_basic_yearly",
+      "unitAmount": 5000,
+      "currency": "gbp",
+      "productName": "Wardrobe Basic"
+    },
+    {
+      "tier": "premium",
+      "interval": "monthly",
+      "lookupKey": "wardrobe_premium_monthly",
+      "unitAmount": 1500,
+      "currency": "gbp",
+      "productName": "Wardrobe Premium"
+    },
+    {
+      "tier": "premium",
+      "interval": "yearly",
+      "lookupKey": "wardrobe_premium_yearly",
+      "unitAmount": 15000,
+      "currency": "gbp",
+      "productName": "Wardrobe Premium"
+    }
+  ]
+}
+```
+
+Successful responses are cached in memory for 5 minutes per Lambda instance. Failures are not cached. Stripe unconfigured, placeholder secret, or any missing / inactive lookup key → **503**:
+
+```json
+{
+  "error": {
+    "code": "PLANS_UNAVAILABLE",
+    "message": "Billing plans are temporarily unavailable."
+  }
+}
+```
+
+The body never includes price ids, secrets, or other Stripe internals. Existing routes gain no new fields.
+
 ### Stripe Checkout (WARDROBE-189 / WARDROBE-196)
 
 ```http
@@ -1227,12 +1289,13 @@ Owner-only. Not entitlement-gated. See README “Related shopping links (WARDROB
 ### Billing
 
 ```http
+GET  /billing/plans
 POST /billing/checkout-session
 POST /billing/portal-session
 POST /billing/stripe-webhook
 ```
 
-`POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from cdk.json context `billingWebOrigin` (WARDROBE-198). If unset, the TEMPORARY fallback is used. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` exactly on scheme + host + port.
+`GET /billing/plans` is public (WARDROBE-207; no Firebase authorizer; route throttle 10 rps / burst 20). `POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from cdk.json context `billingWebOrigin` (WARDROBE-198). If unset, the TEMPORARY fallback is used. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` exactly on scheme + host + port.
 
 ### Uploads
 
@@ -1301,6 +1364,7 @@ ALREADY_SUBSCRIBED
 NOT_STRIPE_PLAN
 INVALID_INTERVAL
 BILLING_PRICE_NOT_FOUND
+PLANS_UNAVAILABLE
 INTERNAL_ERROR
 ```
 

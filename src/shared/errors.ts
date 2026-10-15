@@ -30,7 +30,8 @@ export type ErrorCode =
   | 'INVALID_INTERVAL'
   | 'BILLING_PRICE_NOT_FOUND'
   | 'BILLING_NOT_CONFIGURED'
-  | 'BILLING_CANCEL_FAILED';
+  | 'BILLING_CANCEL_FAILED'
+  | 'PLANS_UNAVAILABLE';
 
 export class AppError extends Error {
   readonly code: ErrorCode;
@@ -204,6 +205,15 @@ export const Errors = {
   billingPriceNotFound: (
     message = 'The requested billing plan is not available.',
   ) => new AppError('BILLING_PRICE_NOT_FOUND', message, 503),
+
+  /**
+   * Public GET /billing/plans cannot resolve the four catalog prices
+   * (WARDROBE-207). Stripe unconfigured, placeholder secret, or a
+   * missing / inactive lookup key. Do not include Stripe ids or secrets.
+   */
+  plansUnavailable: (
+    message = 'Billing plans are temporarily unavailable.',
+  ) => new AppError('PLANS_UNAVAILABLE', message, 503),
 
   /**
    * Stripe return origin is missing or not https (WARDROBE-198).

@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (Stripe Checkout + customer portal), Stripe webhook, events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (public plans catalog, Stripe Checkout + customer portal), Stripe webhook, events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
@@ -20,6 +20,7 @@ Working in this first cut:
 
 - `GET /health` (no auth)
 - `GET /me` (entitlement for Flutter WARDROBE-90)
+- `GET /billing/plans` (public Stripe price catalog for the web Pricing page; no Firebase auth; WARDROBE-207)
 - `POST /billing/checkout-session` (Stripe Checkout for web Basic / Premium; optional `interval` monthly/yearly; WARDROBE-189 / WARDROBE-196)
 - `POST /billing/portal-session` (Stripe Billing Portal for an existing Stripe subscriber; WARDROBE-191)
 - `POST /billing/stripe-webhook` (Stripe-signed subscription webhook; no Firebase auth; WARDROBE-190)
@@ -232,12 +233,13 @@ DELETE /me/devices/{deviceId}
 ### Billing
 
 ```http
+GET  /billing/plans
 POST /billing/checkout-session
 POST /billing/portal-session
 POST /billing/stripe-webhook
 ```
 
-`POST /billing/checkout-session` and `POST /billing/portal-session` are Firebase-auth (WARDROBE-189 / WARDROBE-191). `POST /billing/stripe-webhook` is public — Stripe-Signature only, no Firebase authorizer. See **Stripe billing**.
+`GET /billing/plans` is public (WARDROBE-207; no Firebase authorizer). `POST /billing/checkout-session` and `POST /billing/portal-session` are Firebase-auth (WARDROBE-189 / WARDROBE-191). `POST /billing/stripe-webhook` is public — Stripe-Signature only, no Firebase authorizer. See **Stripe billing**.
 
 `DELETE /me/content` wipes the caller's wardrobes, items, outfits, worn-on dates, personal AI profiles, job-done events, FCM device tokens, and share-link tokens in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, Virtual Profile refs, Virtual Try On renders). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
 
@@ -2517,7 +2519,7 @@ scripts/backfill-paid-tier.ts    idempotent ENTITLEMENT source backfill (WARDROB
 src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154 / WARDROBE-188)
-  billing/             Stripe customer + Checkout Session (WARDROBE-189 / WARDROBE-196) + Billing Portal (WARDROBE-191)
+  billing/             public GET /billing/plans (WARDROBE-207) + Checkout Session (WARDROBE-189 / WARDROBE-196) + Billing Portal (WARDROBE-191)
   stripe-webhook/      public Stripe webhook (WARDROBE-190; no Firebase authorizer)
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
@@ -2554,6 +2556,7 @@ src/shared/
   types.ts
   stripe-config.ts   getStripeConfig / getStripeClient (WARDROBE-187; cached; never logs the secret)
   stripe-plans.ts    Basic / Premium monthly + yearly lookup keys; reuses featuresForTier
+  stripe-catalog.ts  public GET /billing/plans Stripe price catalog (WARDROBE-207; 5-minute in-memory cache)
   stripe-seed.ts     idempotent Product + monthly Price seed (yearly prices are dashboard-only)
   stripe-customer.ts one Stripe customer per Firebase uid (WARDROBE-189)
   stripe-checkout.ts Checkout Session + lookup-key price resolve (WARDROBE-189 / WARDROBE-196)
@@ -2564,9 +2567,9 @@ src/shared/
   validation.ts
 ```
 
-## Stripe billing (WARDROBE-187 / WARDROBE-189 / WARDROBE-190 / WARDROBE-191 / WARDROBE-192 / WARDROBE-196)
+## Stripe billing (WARDROBE-187 / WARDROBE-189 / WARDROBE-190 / WARDROBE-191 / WARDROBE-192 / WARDROBE-196 / WARDROBE-207)
 
-WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. WARDROBE-196 adds optional checkout `interval` (`monthly` default, or `yearly`) and yearly lookup keys. WARDROBE-191 adds authenticated `POST /billing/portal-session` for an existing Stripe subscriber. WARDROBE-190 adds public `POST /billing/stripe-webhook`. WARDROBE-192 cancels that customer's active Stripe subscriptions on `DELETE /me` before wiping data.
+WARDROBE-187 added isolated test/live secrets, `getStripeConfig` / `getStripeClient`, and plan lookup keys. WARDROBE-189 adds one Stripe customer per Firebase uid and authenticated `POST /billing/checkout-session`. WARDROBE-196 adds optional checkout `interval` (`monthly` default, or `yearly`) and yearly lookup keys. WARDROBE-191 adds authenticated `POST /billing/portal-session` for an existing Stripe subscriber. WARDROBE-190 adds public `POST /billing/stripe-webhook`. WARDROBE-192 cancels that customer's active Stripe subscriptions on `DELETE /me` before wiping data. WARDROBE-207 adds public `GET /billing/plans` so the web Pricing page can render live Stripe amounts with nothing hardcoded.
 
 This stack creates **two** Secrets Manager secrets per stage and chooses which one Lambdas may read.
 
@@ -2602,7 +2605,7 @@ aws secretsmanager put-secret-value \
 
 JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook signing secret). Snake_case aliases are accepted. Lambdas receive `STRIPE_SECRET_ARN` and `STRIPE_MODE` only — never the raw key. Runtime helpers `getStripeConfig` / `getStripeClient` cache the result and **must not log** the secret key or signing secret.
 
-**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, and account delete (WARDROBE-189–192). It grants the **active** mode secret only. `MeFn` (WARDROBE-192 account-delete cancel), `BillingFn` (WARDROBE-189 checkout + WARDROBE-191 portal), and `StripeWebhookFn` (WARDROBE-190) have that grant. Other Lambdas cannot read Stripe secrets. Never log the secret key, webhook secret, or `Stripe-Signature`.
+**IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, public plans, and account delete (WARDROBE-189–192 / WARDROBE-207). It grants the **active** mode secret only. `MeFn` (WARDROBE-192 account-delete cancel), `BillingFn` (WARDROBE-189 checkout + WARDROBE-191 portal + WARDROBE-207 public plans), and `StripeWebhookFn` (WARDROBE-190) have that grant. Other Lambdas cannot read Stripe secrets. Never log the secret key, webhook secret, or `Stripe-Signature`.
 
 **Plans.** Two paid tiers — Basic and Premium — matching the existing entitlement matrix (unlimited catalog; Premium-only AI). Limits are not duplicated. Price **lookup keys** (not live `price_…` ids) come from config:
 
@@ -2623,6 +2626,74 @@ STRIPE_SECRET_KEY=sk_test_... npm run stripe:seed
 ```
 
 The script is idempotent: it finds an existing Price by `lookup_key` or creates Product + Price. It prints `productId` / `priceId` / `lookupKey`. It does not print the secret key. Optional amount / currency overrides: `STRIPE_UNIT_AMOUNT_BASIC_MONTHLY` (default `500`), `STRIPE_UNIT_AMOUNT_PREMIUM_MONTHLY` (default `1500`), `STRIPE_CURRENCY` (default `gbp`). Optional `STRIPE_PRICE_ID_*` pins an id in runtime config only — do not commit live price ids. Yearly Prices (`wardrobe_basic_yearly` / `wardrobe_premium_yearly`) are created in the Stripe dashboard; `stripe:seed` does not create them.
+
+### `GET /billing/plans` (WARDROBE-207)
+
+Public (no Firebase authorizer). API CORS stays `allowOrigins: ['*']`. The web Pricing page should read amounts from this endpoint and must not hardcode prices.
+
+```http
+GET /billing/plans
+```
+
+Lookup keys come from config (`resolveStripeLookupKeys`; defaults `wardrobe_basic_monthly`, `wardrobe_basic_yearly`, `wardrobe_premium_monthly`, `wardrobe_premium_yearly`). The handler lists **active** Stripe Prices with those `lookup_keys` and `expand=data.product`. Amounts, currency, and product names are taken from Stripe — never from hardcoded unit amounts or `price_…` ids.
+
+**200** — four plans, always in this order (basic monthly, basic yearly, premium monthly, premium yearly). Values below are **examples**:
+
+```json
+{
+  "plans": [
+    {
+      "tier": "basic",
+      "interval": "monthly",
+      "lookupKey": "wardrobe_basic_monthly",
+      "unitAmount": 500,
+      "currency": "gbp",
+      "productName": "Wardrobe Basic"
+    },
+    {
+      "tier": "basic",
+      "interval": "yearly",
+      "lookupKey": "wardrobe_basic_yearly",
+      "unitAmount": 5000,
+      "currency": "gbp",
+      "productName": "Wardrobe Basic"
+    },
+    {
+      "tier": "premium",
+      "interval": "monthly",
+      "lookupKey": "wardrobe_premium_monthly",
+      "unitAmount": 1500,
+      "currency": "gbp",
+      "productName": "Wardrobe Premium"
+    },
+    {
+      "tier": "premium",
+      "interval": "yearly",
+      "lookupKey": "wardrobe_premium_yearly",
+      "unitAmount": 15000,
+      "currency": "gbp",
+      "productName": "Wardrobe Premium"
+    }
+  ]
+}
+```
+
+`unitAmount` is the Stripe minor-unit integer. `currency` is lowercase ISO. The body never includes price ids, product ids, secrets, or other Stripe internals.
+
+Successful responses are cached in memory for 5 minutes per Lambda instance. Failures are not cached.
+
+If Stripe is unconfigured (missing ARN, empty key, or placeholder secret), or any of the four lookup keys is missing or inactive, the response is **503**:
+
+```json
+{
+  "error": {
+    "code": "PLANS_UNAVAILABLE",
+    "message": "Billing plans are temporarily unavailable."
+  }
+}
+```
+
+API Gateway throttles this unauthenticated route at **10 requests/second** with a **burst of 20**. Other routes keep the stage default. Existing checkout, portal, webhook, and `GET /me` responses are unchanged.
 
 ### Stripe customer (one per Firebase uid)
 

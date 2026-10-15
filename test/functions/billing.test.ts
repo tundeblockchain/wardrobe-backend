@@ -9,6 +9,11 @@ import {
 } from '../../src/shared/billing-urls';
 import { handler } from '../../src/functions/billing/handler';
 import { StoredEntitlement } from '../../src/shared/entitlements';
+import { Errors } from '../../src/shared/errors';
+import {
+  PublicBillingPlan,
+  resetBillingPlansCache,
+} from '../../src/shared/stripe-catalog';
 import { StripeRuntimeConfig } from '../../src/shared/stripe-config';
 import { PaidTierSource } from '../../src/shared/types';
 
@@ -914,5 +919,153 @@ describe('billing return origins (WARDROBE-198)', () => {
     });
     expect(log.warn).toHaveBeenCalledTimes(1);
     expect(log.warn).toHaveBeenCalledWith(BILLING_WEB_ORIGIN_UNCONFIGURED_WARN);
+  });
+});
+
+const EXAMPLE_PLANS: PublicBillingPlan[] = [
+  {
+    tier: 'basic',
+    interval: 'monthly',
+    lookupKey: 'wardrobe_basic_monthly',
+    unitAmount: 500,
+    currency: 'gbp',
+    productName: 'Wardrobe Basic',
+  },
+  {
+    tier: 'basic',
+    interval: 'yearly',
+    lookupKey: 'wardrobe_basic_yearly',
+    unitAmount: 5000,
+    currency: 'gbp',
+    productName: 'Wardrobe Basic',
+  },
+  {
+    tier: 'premium',
+    interval: 'monthly',
+    lookupKey: 'wardrobe_premium_monthly',
+    unitAmount: 1500,
+    currency: 'gbp',
+    productName: 'Wardrobe Premium',
+  },
+  {
+    tier: 'premium',
+    interval: 'yearly',
+    lookupKey: 'wardrobe_premium_yearly',
+    unitAmount: 15000,
+    currency: 'gbp',
+    productName: 'Wardrobe Premium',
+  },
+];
+
+function plansEvent(options: { sub?: string | null } = {}): APIGatewayProxyEventV2 {
+  return event({
+    method: 'GET',
+    path: '/billing/plans',
+    sub: options.sub === undefined ? null : options.sub,
+    omitOrigin: true,
+  });
+}
+
+describe('GET /billing/plans (WARDROBE-207)', () => {
+  beforeEach(() => {
+    resetBillingPlansCache();
+  });
+
+  afterEach(() => {
+    resetBillingPlansCache();
+  });
+
+  it('returns the catalog without Firebase authorizer context', async () => {
+    const result = asResult(
+      await handler(plansEvent({ sub: null }), {
+        listPublicBillingPlans: async () => EXAMPLE_PLANS,
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ plans: EXAMPLE_PLANS });
+    expect(Object.keys(bodyOf(result) as object)).toEqual(['plans']);
+  });
+
+  it('does not require Firebase auth when loading plans from Stripe', async () => {
+    const pricesList = jest.fn().mockResolvedValue({
+      data: [
+        {
+          id: 'price_basic_monthly_secret',
+          active: true,
+          lookup_key: 'wardrobe_basic_monthly',
+          unit_amount: 500,
+          currency: 'gbp',
+          product: { name: 'Wardrobe Basic' },
+        },
+        {
+          id: 'price_basic_yearly_secret',
+          active: true,
+          lookup_key: 'wardrobe_basic_yearly',
+          unit_amount: 5000,
+          currency: 'gbp',
+          product: { name: 'Wardrobe Basic' },
+        },
+        {
+          id: 'price_premium_monthly_secret',
+          active: true,
+          lookup_key: 'wardrobe_premium_monthly',
+          unit_amount: 1500,
+          currency: 'gbp',
+          product: { name: 'Wardrobe Premium' },
+        },
+        {
+          id: 'price_premium_yearly_secret',
+          active: true,
+          lookup_key: 'wardrobe_premium_yearly',
+          unit_amount: 15000,
+          currency: 'gbp',
+          product: { name: 'Wardrobe Premium' },
+        },
+      ],
+    });
+
+    const result = asResult(
+      await handler(plansEvent({ sub: null }), {
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => ({
+          prices: { list: pricesList },
+          checkout: { sessions: { create: jest.fn() } },
+        }),
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ plans: EXAMPLE_PLANS });
+    expect(JSON.stringify(bodyOf(result))).not.toMatch(/price_/);
+    expect(JSON.stringify(bodyOf(result))).not.toContain(SECRET_KEY);
+    expect(pricesList).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 503 PLANS_UNAVAILABLE when the catalog cannot be loaded', async () => {
+    const result = asResult(
+      await handler(plansEvent({ sub: null }), {
+        listPublicBillingPlans: async () => {
+          throw Errors.plansUnavailable();
+        },
+      }),
+    );
+
+    expect(result.statusCode).toBe(503);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'PLANS_UNAVAILABLE',
+        message: 'Billing plans are temporarily unavailable.',
+      },
+    });
+    expect(JSON.stringify(bodyOf(result))).not.toMatch(/price_/);
+    expect(JSON.stringify(bodyOf(result))).not.toContain(SECRET_KEY);
+  });
+
+  it('still requires Firebase auth on checkout', async () => {
+    const result = asResult(
+      await handler(event({ sub: null, body: { tier: 'basic' } })),
+    );
+    expect(result.statusCode).toBe(401);
   });
 });
