@@ -853,12 +853,14 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     if (cfnDefaultStage) {
-      cfnDefaultStage.routeSettings = {
+      // L1 `routeSettings` keeps camelCase keys; override so CloudFormation
+      // gets ThrottlingRateLimit / ThrottlingBurstLimit.
+      cfnDefaultStage.addPropertyOverride('RouteSettings', {
         'GET /billing/plans': {
-          throttlingRateLimit: BILLING_PLANS_THROTTLE_RATE_LIMIT,
-          throttlingBurstLimit: BILLING_PLANS_THROTTLE_BURST_LIMIT,
+          ThrottlingRateLimit: BILLING_PLANS_THROTTLE_RATE_LIMIT,
+          ThrottlingBurstLimit: BILLING_PLANS_THROTTLE_BURST_LIMIT,
         },
-      };
+      });
     }
 
     httpApi.addRoutes({
