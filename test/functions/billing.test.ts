@@ -1028,7 +1028,10 @@ describe('GET /billing/plans (WARDROBE-207)', () => {
     const result = asResult(
       await handler(plansEvent({ sub: null }), {
         getStripeConfig: async () => stripeConfig(),
-        getStripeClient: async () => ({ prices: { list: pricesList } }),
+        getStripeClient: async () => ({
+          prices: { list: pricesList },
+          checkout: { sessions: { create: jest.fn() } },
+        }),
       }),
     );
 
