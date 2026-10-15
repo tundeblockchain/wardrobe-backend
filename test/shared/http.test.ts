@@ -367,6 +367,18 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps PLANS_UNAVAILABLE to a 503 envelope', () => {
+    const result = asResult(errorResponse(Errors.plansUnavailable()));
+
+    expect(result.statusCode).toBe(503);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'PLANS_UNAVAILABLE',
+        message: 'Billing plans are temporarily unavailable.',
+      },
+    });
+  });
+
   it('maps BILLING_CANCEL_FAILED to a 503 envelope with retryable', () => {
     const result = asResult(errorResponse(Errors.billingCancelFailed()));
 

@@ -2,7 +2,11 @@ import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { GENERIC_MODEL_CATALOG_VERSION } from '../../src/functions/ai-profiles/catalog';
 import { DEFAULT_UPLOAD_ALLOWED_ORIGINS } from '../../lib/upload-cors';
-import { WardrobeStack } from '../../lib/wardrobe-stack';
+import {
+  BILLING_PLANS_THROTTLE_BURST_LIMIT,
+  BILLING_PLANS_THROTTLE_RATE_LIMIT,
+  WardrobeStack,
+} from '../../lib/wardrobe-stack';
 
 jest.setTimeout(180_000);
 
@@ -1456,6 +1460,20 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     );
     expect(stripeWebhook).toBeDefined();
     expect(stripeWebhook?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
+    const billingPlans = routes.find(
+      (route) => route.Properties.RouteKey === 'GET /billing/plans',
+    );
+    expect(billingPlans).toBeDefined();
+    expect(billingPlans?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+    template.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
+      RouteSettings: {
+        'GET /billing/plans': {
+          ThrottlingRateLimit: BILLING_PLANS_THROTTLE_RATE_LIMIT,
+          ThrottlingBurstLimit: BILLING_PLANS_THROTTLE_BURST_LIMIT,
+        },
+      },
+    });
 
     for (const routeKey of [
       'GET /wardrobes',

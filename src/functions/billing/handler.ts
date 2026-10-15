@@ -14,6 +14,11 @@ import {
   StripeCheckoutClient,
 } from '../../shared/stripe-checkout';
 import {
+  listPublicBillingPlans,
+  PublicBillingPlan,
+  StripeCatalogClient,
+} from '../../shared/stripe-catalog';
+import {
   getStripeClient,
   getStripeConfig,
   StripeConfigDeps,
@@ -38,6 +43,7 @@ export interface BillingHandlerDeps {
   getStripeConfig?: () => Promise<StripeRuntimeConfig>;
   getStripeClient?: () => Promise<StripeCheckoutClient>;
   getStripePortalClient?: () => Promise<StripePortalClient>;
+  listPublicBillingPlans?: () => Promise<PublicBillingPlan[]>;
   origin?: string;
   allowedOrigins?: string[];
   portalConfigurationId?: string;
@@ -52,12 +58,12 @@ interface CheckoutSessionBody {
 }
 
 /**
- * Authenticated Stripe Checkout (WARDROBE-189 / WARDROBE-196) and
- * Billing Portal (WARDROBE-191).
+ * Stripe billing HTTP API.
  *
- * POST /billing/checkout-session
+ * GET  /billing/plans             public catalog (WARDROBE-207; no Firebase)
+ * POST /billing/checkout-session  authenticated Checkout (WARDROBE-189 / 196)
  *   { "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }
- * POST /billing/portal-session    (no body required)
+ * POST /billing/portal-session    authenticated Portal (WARDROBE-191)
  *
  * Checkout reuses one Stripe customer per Firebase uid and rejects
  * accounts that already have a paid tier from any source.
@@ -79,9 +85,14 @@ export async function handler(
   deps: BillingHandlerDeps = {},
 ): Promise<APIGatewayProxyResultV2> {
   try {
-    const userId = getUserId(event);
     const method = event.requestContext.http.method;
     const key = routeKey(event);
+
+    if (method === 'GET' && isPlansRoute(key, event.rawPath)) {
+      return ok({ plans: await loadPublicPlans(deps) });
+    }
+
+    const userId = getUserId(event);
 
     if (method === 'POST' && isPortalRoute(key, event.rawPath)) {
       return ok(await createPortalSession(userId, event, deps));
@@ -95,6 +106,23 @@ export async function handler(
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+async function loadPublicPlans(
+  deps: BillingHandlerDeps,
+): Promise<PublicBillingPlan[]> {
+  if (deps.listPublicBillingPlans) {
+    return deps.listPublicBillingPlans();
+  }
+  const log = deps.log ?? logger;
+  return listPublicBillingPlans({
+    getStripeConfig: deps.getStripeConfig,
+    getStripeClient: deps.getStripeClient as
+      | (() => Promise<StripeCatalogClient>)
+      | undefined,
+    stripeConfigDeps: deps.stripeConfigDeps ?? { log },
+    log,
+  });
 }
 
 async function createCheckoutSession(
@@ -211,6 +239,14 @@ export function assertNotAlreadySubscribed(
     return;
   }
   throw Errors.alreadySubscribed(paid.source);
+}
+
+function isPlansRoute(key: string, rawPath: string): boolean {
+  return (
+    key === 'GET /billing/plans' ||
+    rawPath === '/billing/plans' ||
+    rawPath.endsWith('/billing/plans')
+  );
 }
 
 function isCheckoutRoute(key: string, rawPath: string): boolean {

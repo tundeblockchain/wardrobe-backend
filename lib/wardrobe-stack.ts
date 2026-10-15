@@ -30,6 +30,10 @@ export interface WardrobeStackProps extends cdk.StackProps {
   stage?: string;
 }
 
+/** WARDROBE-207: API Gateway route-level throttle for public GET /billing/plans. */
+export const BILLING_PLANS_THROTTLE_RATE_LIMIT = 10;
+export const BILLING_PLANS_THROTTLE_BURST_LIMIT = 20;
+
 export class WardrobeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: WardrobeStackProps) {
     super(scope, id, props);
@@ -351,15 +355,15 @@ export class WardrobeStack extends cdk.Stack {
         FIREBASE_ADMIN_SECRET_ARN: firebaseAdminSecret.secretArn,
       },
     });
-    // WARDROBE-189 / WARDROBE-191 / WARDROBE-198: Stripe customer +
-    // Checkout + Billing Portal. Active-mode secret is granted via
-    // grantStripeSecretRead only (below). Return URLs use cdk.json
-    // context billingWebOrigin. If unset, BillingFn omits the env var
-    // and the runtime uses the TEMPORARY WARDROBE-198 fallback.
-    // Request Origin is used only when it exactly matches
-    // supportContactAllowedOrigins (https, scheme+host+port). Optional
-    // portal configuration lets operators allow Basic ↔ Premium
-    // switches in the Stripe Customer Portal.
+    // WARDROBE-189 / WARDROBE-191 / WARDROBE-198 / WARDROBE-207: Stripe
+    // customer + Checkout + Billing Portal + public GET /billing/plans.
+    // Active-mode secret is granted via grantStripeSecretRead only
+    // (below). Return URLs use cdk.json context billingWebOrigin. If
+    // unset, BillingFn omits the env var and the runtime uses the
+    // TEMPORARY WARDROBE-198 fallback. Request Origin is used only
+    // when it exactly matches supportContactAllowedOrigins (https,
+    // scheme+host+port). Optional portal configuration lets operators
+    // allow Basic ↔ Premium switches in the Stripe Customer Portal.
     const billingWebOrigin = readOptionalContextOrEnv(
       this,
       'billingWebOrigin',
@@ -817,6 +821,14 @@ export class WardrobeStack extends cdk.Stack {
       authorizer: firebaseAuthorizer,
     });
 
+    // Public Pricing catalog — no Firebase authorizer (WARDROBE-207).
+    // Route-level throttle is set on the default stage below.
+    httpApi.addRoutes({
+      path: '/billing/plans',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: billingIntegration,
+    });
+
     httpApi.addRoutes({
       path: '/billing/checkout-session',
       methods: [apigwv2.HttpMethod.POST],
@@ -839,6 +851,15 @@ export class WardrobeStack extends cdk.Stack {
       integration: billingIntegration,
       authorizer: firebaseAuthorizer,
     });
+
+    if (cfnDefaultStage) {
+      cfnDefaultStage.routeSettings = {
+        'GET /billing/plans': {
+          throttlingRateLimit: BILLING_PLANS_THROTTLE_RATE_LIMIT,
+          throttlingBurstLimit: BILLING_PLANS_THROTTLE_BURST_LIMIT,
+        },
+      };
+    }
 
     httpApi.addRoutes({
       path: '/me/events',
@@ -1150,7 +1171,8 @@ export class WardrobeStack extends cdk.Stack {
     // STRIPE_MODE (default test). Preview and dev cannot select live.
     // grantStripeSecretRead grants the **active** mode secret only.
     // MeFn (account delete / WARDROBE-192 cancel), BillingFn
-    // (checkout 189 + portal 191), StripeWebhookFn (WARDROBE-190).
+    // (checkout 189 + portal 191 + public plans 207), StripeWebhookFn
+    // (WARDROBE-190).
     const stripe = addStripeSecrets(this, { stage, removalPolicy });
     grantStripeSecretRead(meFn, stripe.activeSecret, {
       mode: stripe.mode,

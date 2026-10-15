@@ -82,6 +82,16 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(error.message).toBe('Billing return URL is not configured.');
   });
 
+  it('marks PLANS_UNAVAILABLE as a 503 without Stripe details', () => {
+    const error = Errors.plansUnavailable();
+
+    expect(error.code).toBe('PLANS_UNAVAILABLE');
+    expect(error.statusCode).toBe(503);
+    expect(error.message).toBe('Billing plans are temporarily unavailable.');
+    expect(error.message).not.toMatch(/price_/);
+    expect(error.message).not.toContain('sk_');
+  });
+
   it('marks BILLING_CANCEL_FAILED as a retryable 503', () => {
     const error = Errors.billingCancelFailed();
 

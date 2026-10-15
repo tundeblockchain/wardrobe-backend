@@ -20,10 +20,11 @@ import {
  * (default test). Preview and dev cannot select live, so they never
  * receive the live secret ARN or grant.
  *
- * Checkout and portal share `BillingFn` (WARDROBE-189 / WARDROBE-191).
- * The public webhook (`StripeWebhookFn`, WARDROBE-190) also calls
- * `grantStripeSecretRead` for the active-mode secret only. Account
- * delete (`MeFn`, WARDROBE-192) is already granted.
+ * Checkout, portal, and public GET /billing/plans share `BillingFn`
+ * (WARDROBE-189 / WARDROBE-191 / WARDROBE-207). The public webhook
+ * (`StripeWebhookFn`, WARDROBE-190) also calls `grantStripeSecretRead`
+ * for the active-mode secret only. Account delete (`MeFn`,
+ * WARDROBE-192) is already granted.
  */
 export interface StripeSecretsProps {
   stage: string;
