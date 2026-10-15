@@ -29,7 +29,7 @@
     "stripeLookupKeyPremiumMonthly": "wardrobe_premium_monthly",
     "stripeLookupKeyBasicYearly": "wardrobe_basic_yearly",
     "stripeLookupKeyPremiumYearly": "wardrobe_premium_yearly",
-    "billingWebOrigin": "",
+    "billingWebOrigin": "https://pocketclosetai.com",
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/core:target-partitions": ["aws"],
