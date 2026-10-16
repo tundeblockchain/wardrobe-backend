@@ -1608,4 +1608,65 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(synthesized).not.toMatch(/-----BEGIN PRIVATE KEY-----/);
     expect(synthesized).not.toMatch(/"private_key":\s*"-----BEGIN/);
   });
+
+  test('HTTP API stage RouteSettings keys match Route RouteKeys and DependsOn those routes (WARDROBE-214)', () => {
+    expectStageRouteSettingsBoundToRoutes(template);
+  });
 });
+
+type CfnTemplateResource = {
+  Properties?: Record<string, unknown>;
+  DependsOn?: string | string[];
+};
+
+function cfnDependsOn(resource: CfnTemplateResource): string[] {
+  const dep = resource.DependsOn;
+  if (!dep) {
+    return [];
+  }
+  return Array.isArray(dep) ? dep : [dep];
+}
+
+/**
+ * Every AWS::ApiGatewayV2::Stage RouteSettings key must be an existing
+ * AWS::ApiGatewayV2::Route RouteKey, and the stage must DependsOn that route
+ * so CloudFormation cannot update throttles before the route exists.
+ */
+function expectStageRouteSettingsBoundToRoutes(template: Template): void {
+  const routes = template.findResources('AWS::ApiGatewayV2::Route') as Record<
+    string,
+    CfnTemplateResource
+  >;
+  const stages = template.findResources('AWS::ApiGatewayV2::Stage') as Record<
+    string,
+    CfnTemplateResource
+  >;
+
+  const routeIdByKey = new Map<string, string>();
+  for (const [logicalId, route] of Object.entries(routes)) {
+    const routeKey = route.Properties?.RouteKey;
+    if (typeof routeKey === 'string') {
+      routeIdByKey.set(routeKey, logicalId);
+    }
+  }
+
+  expect(Object.keys(stages).length).toBeGreaterThan(0);
+
+  let routeSettingsCount = 0;
+  for (const stage of Object.values(stages)) {
+    const settings = (stage.Properties?.RouteSettings ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const deps = cfnDependsOn(stage);
+    for (const routeKey of Object.keys(settings)) {
+      routeSettingsCount += 1;
+      const routeId = routeIdByKey.get(routeKey);
+      expect(routeId).toBeDefined();
+      expect(deps).toContain(routeId);
+    }
+  }
+
+  expect(routeSettingsCount).toBeGreaterThan(0);
+  expect(routeIdByKey.has('GET /billing/plans')).toBe(true);
+}

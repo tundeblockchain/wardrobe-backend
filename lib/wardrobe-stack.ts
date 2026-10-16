@@ -822,8 +822,9 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // Public Pricing catalog — no Firebase authorizer (WARDROBE-207).
-    // Route-level throttle is set on the default stage below.
-    httpApi.addRoutes({
+    // Route-level throttle is bound on the default stage below so the
+    // stage update DependsOn this CfnRoute (WARDROBE-214).
+    const billingPlansRoutes = httpApi.addRoutes({
       path: '/billing/plans',
       methods: [apigwv2.HttpMethod.GET],
       integration: billingIntegration,
@@ -853,14 +854,13 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     if (cfnDefaultStage) {
-      // L1 `routeSettings` keeps camelCase keys; override so CloudFormation
-      // gets ThrottlingRateLimit / ThrottlingBurstLimit.
-      cfnDefaultStage.addPropertyOverride('RouteSettings', {
-        'GET /billing/plans': {
-          ThrottlingRateLimit: BILLING_PLANS_THROTTLE_RATE_LIMIT,
-          ThrottlingBurstLimit: BILLING_PLANS_THROTTLE_BURST_LIMIT,
+      applyHttpApiStageRouteSettings(cfnDefaultStage, [
+        {
+          routes: billingPlansRoutes,
+          throttlingRateLimit: BILLING_PLANS_THROTTLE_RATE_LIMIT,
+          throttlingBurstLimit: BILLING_PLANS_THROTTLE_BURST_LIMIT,
         },
-      });
+      ]);
     }
 
     httpApi.addRoutes({
@@ -1303,6 +1303,60 @@ export class WardrobeStack extends cdk.Stack {
       logGroup,
     });
   }
+}
+
+/**
+ * Bind HTTP API stage RouteSettings to real CfnRoute resources.
+ *
+ * API Gateway V2 looks up each RouteSettings key on Stage create/update and
+ * fails with "Unable to find Route by key … (404 NotFound)" when the route
+ * is missing or the key does not match RouteKey exactly (e.g. `GET /billing/plans`).
+ * The `$default` stage is created with the API, so a same-changeset route +
+ * throttle update races unless the stage DependsOn each CfnRoute (WARDROBE-214).
+ *
+ * Keys are taken from each CfnRoute.routeKey (never hardcoded separately).
+ * Inner throttle fields are PascalCase via addPropertyOverride so CloudFormation
+ * does not drop camelCase L1 map values.
+ */
+function applyHttpApiStageRouteSettings(
+  stage: apigwv2.CfnStage,
+  entries: Array<{
+    routes: apigwv2.HttpRoute[];
+    throttlingRateLimit: number;
+    throttlingBurstLimit: number;
+  }>,
+): void {
+  const routeSettings: Record<
+    string,
+    { ThrottlingRateLimit: number; ThrottlingBurstLimit: number }
+  > = {};
+
+  for (const entry of entries) {
+    if (entry.routes.length === 0) {
+      throw new Error('RouteSettings entry has no HttpRoute resources');
+    }
+    for (const httpRoute of entry.routes) {
+      const cfnRoute = httpRoute.node.defaultChild as apigwv2.CfnRoute | undefined;
+      if (!cfnRoute || cfnRoute.cfnResourceType !== 'AWS::ApiGatewayV2::Route') {
+        throw new Error(
+          `Expected CfnRoute under ${httpRoute.node.path}, got ${cfnRoute?.cfnResourceType ?? 'undefined'}`,
+        );
+      }
+      const routeKey = cfnRoute.routeKey;
+      if (typeof routeKey !== 'string' || routeKey.length === 0) {
+        throw new Error(
+          `CfnRoute ${cfnRoute.node.path} is missing a concrete RouteKey`,
+        );
+      }
+      stage.addDependency(cfnRoute);
+      routeSettings[routeKey] = {
+        ThrottlingRateLimit: entry.throttlingRateLimit,
+        ThrottlingBurstLimit: entry.throttlingBurstLimit,
+      };
+    }
+  }
+
+  stage.addPropertyOverride('RouteSettings', routeSettings);
 }
 
 /**
