@@ -1,9 +1,13 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { getUserId } from '../../shared/auth';
 import { getOwnedWardrobe, keys, queryByPk } from '../../shared/dynamodb';
-import { assertPremiumAi } from '../../shared/entitlements';
+import { assertPaidOutfitSuggestions } from '../../shared/entitlements';
 import { Errors } from '../../shared/errors';
 import { errorResponse, ok } from '../../shared/http';
+import {
+  applyOutfitSuggestionCap,
+  resolveOutfitSuggestionCap,
+} from '../../shared/outfit-suggestion-cap';
 import { OutfitRecommendationsResponse } from '../../shared/types';
 import { createHttpOutfitRecommender } from './http-recommender';
 import { createOpenAiOutfitRecommender } from './openai-recommender';
@@ -22,8 +26,9 @@ export interface RecommendationsHandlerDeps {
 /**
  * GET /wardrobes/{wardrobeId}/recommendations
  *
- * Owner-only derived suggestions. Never persists outfits — Flutter can
- * POST /wardrobes/{wardrobeId}/outfits if the user saves one.
+ * Owner-only derived suggestions for any paid tier (Basic or Premium).
+ * Free keeps `403 ENTITLEMENT_AI_REQUIRED`. Never persists outfits —
+ * Flutter can POST /wardrobes/{wardrobeId}/outfits if the user saves one.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -49,9 +54,11 @@ export async function handleRecommendations(
     }
 
     await getOwnedWardrobe(userId, wardrobeId);
-    await assertPremiumAi(userId);
-
-    const recommendations = await listRecommendations(userId, wardrobeId, deps);
+    const entitlement = await assertPaidOutfitSuggestions(userId);
+    const recommendations = applyOutfitSuggestionCap(
+      await listRecommendations(userId, wardrobeId, deps),
+      resolveOutfitSuggestionCap(entitlement.tier),
+    );
     const body: OutfitRecommendationsResponse = { recommendations };
     return ok(body);
   } catch (error) {

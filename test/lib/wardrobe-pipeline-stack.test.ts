@@ -176,6 +176,18 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
     expect(env.STRIPE_PORTAL_CONFIGURATION_ID).toBe('bpc_pipeline');
   });
 
+  test('bakes outfit suggestion caps into the Synth project when set', () => {
+    const template = synthPipeline({
+      ...pipelineSource,
+      outfitSuggestionCap: '8',
+      outfitSuggestionCapBasic: '2',
+    });
+
+    const env = synthStepEnv(template);
+    expect(env.OUTFIT_SUGGESTION_CAP).toBe('8');
+    expect(env.OUTFIT_SUGGESTION_CAP_BASIC).toBe('2');
+  });
+
   test('omits Stripe synth env vars when config does not set them', () => {
     const template = synthPipeline(pipelineSource);
     const env = synthStepEnv(template);
@@ -185,12 +197,16 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
     expect(env).not.toHaveProperty('STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY');
     expect(env).not.toHaveProperty('BILLING_WEB_ORIGIN');
     expect(env).not.toHaveProperty('STRIPE_PORTAL_CONFIGURATION_ID');
+    expect(env).not.toHaveProperty('OUTFIT_SUGGESTION_CAP');
+    expect(env).not.toHaveProperty('OUTFIT_SUGGESTION_CAP_BASIC');
     for (const vars of codeBuildEnvMaps(template)) {
       expect(vars).not.toHaveProperty('STRIPE_MODE');
       expect(vars).not.toHaveProperty('STRIPE_LOOKUP_KEY_BASIC_MONTHLY');
       expect(vars).not.toHaveProperty('STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY');
       expect(vars).not.toHaveProperty('BILLING_WEB_ORIGIN');
       expect(vars).not.toHaveProperty('STRIPE_PORTAL_CONFIGURATION_ID');
+      expect(vars).not.toHaveProperty('OUTFIT_SUGGESTION_CAP');
+      expect(vars).not.toHaveProperty('OUTFIT_SUGGESTION_CAP_BASIC');
     }
   });
 });

@@ -229,6 +229,31 @@ export async function assertPremiumAi(userId: string): Promise<StoredEntitlement
   return entitlement;
 }
 
+export type PaidStoredEntitlement = StoredEntitlement & {
+  tier: Extract<SubscriptionTier, 'BASIC' | 'PREMIUM'>;
+};
+
+/**
+ * AI outfit suggestions (WARDROBE-229). Any paid tier (Basic or Premium)
+ * is allowed. Free keeps the existing `403 ENTITLEMENT_AI_REQUIRED` shape.
+ * Virtual Try On and other Premium-only AI still use `assertPremiumAi`.
+ */
+export async function assertPaidOutfitSuggestions(
+  userId: string,
+): Promise<PaidStoredEntitlement> {
+  const entitlement = await resolveEntitlement(userId);
+  if (!isPaidSubscriptionTier(entitlement.tier)) {
+    throw Errors.aiRequired();
+  }
+  return entitlement as PaidStoredEntitlement;
+}
+
+export function isPaidSubscriptionTier(
+  tier: SubscriptionTier,
+): tier is Extract<SubscriptionTier, 'BASIC' | 'PREMIUM'> {
+  return tier === 'BASIC' || tier === 'PREMIUM';
+}
+
 export function isPremium(entitlement: StoredEntitlement): boolean {
   return entitlement.tier === 'PREMIUM';
 }

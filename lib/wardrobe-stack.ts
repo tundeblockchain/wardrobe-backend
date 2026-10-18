@@ -21,6 +21,11 @@ import {
 } from '../src/functions/ai-profiles/catalog';
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
+import {
+  DEFAULT_OUTFIT_SUGGESTION_CAP,
+  OUTFIT_SUGGESTION_CAP_BASIC_ENV,
+  OUTFIT_SUGGESTION_CAP_ENV,
+} from '../src/shared/outfit-suggestion-cap';
 import { addEntitlements } from './entitlements';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
@@ -273,6 +278,7 @@ export class WardrobeStack extends cdk.Stack {
     // OpenAI credentials for outfit recommendations (WARDROBE-28).
     // Replace the generated placeholder after deploy. Never commit AI keys.
     const recommenderStrategy = resolveRecommenderStrategy(this);
+    const outfitSuggestionCaps = resolveOutfitSuggestionCapEnv(this);
     const aiRecommenderSecret = new secretsmanager.Secret(this, 'AiRecommenderSecret', {
       secretName: `wardrobe/${stage}/ai-recommender`,
       description:
@@ -433,6 +439,10 @@ export class WardrobeStack extends cdk.Stack {
         ...commonLambdaProps.environment,
         RECOMMENDER_STRATEGY: recommenderStrategy,
         AI_RECOMMENDER_SECRET_ARN: aiRecommenderSecret.secretArn,
+        [OUTFIT_SUGGESTION_CAP_ENV]: outfitSuggestionCaps.shared,
+        ...(outfitSuggestionCaps.basic
+          ? { [OUTFIT_SUGGESTION_CAP_BASIC_ENV]: outfitSuggestionCaps.basic }
+          : {}),
       },
     });
     // WARDROBE-96 related shopping links. OpenAI vision + Bright Data SERP
@@ -1405,6 +1415,24 @@ function readOptionalContextOrEnv(
     return envValue.trim();
   }
   return undefined;
+}
+
+function resolveOutfitSuggestionCapEnv(scope: Construct): {
+  shared: string;
+  basic?: string;
+} {
+  const shared =
+    readOptionalContextOrEnv(
+      scope,
+      'outfitSuggestionCap',
+      process.env.OUTFIT_SUGGESTION_CAP,
+    ) ?? String(DEFAULT_OUTFIT_SUGGESTION_CAP);
+  const basic = readOptionalContextOrEnv(
+    scope,
+    'outfitSuggestionCapBasic',
+    process.env.OUTFIT_SUGGESTION_CAP_BASIC,
+  );
+  return { shared, basic };
 }
 
 function resolveRecommenderStrategy(node: Construct): string {

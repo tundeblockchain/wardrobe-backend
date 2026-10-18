@@ -17,6 +17,7 @@ jest.mock('../../src/shared/dynamodb', () => {
 import {
   applySuperwallEvent,
   assertCanCreateCatalog,
+  assertPaidOutfitSuggestions,
   defaultGrantExpiresAt,
   ensureFreeEntitlement,
   featuresForTier,
@@ -536,6 +537,61 @@ describe('entitlement history (WARDROBE-159)', () => {
     );
     expect(mockQueryByPk).toHaveBeenCalledWith('USER#uid', 'ENTITLEMENT');
     expect(mockQueryByPk).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('assertPaidOutfitSuggestions (WARDROBE-229)', () => {
+  beforeEach(() => {
+    mockQueryByPk.mockReset();
+    mockQueryByPk.mockResolvedValue([]);
+  });
+
+  it('rejects Free with the existing ENTITLEMENT_AI_REQUIRED shape', async () => {
+    mockQueryByPk.mockResolvedValue([]);
+
+    await expect(assertPaidOutfitSuggestions('uid')).rejects.toMatchObject({
+      code: 'ENTITLEMENT_AI_REQUIRED',
+      statusCode: 403,
+      message: 'Virtual Try On and other AI features require Premium.',
+    });
+  });
+
+  it('allows Basic from the paid-tier entitlement record', async () => {
+    mockQueryByPk.mockResolvedValue([
+      {
+        PK: 'USER#uid',
+        SK: 'ENTITLEMENT',
+        entityType: 'ENTITLEMENT',
+        userId: 'uid',
+        tier: 'BASIC',
+        status: 'ACTIVE',
+        createdAt: '2026-09-16T00:00:00.000Z',
+        updatedAt: '2026-09-16T00:00:00.000Z',
+      },
+    ]);
+
+    await expect(assertPaidOutfitSuggestions('uid')).resolves.toEqual(
+      expect.objectContaining({ tier: 'BASIC', status: 'ACTIVE' }),
+    );
+  });
+
+  it('allows Premium from the paid-tier entitlement record', async () => {
+    mockQueryByPk.mockResolvedValue([
+      {
+        PK: 'USER#uid',
+        SK: 'ENTITLEMENT',
+        entityType: 'ENTITLEMENT',
+        userId: 'uid',
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        createdAt: '2026-09-16T00:00:00.000Z',
+        updatedAt: '2026-09-16T00:00:00.000Z',
+      },
+    ]);
+
+    await expect(assertPaidOutfitSuggestions('uid')).resolves.toEqual(
+      expect.objectContaining({ tier: 'PREMIUM', status: 'ACTIVE' }),
+    );
   });
 });
 

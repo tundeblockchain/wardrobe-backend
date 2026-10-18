@@ -32,7 +32,7 @@ Working in this first cut:
 - Move / copy a clothing item to another owned wardrobe (WARDROBE-118; Flutter WARDROBE-119)
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`). `GET /outfits` lists across the caller's wardrobes (WARDROBE-173).
 - Outfit worn-on log (date-only entries for calendar / habit; Flutter WARDROBE-121)
-- Owner-only outfit recommendations (derived, never auto-saved)
+- Owner-only outfit recommendations for paid tiers (Basic and Premium; WARDROBE-229; derived, never auto-saved)
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
@@ -437,7 +437,7 @@ Authorization: Bearer <firebase-id-token>
 | `status` | `NONE` \| `ACTIVE` \| `CANCELED` \| `BILLING_ISSUE` \| `PAUSED` \| `EXPIRED` | `CANCELED` still has access until `expiresAt` |
 | `features.unlimitedCatalog` | boolean | `true` on Basic and Premium |
 | `features.aiTryOn` | boolean | Premium only — POST outfit or item `/render` |
-| `features.otherAi` | boolean | Premium only — recommendations, item-processing enqueue / retry (classify / colour / bg-removal), and PERSONAL Virtual Profile create / list / get / mutate |
+| `features.otherAi` | boolean | Premium only — item-processing enqueue / retry (classify / colour / bg-removal), and PERSONAL Virtual Profile create / list / get / mutate. Outfit suggestions are paid-tier (Basic + Premium) and are not this flag. |
 | `limits` | object or `null` | Free caps. `null` = unlimited |
 | `usage` | object | Current owned counts (all wardrobes) |
 | `productId` / `store` / `period` / `expiresAt` | optional | Soft-omitted when unknown. `store` is `APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`. `period` is `MONTHLY` \| `YEARLY` \| `UNKNOWN` |
@@ -451,7 +451,7 @@ Each account has **one** paid-tier status on the existing `ENTITLEMENT` record (
 
 Existing records store uppercase `tier` (`FREE` \| `BASIC` \| `PREMIUM`) and Superwall `store` (`APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`). `source` is derived from `store` (`APP_STORE` → `ios`, `PLAY_STORE` → `android`, `STRIPE` → `stripe`). Expiry is the same `expiresAt` attribute.
 
-Catalog limits still come from the existing mapping: Free uses `limits` `{ wardrobes: 1, items: 5, outfits: 5 }`; Basic and Premium keep `limits: null` (unlimited catalog). Basic does not get Premium AI flags.
+Catalog limits still come from the existing mapping: Free uses `limits` `{ wardrobes: 1, items: 5, outfits: 5 }`; Basic and Premium keep `limits: null` (unlimited catalog). Basic does not get Premium AI flags (`aiTryOn` / `otherAi`). Outfit suggestions are allowed for any paid tier (Basic or Premium) even while those flags stay Premium-only. Soft-gate suggestions from `paidTier != null`.
 
 Free:
 
@@ -547,9 +547,9 @@ Same `{ "error": { "code", "message" } }` envelope as the rest of the API. No in
 | 403 | `ENTITLEMENT_WARDROBE_LIMIT` | Free already has 1 wardrobe | Basic (or Premium) |
 | 403 | `ENTITLEMENT_ITEM_LIMIT` | Free already has 5 items | Basic (or Premium) |
 | 403 | `ENTITLEMENT_OUTFIT_LIMIT` | Free already has 5 outfits | Basic (or Premium) |
-| 403 | `ENTITLEMENT_AI_REQUIRED` | Free or Basic hit Try On, recommendations, PERSONAL Virtual Profiles, or other AI | Premium |
+| 403 | `ENTITLEMENT_AI_REQUIRED` | Free hits outfit suggestions; Free or Basic hit Try On, PERSONAL Virtual Profiles, or other Premium AI | Premium (Try On / other AI) or Basic/Premium (suggestions) |
 
-Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. Wardrobe / item / outfit PATCH / DELETE are not gated. PERSONAL Virtual Profile create, list, get, and photo mutations are Premium (`assertPremiumAi`). GENERIC_MODEL catalog list/get is not gated. Virtual Try On generate remains Premium.
+Reads (list/get wardrobe, item, outfit, GET `/render` poll) are not gated. Wardrobe / item / outfit PATCH / DELETE are not gated. PERSONAL Virtual Profile create, list, get, and photo mutations are Premium (`assertPremiumAi`). GENERIC_MODEL catalog list/get is not gated. Virtual Try On generate remains Premium. Outfit suggestions (`GET /wardrobes/{wardrobeId}/recommendations`) are paid-tier (Basic and Premium).
 
 #### Webhook / restore path
 
@@ -1693,6 +1693,8 @@ The item must have an image (`originalKey` preferred, else `processedKey`). The 
 
 Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must belong to that user. Suggestions are derived from READY clothing items and are **never written** as outfits — Flutter can `POST /wardrobes/{wardrobeId}/outfits` if the user saves one.
 
+**Entitlement (WARDROBE-229):** Basic and Premium are allowed (`assertPaidOutfitSuggestions` on the existing `paidTier` / entitlement record). Free is rejected with the existing `403 ENTITLEMENT_AI_REQUIRED` envelope (`{ "error": { "code", "message" } }`, message unchanged). Virtual Try On stays Premium-only (`assertPremiumAi`). `GET /me` feature flags are unchanged (`otherAi` stays Premium-only). `GET /billing/plans` does not list this feature and is unchanged.
+
 ```http
 GET /wardrobes/{wardrobeId}/recommendations
 ```
@@ -1727,6 +1729,15 @@ Category and colour come from AI metadata when present (`ai.detectedCategory`, `
 | `http` | Optional generic HTTP hook (`JSON { "apiKey", "endpoint" }`). |
 
 The recommendations Lambda sets `RECOMMENDER_STRATEGY=openai`. Override at synth/deploy with CDK context `recommenderStrategy` or env `RECOMMENDER_STRATEGY` (`openai` / `rules` / `http`).
+
+**Per-response cap:** configurable, same wiring as other CDK context / env caps (for example `supportContactRateLimit`). Do not invent a Basic-only number in code — leave Basic unset until product sets it.
+
+| Context | Env | Default |
+| --- | --- | --- |
+| `outfitSuggestionCap` | `OUTFIT_SUGGESTION_CAP` | `8` (today's Premium / `MAX_RECOMMENDATIONS` behaviour) |
+| `outfitSuggestionCapBasic` | `OUTFIT_SUGGESTION_CAP_BASIC` | unset — Basic uses `outfitSuggestionCap` / `8` |
+
+Set the Basic key at synth/deploy (`-c outfitSuggestionCapBasic=N` or `OUTFIT_SUGGESTION_CAP_BASIC=N`) when product picks a value. Invalid or empty values fall back to the shared / Premium default. The recommendations Lambda receives these as environment variables. No SSM parameter and no secrets.
 
 **OpenAI secret** `wardrobe/{stage}/ai-recommender`:
 
@@ -2607,7 +2618,7 @@ JSON fields: `secretKey` (Stripe secret API key) and `webhookSecret` (webhook si
 
 **IAM.** `grantStripeSecretRead` is the reusable grant for checkout, portal, webhook, public plans, and account delete (WARDROBE-189–192 / WARDROBE-207). It grants the **active** mode secret only. `MeFn` (WARDROBE-192 account-delete cancel), `BillingFn` (WARDROBE-189 checkout + WARDROBE-191 portal + WARDROBE-207 public plans), and `StripeWebhookFn` (WARDROBE-190) have that grant. Other Lambdas cannot read Stripe secrets. Never log the secret key, webhook secret, or `Stripe-Signature`.
 
-**Plans.** Two paid tiers — Basic and Premium — matching the existing entitlement matrix (unlimited catalog; Premium-only AI). Limits are not duplicated. Price **lookup keys** (not live `price_…` ids) come from config:
+**Plans.** Two paid tiers — Basic and Premium — matching the existing entitlement matrix (unlimited catalog; Premium-only Try On / `otherAi`; outfit suggestions are paid-tier). Limits are not duplicated. Price **lookup keys** (not live `price_…` ids) come from config:
 
 | Context key | Env | Default |
 | --- | --- | --- |
@@ -3126,6 +3137,8 @@ Public website contact (WARDROBE-143) — CDK context / env, empty-origins defau
 | `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
 | `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
 | `UPLOAD_ALLOWED_ORIGINS` / `uploadAllowedOrigins` | Netlify site, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173` | S3 media-bucket CORS origins for browser presigned PUTs. Never `*` |
+| `OUTFIT_SUGGESTION_CAP` / `outfitSuggestionCap` | `8` | Shared / Premium per-response outfit-suggestion cap (WARDROBE-229). Today's Premium behaviour. |
+| `OUTFIT_SUGGESTION_CAP_BASIC` / `outfitSuggestionCapBasic` | unset (falls back to `OUTFIT_SUGGESTION_CAP` / `8`) | Optional Basic override. Leave unset until product sets a value. |
 | `BILLING_WEB_ORIGIN` / `billingWebOrigin` | cdk.json context; TEMPORARY fallback if unset | Web origin for Stripe Checkout success/cancel URLs and Billing Portal `return_url`. Server-built. Set in cdk.json context `billingWebOrigin`. |
 | `STRIPE_PORTAL_CONFIGURATION_ID` / `stripePortalConfigurationId` | unset | Optional Stripe Billing Portal configuration id so Basic ↔ Premium switches are allowed |
 

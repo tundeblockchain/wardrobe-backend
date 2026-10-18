@@ -9,7 +9,9 @@ import {
   OutfitRecommendation,
 } from '../../shared/types';
 
-export const MAX_RECOMMENDATIONS = 8;
+import { DEFAULT_OUTFIT_SUGGESTION_CAP } from '../../shared/outfit-suggestion-cap';
+
+export const MAX_RECOMMENDATIONS = DEFAULT_OUTFIT_SUGGESTION_CAP;
 export const MAX_ITEMS_PER_SLOT = 6;
 
 /** Wearable core: TOP+BOTTOM, or DRESS. Used to skip vendor calls and empty lists. */

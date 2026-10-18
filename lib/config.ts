@@ -15,6 +15,8 @@ export interface AppConfig {
   stripeLookupKeyPremiumYearly?: string;
   billingWebOrigin?: string;
   stripePortalConfigurationId?: string;
+  outfitSuggestionCap?: string;
+  outfitSuggestionCapBasic?: string;
 }
 
 interface ContextReader {
@@ -100,6 +102,16 @@ export function resolveAppConfig(node: ContextReader): AppConfig {
       node,
       'stripePortalConfigurationId',
       process.env.STRIPE_PORTAL_CONFIGURATION_ID,
+    ),
+    outfitSuggestionCap: readString(
+      node,
+      'outfitSuggestionCap',
+      process.env.OUTFIT_SUGGESTION_CAP,
+    ),
+    outfitSuggestionCapBasic: readString(
+      node,
+      'outfitSuggestionCapBasic',
+      process.env.OUTFIT_SUGGESTION_CAP_BASIC,
     ),
   };
 }

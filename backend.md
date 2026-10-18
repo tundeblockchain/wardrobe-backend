@@ -1275,7 +1275,7 @@ GET    /wardrobes/{wardrobeId}/worn-on
 GET /wardrobes/{wardrobeId}/recommendations
 ```
 
-Owner-only. Returns suggested outfits as `{ recommendations: [ { name?, items: [{ itemId, slot }] } ] }`. Does not persist outfits.
+Owner-only. Paid tiers (Basic and Premium) only (WARDROBE-229). Free is `403 ENTITLEMENT_AI_REQUIRED` with the existing envelope. Returns suggested outfits as `{ recommendations: [ { name?, items: [{ itemId, slot }] } ] }`. Does not persist outfits. The per-response cap is configurable (`outfitSuggestionCap` / `OUTFIT_SUGGESTION_CAP`, default 8). Basic uses `outfitSuggestionCapBasic` / `OUTFIT_SUGGESTION_CAP_BASIC` when set and otherwise the same default as Premium.
 
 ### Related shopping links (WARDROBE-96)
 

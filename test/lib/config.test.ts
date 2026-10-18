@@ -148,6 +148,41 @@ describe('resolveAppConfig', () => {
     expect(config.stripePortalConfigurationId).toBe('bpc_env');
   });
 
+  it('prefers CDK context over env for outfit suggestion caps', () => {
+    process.env.OUTFIT_SUGGESTION_CAP = '9';
+    process.env.OUTFIT_SUGGESTION_CAP_BASIC = '4';
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) => {
+        if (key === 'outfitSuggestionCap') return '8';
+        if (key === 'outfitSuggestionCapBasic') return '2';
+        return undefined;
+      },
+    });
+    expect(config.outfitSuggestionCap).toBe('8');
+    expect(config.outfitSuggestionCapBasic).toBe('2');
+  });
+
+  it('reads outfit suggestion caps from env when context is empty', () => {
+    process.env.OUTFIT_SUGGESTION_CAP = '8';
+    process.env.OUTFIT_SUGGESTION_CAP_BASIC = '3';
+    const config = resolveAppConfig({ tryGetContext: () => undefined });
+    expect(config.outfitSuggestionCap).toBe('8');
+    expect(config.outfitSuggestionCapBasic).toBe('3');
+  });
+
+  it('leaves outfit suggestion caps undefined when context and env are empty', () => {
+    delete process.env.OUTFIT_SUGGESTION_CAP;
+    delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'outfitSuggestionCap' || key === 'outfitSuggestionCapBasic'
+          ? '  '
+          : undefined,
+    });
+    expect(config.outfitSuggestionCap).toBeUndefined();
+    expect(config.outfitSuggestionCapBasic).toBeUndefined();
+  });
+
   it('leaves stripePortalConfigurationId undefined when context and env are empty', () => {
     delete process.env.STRIPE_PORTAL_CONFIGURATION_ID;
     const config = resolveAppConfig({

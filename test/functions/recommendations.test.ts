@@ -191,11 +191,15 @@ describe('recommendations handler (WARDROBE-23)', () => {
     jest.clearAllMocks();
     process.env.TABLE_NAME = 'wardrobe-app-test';
     delete process.env.RECOMMENDER_STRATEGY;
+    delete process.env.OUTFIT_SUGGESTION_CAP;
+    delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
   });
 
   afterEach(() => {
     delete process.env.TABLE_NAME;
     delete process.env.RECOMMENDER_STRATEGY;
+    delete process.env.OUTFIT_SUGGESTION_CAP;
+    delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
   });
 
   describe('GET /wardrobes/{wardrobeId}/recommendations', () => {
@@ -264,7 +268,7 @@ describe('recommendations handler (WARDROBE-23)', () => {
       ).toBe(false);
     });
 
-    it('rejects recommendations on Basic with ENTITLEMENT_AI_REQUIRED', async () => {
+    it('allows recommendations on Basic (WARDROBE-229)', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
           return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
@@ -272,15 +276,70 @@ describe('recommendations handler (WARDROBE-23)', () => {
         if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
           return { Item: dynamoWardrobe() };
         }
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          };
+        }
         throw new Error(`unexpected op ${command._op}`);
       });
 
-      const result = asResult(await handler(event()));
+      const recommender: OutfitRecommender = {
+        recommend: jest.fn(async () => [
+          {
+            name: 'Basic look',
+            items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
+          },
+        ]),
+      };
 
-      expectEnvelope(result, 403, 'ENTITLEMENT_AI_REQUIRED');
-      expect((bodyOf(result) as { error: { message: string } }).error.message).toBe(
-        'Virtual Try On and other AI features require Premium.',
+      const result = asResult(
+        await handleRecommendations(event(), { recommender }),
       );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        recommendations: [
+          {
+            name: 'Basic look',
+            items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' }],
+          },
+        ],
+      });
+    });
+
+    it('allows recommendations on Premium', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const recommender: OutfitRecommender = {
+        recommend: jest.fn(async () => [
+          {
+            name: 'Premium look',
+            items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
+          },
+        ]),
+      };
+
+      const result = asResult(
+        await handleRecommendations(event(), { recommender }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        recommendations: [
+          {
+            name: 'Premium look',
+            items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' }],
+          },
+        ],
+      });
     });
 
     it('rejects recommendations on Free with ENTITLEMENT_AI_REQUIRED', async () => {
@@ -388,6 +447,104 @@ describe('recommendations handler (WARDROBE-23)', () => {
       expect(recommender.recommend).toHaveBeenCalledWith([
         expect.objectContaining({ itemId: DRESS_ITEM_ID, slot: 'DRESS' }),
       ]);
+    });
+
+    it('caps Basic suggestions using OUTFIT_SUGGESTION_CAP_BASIC', async () => {
+      process.env.OUTFIT_SUGGESTION_CAP_BASIC = '2';
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const look = {
+        name: 'Look',
+        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
+      };
+      const recommender: OutfitRecommender = {
+        recommend: jest.fn(async () => [look, look, look, look]),
+      };
+
+      const result = asResult(
+        await handleRecommendations(event(), { recommender }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(
+        (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
+      ).toHaveLength(2);
+    });
+
+    it('falls Basic back to the current Premium cap when Basic config is unset', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const look = {
+        name: 'Look',
+        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
+      };
+      const recommender: OutfitRecommender = {
+        recommend: jest.fn(async () => Array.from({ length: 10 }, () => look)),
+      };
+
+      const result = asResult(
+        await handleRecommendations(event(), { recommender }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(
+        (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
+      ).toHaveLength(8);
+    });
+
+    it('applies OUTFIT_SUGGESTION_CAP to Premium', async () => {
+      process.env.OUTFIT_SUGGESTION_CAP = '3';
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const look = {
+        name: 'Look',
+        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
+      };
+      const recommender: OutfitRecommender = {
+        recommend: jest.fn(async () => [look, look, look, look]),
+      };
+
+      const result = asResult(
+        await handleRecommendations(event(), { recommender }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(
+        (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
+      ).toHaveLength(3);
     });
 
     it('returns 404 WARDROBE_NOT_FOUND for another user wardrobe', async () => {
