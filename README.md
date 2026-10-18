@@ -32,7 +32,7 @@ Working in this first cut:
 - Move / copy a clothing item to another owned wardrobe (WARDROBE-118; Flutter WARDROBE-119)
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`). `GET /outfits` lists across the caller's wardrobes (WARDROBE-173).
 - Outfit worn-on log (date-only entries for calendar / habit; Flutter WARDROBE-121)
-- Owner-only outfit recommendations for paid tiers (Basic and Premium; WARDROBE-229 / WARDROBE-233; derived, never auto-saved). Basic is not product-capped; Premium stays at 8 looks per response.
+- Owner-only outfit recommendations for paid tiers (Basic and Premium; WARDROBE-229 / WARDROBE-233 / WARDROBE-235; derived, never auto-saved). Basic and Premium are not product-capped.
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
@@ -1693,7 +1693,7 @@ The item must have an image (`originalKey` preferred, else `processedKey`). The 
 
 Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must belong to that user. Suggestions are derived from READY clothing items and are **never written** as outfits — Flutter can `POST /wardrobes/{wardrobeId}/outfits` if the user saves one.
 
-**Entitlement (WARDROBE-229 / WARDROBE-233):** Basic and Premium are allowed (`assertPaidOutfitSuggestions` on the existing `paidTier` / entitlement record). Free is rejected with the existing `403 ENTITLEMENT_AI_REQUIRED` envelope (`{ "error": { "code", "message" } }`, message unchanged). Virtual Try On stays Premium-only (`assertPremiumAi`). `GET /me` feature flags are unchanged (`otherAi` stays Premium-only). `GET /billing/plans` does not list this feature and is unchanged.
+**Entitlement (WARDROBE-229 / WARDROBE-233 / WARDROBE-235):** Basic and Premium are allowed (`assertPaidOutfitSuggestions` on the existing `paidTier` / entitlement record). Free is rejected with the existing `403 ENTITLEMENT_AI_REQUIRED` envelope (`{ "error": { "code", "message" } }`, message unchanged). Virtual Try On stays Premium-only (`assertPremiumAi`). `GET /me` feature flags are unchanged (`otherAi` stays Premium-only). `GET /billing/plans` does not list this feature and is unchanged.
 
 ```http
 GET /wardrobes/{wardrobeId}/recommendations
@@ -1730,17 +1730,17 @@ Category and colour come from AI metadata when present (`ai.detectedCategory`, `
 
 The recommendations Lambda sets `RECOMMENDER_STRATEGY=openai`. Override at synth/deploy with CDK context `recommenderStrategy` or env `RECOMMENDER_STRATEGY` (`openai` / `rules` / `http`).
 
-**Per-response cap (WARDROBE-233):** this is a look-count limit on a single `GET` response, not a per-day or per-month usage counter.
+**Per-response bound (WARDROBE-233 / WARDROBE-235):** this is a look-count limit on a single `GET` response, not a per-day or per-month usage counter.
 
 | Caller | Limit |
 | --- | --- |
-| Premium | Configurable `outfitSuggestionCap` / `OUTFIT_SUGGESTION_CAP`, default `8` (today's `MAX_RECOMMENDATIONS` behaviour). Invalid or empty values fall back to `8`. |
-| Basic | Not product-capped. `outfitSuggestionCapBasic` / `OUTFIT_SUGGESTION_CAP_BASIC` is removed and is ignored if still set in the environment. |
+| Premium | Not product-capped. Leftover `outfitSuggestionCap` / `OUTFIT_SUGGESTION_CAP` is ignored. |
+| Basic | Not product-capped. Leftover `outfitSuggestionCapBasic` / `OUTFIT_SUGGESTION_CAP_BASIC` is ignored. |
 | Free | Not served — `403 ENTITLEMENT_AI_REQUIRED`. |
 
-An internal constant `MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE` (`256`) is a non-tier safety ceiling so one Lambda response cannot grow unbounded (OpenAI / HTTP vendor lists). It is not CDK context, not an env var, and not an entitlement. Premium still uses the product cap of 8, which is lower. Rule-based generation is already bounded by `MAX_ITEMS_PER_SLOT` (at most a few dozen unique looks).
+An internal constant `MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE` (`256`) is a non-tier safety ceiling so one Lambda response cannot grow unbounded (OpenAI / HTTP vendor lists). It is not CDK context, not an env var, and not an entitlement. Rule-based generation is already bounded by `MAX_ITEMS_PER_SLOT` (at most a few dozen unique looks).
 
-The recommendations Lambda receives `OUTFIT_SUGGESTION_CAP` only. No SSM parameter and no secrets.
+The recommendations Lambda does not receive an outfit-suggestion cap env var. No SSM parameter and no secrets.
 
 **OpenAI secret** `wardrobe/{stage}/ai-recommender`:
 
@@ -3140,9 +3140,10 @@ Public website contact (WARDROBE-143) — CDK context / env, empty-origins defau
 | `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
 | `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
 | `UPLOAD_ALLOWED_ORIGINS` / `uploadAllowedOrigins` | Netlify site, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173` | S3 media-bucket CORS origins for browser presigned PUTs. Never `*` |
-| `OUTFIT_SUGGESTION_CAP` / `outfitSuggestionCap` | `8` | Premium per-response outfit-suggestion cap (WARDROBE-229 / WARDROBE-233). Today's Premium behaviour. Basic is not product-capped; `OUTFIT_SUGGESTION_CAP_BASIC` is removed. |
 | `BILLING_WEB_ORIGIN` / `billingWebOrigin` | cdk.json context; TEMPORARY fallback if unset | Web origin for Stripe Checkout success/cancel URLs and Billing Portal `return_url`. Server-built. Set in cdk.json context `billingWebOrigin`. |
 | `STRIPE_PORTAL_CONFIGURATION_ID` / `stripePortalConfigurationId` | unset | Optional Stripe Billing Portal configuration id so Basic ↔ Premium switches are allowed |
+
+Leftover `OUTFIT_SUGGESTION_CAP` / `outfitSuggestionCap` and `OUTFIT_SUGGESTION_CAP_BASIC` / `outfitSuggestionCapBasic` values are ignored (WARDROBE-235). Outfit suggestions are not product-capped; the internal bound is `MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE` (`256`).
 
 Conceptual keys (loaded from those secrets; env overrides win — useful in unit tests only):
 

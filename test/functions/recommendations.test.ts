@@ -447,141 +447,108 @@ describe('recommendations handler (WARDROBE-23)', () => {
       });
       expect(recommender.recommend).toHaveBeenCalledWith(
         [expect.objectContaining({ itemId: DRESS_ITEM_ID, slot: 'DRESS' })],
-        { maxRecommendations: 8 },
-      );
-    });
-
-    it('does not truncate Basic at the old cap of 8', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
-        if (isEntitlementGet(command)) {
-          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
-        }
-        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
-          return { Item: dynamoWardrobe() };
-        }
-        if (command._op === 'Query') {
-          return {
-            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
-          };
-        }
-        throw new Error(`unexpected op ${command._op}`);
-      });
-
-      const look = {
-        name: 'Look',
-        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
-      };
-      const recommender: OutfitRecommender = {
-        recommend: jest.fn(async () => Array.from({ length: 12 }, () => look)),
-      };
-
-      const result = asResult(
-        await handleRecommendations(event(), { recommender }),
-      );
-
-      expect(result.statusCode).toBe(200);
-      const recommendations = (bodyOf(result) as OutfitRecommendationsResponse)
-        .recommendations;
-      expect(recommendations).toHaveLength(12);
-      expect(recommendations.length).toBeGreaterThan(8);
-      expect(recommender.recommend).toHaveBeenCalledWith(
-        expect.any(Array),
         { maxRecommendations: MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE },
       );
     });
 
-    it('does not apply OUTFIT_SUGGESTION_CAP or leftover BASIC env to Basic', async () => {
-      process.env.OUTFIT_SUGGESTION_CAP = '3';
-      process.env.OUTFIT_SUGGESTION_CAP_BASIC = '2';
-      mockSend.mockImplementation(async (command: Command) => {
-        if (isEntitlementGet(command)) {
-          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
+    describe.each(['BASIC', 'PREMIUM'] as const)(
+      '%s is not product-capped (WARDROBE-235)',
+      (tier) => {
+        function mockPaidDressWardrobe() {
+          mockSend.mockImplementation(async (command: Command) => {
+            if (isEntitlementGet(command)) {
+              return entitlementReadResult(dynamoEntitlement(OWNER_ID, tier));
+            }
+            if (
+              command._op === 'Get' &&
+              command.input.Key?.SK?.startsWith('WARDROBE#')
+            ) {
+              return { Item: dynamoWardrobe() };
+            }
+            if (command._op === 'Query') {
+              return {
+                Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+              };
+            }
+            throw new Error(`unexpected op ${command._op}`);
+          });
         }
-        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
-          return { Item: dynamoWardrobe() };
-        }
-        if (command._op === 'Query') {
-          return {
-            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+
+        it('does not truncate at the old product cap of 8', async () => {
+          mockPaidDressWardrobe();
+
+          const look = {
+            name: 'Look',
+            items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
           };
-        }
-        throw new Error(`unexpected op ${command._op}`);
-      });
-
-      const look = {
-        name: 'Look',
-        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
-      };
-      const recommender: OutfitRecommender = {
-        recommend: jest.fn(async () => Array.from({ length: 10 }, () => look)),
-      };
-
-      const result = asResult(
-        await handleRecommendations(event(), { recommender }),
-      );
-
-      expect(result.statusCode).toBe(200);
-      expect(
-        (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
-      ).toHaveLength(10);
-    });
-
-    it('keeps Premium at 8 when more looks are produced', async () => {
-      mockOwnedWardrobeThen(async (command) => {
-        if (command._op === 'Query') {
-          return {
-            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          const recommender: OutfitRecommender = {
+            recommend: jest.fn(async () => Array.from({ length: 12 }, () => look)),
           };
-        }
-        throw new Error(`unexpected op ${command._op}`);
-      });
 
-      const look = {
-        name: 'Look',
-        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
-      };
-      const recommender: OutfitRecommender = {
-        recommend: jest.fn(async () => Array.from({ length: 12 }, () => look)),
-      };
+          const result = asResult(
+            await handleRecommendations(event(), { recommender }),
+          );
 
-      const result = asResult(
-        await handleRecommendations(event(), { recommender }),
-      );
+          expect(result.statusCode).toBe(200);
+          const recommendations = (bodyOf(result) as OutfitRecommendationsResponse)
+            .recommendations;
+          expect(recommendations).toHaveLength(12);
+          expect(recommendations.length).toBeGreaterThan(8);
+          expect(recommender.recommend).toHaveBeenCalledWith(expect.any(Array), {
+            maxRecommendations: MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE,
+          });
+        });
 
-      expect(result.statusCode).toBe(200);
-      expect(
-        (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
-      ).toHaveLength(8);
-    });
+        it('ignores leftover OUTFIT_SUGGESTION_CAP and OUTFIT_SUGGESTION_CAP_BASIC', async () => {
+          process.env.OUTFIT_SUGGESTION_CAP = '3';
+          process.env.OUTFIT_SUGGESTION_CAP_BASIC = '2';
+          mockPaidDressWardrobe();
 
-    it('applies OUTFIT_SUGGESTION_CAP to Premium', async () => {
-      process.env.OUTFIT_SUGGESTION_CAP = '3';
-      mockOwnedWardrobeThen(async (command) => {
-        if (command._op === 'Query') {
-          return {
-            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          const look = {
+            name: 'Look',
+            items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
           };
-        }
-        throw new Error(`unexpected op ${command._op}`);
-      });
+          const recommender: OutfitRecommender = {
+            recommend: jest.fn(async () => Array.from({ length: 10 }, () => look)),
+          };
 
-      const look = {
-        name: 'Look',
-        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
-      };
-      const recommender: OutfitRecommender = {
-        recommend: jest.fn(async () => [look, look, look, look]),
-      };
+          const result = asResult(
+            await handleRecommendations(event(), { recommender }),
+          );
 
-      const result = asResult(
-        await handleRecommendations(event(), { recommender }),
-      );
+          expect(result.statusCode).toBe(200);
+          expect(
+            (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
+          ).toHaveLength(10);
+        });
 
-      expect(result.statusCode).toBe(200);
-      expect(
-        (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
-      ).toHaveLength(3);
-    });
+        it('enforces the internal 256 bound', async () => {
+          mockPaidDressWardrobe();
+
+          const look = {
+            name: 'Look',
+            items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
+          };
+          const recommender: OutfitRecommender = {
+            recommend: jest.fn(async () =>
+              Array.from(
+                { length: MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE + 20 },
+                () => look,
+              ),
+            ),
+          };
+
+          const result = asResult(
+            await handleRecommendations(event(), { recommender }),
+          );
+
+          expect(result.statusCode).toBe(200);
+          expect(
+            (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
+          ).toHaveLength(MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE);
+        });
+      },
+    );
 
     it('returns 404 WARDROBE_NOT_FOUND for another user wardrobe', async () => {
       mockSend.mockResolvedValue({});

@@ -9,9 +9,9 @@ import {
   OutfitRecommendation,
 } from '../../shared/types';
 
-import { DEFAULT_OUTFIT_SUGGESTION_CAP } from '../../shared/outfit-suggestion-cap';
+import { MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE } from '../../shared/outfit-suggestion-cap';
 
-export const MAX_RECOMMENDATIONS = DEFAULT_OUTFIT_SUGGESTION_CAP;
+export const MAX_RECOMMENDATIONS = MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE;
 export const MAX_ITEMS_PER_SLOT = 6;
 
 export interface RecommendOptions {
