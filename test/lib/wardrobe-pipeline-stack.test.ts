@@ -176,16 +176,15 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
     expect(env.STRIPE_PORTAL_CONFIGURATION_ID).toBe('bpc_pipeline');
   });
 
-  test('bakes outfit suggestion caps into the Synth project when set', () => {
+  test('bakes the Premium outfit suggestion cap into the Synth project when set', () => {
     const template = synthPipeline({
       ...pipelineSource,
       outfitSuggestionCap: '8',
-      outfitSuggestionCapBasic: '2',
     });
 
     const env = synthStepEnv(template);
     expect(env.OUTFIT_SUGGESTION_CAP).toBe('8');
-    expect(env.OUTFIT_SUGGESTION_CAP_BASIC).toBe('2');
+    expect(env).not.toHaveProperty('OUTFIT_SUGGESTION_CAP_BASIC');
   });
 
   test('omits Stripe synth env vars when config does not set them', () => {

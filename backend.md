@@ -1275,7 +1275,7 @@ GET    /wardrobes/{wardrobeId}/worn-on
 GET /wardrobes/{wardrobeId}/recommendations
 ```
 
-Owner-only. Paid tiers (Basic and Premium) only (WARDROBE-229). Free is `403 ENTITLEMENT_AI_REQUIRED` with the existing envelope. Returns suggested outfits as `{ recommendations: [ { name?, items: [{ itemId, slot }] } ] }`. Does not persist outfits. The per-response cap is configurable (`outfitSuggestionCap` / `OUTFIT_SUGGESTION_CAP`, default 8). Basic uses `outfitSuggestionCapBasic` / `OUTFIT_SUGGESTION_CAP_BASIC` when set and otherwise the same default as Premium.
+Owner-only. Paid tiers (Basic and Premium) only (WARDROBE-229 / WARDROBE-233). Free is `403 ENTITLEMENT_AI_REQUIRED` with the existing envelope. Returns suggested outfits as `{ recommendations: [ { name?, items: [{ itemId, slot }] } ] }`. Does not persist outfits. Premium is capped per response (`outfitSuggestionCap` / `OUTFIT_SUGGESTION_CAP`, default 8). Basic is not product-capped; `outfitSuggestionCapBasic` / `OUTFIT_SUGGESTION_CAP_BASIC` is removed. An internal non-tier safety ceiling (`MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE` = 256) keeps a single Lambda body bounded. There is no per-day or per-month usage counter.
 
 ### Related shopping links (WARDROBE-96)
 

@@ -5,6 +5,7 @@ import { extractRecommendations } from './http-recommender';
 import {
   MAX_RECOMMENDATIONS,
   OutfitRecommender,
+  RecommendOptions,
   RecommendableItem,
   createRuleBasedRecommender,
   hasWearableCore,
@@ -41,15 +42,17 @@ export interface OpenAiOutfitRecommenderOptions {
   fallback?: OutfitRecommender;
 }
 
-const SYSTEM_PROMPT = [
-  'You are a wardrobe stylist. Suggest wearable outfits from ONLY the supplied clothing items.',
-  'Return JSON: {"recommendations":[{"name":"optional look name","items":[{"itemId":"...","slot":"TOP"}]}]}',
-  `slot must be one of ${CLOTHING_CATEGORIES.join(', ')} and must match the item's slot.`,
-  'Each outfit must be wearable: TOP+BOTTOM, or DRESS. Optionally add SHOES, OUTERWEAR, ACCESSORY, BAG.',
-  'Use only itemId values from the input. Prefer colour-compatible combinations.',
-  `Return at most ${MAX_RECOMMENDATIONS} distinct outfits.`,
-  'Never invent items. Never persist outfits.',
-].join(' ');
+function systemPrompt(maxRecommendations = MAX_RECOMMENDATIONS): string {
+  return [
+    'You are a wardrobe stylist. Suggest wearable outfits from ONLY the supplied clothing items.',
+    'Return JSON: {"recommendations":[{"name":"optional look name","items":[{"itemId":"...","slot":"TOP"}]}]}',
+    `slot must be one of ${CLOTHING_CATEGORIES.join(', ')} and must match the item's slot.`,
+    'Each outfit must be wearable: TOP+BOTTOM, or DRESS. Optionally add SHOES, OUTERWEAR, ACCESSORY, BAG.',
+    'Use only itemId values from the input. Prefer colour-compatible combinations.',
+    `Return at most ${maxRecommendations} distinct outfits.`,
+    'Never invent items. Never persist outfits.',
+  ].join(' ');
+}
 
 /**
  * OpenAI chat/text recommender (WARDROBE-28).
@@ -64,16 +67,23 @@ export function createOpenAiOutfitRecommender(
   const fallback = options.fallback ?? createRuleBasedRecommender();
 
   return {
-    async recommend(items: RecommendableItem[]): Promise<OutfitRecommendation[]> {
+    async recommend(
+      items: RecommendableItem[],
+      options?: RecommendOptions,
+    ): Promise<OutfitRecommendation[]> {
       if (!hasWearableCore(items)) {
         return [];
       }
+
+      const maxRecommendations =
+        options?.maxRecommendations ?? MAX_RECOMMENDATIONS;
 
       try {
         const recommendations = await recommendWithOpenAi(
           items,
           fetchSecret,
           httpPost,
+          maxRecommendations,
         );
         if (recommendations.length > 0) {
           return recommendations;
@@ -82,13 +92,13 @@ export function createOpenAiOutfitRecommender(
           'OpenAI recommender returned no usable outfits; falling back to rule-based',
           { itemCount: items.length },
         );
-        return fallback.recommend(items);
+        return fallback.recommend(items, { maxRecommendations });
       } catch (error) {
         logger.warn('OpenAI recommender failed; falling back to rule-based', {
           itemCount: items.length,
           error: error instanceof Error ? error.message : 'unknown',
         });
-        return fallback.recommend(items);
+        return fallback.recommend(items, { maxRecommendations });
       }
     },
   };
@@ -198,11 +208,12 @@ export function recommendationsFromOpenAiResponse(
 
 /**
  * Drop invented item IDs, force wardrobe slots, require a wearable core,
- * de-dupe, and cap at MAX_RECOMMENDATIONS.
+ * de-dupe, and cap at maxRecommendations (Premium default: MAX_RECOMMENDATIONS).
  */
 export function sanitizeRecommendations(
   recommendations: OutfitRecommendation[],
   wardrobeItems: RecommendableItem[],
+  maxRecommendations = MAX_RECOMMENDATIONS,
 ): OutfitRecommendation[] {
   const byId = new Map(wardrobeItems.map((item) => [item.itemId, item]));
   const seen = new Set<string>();
@@ -239,7 +250,7 @@ export function sanitizeRecommendations(
       next.name = recommendation.name.trim();
     }
     sanitized.push(next);
-    if (sanitized.length >= MAX_RECOMMENDATIONS) {
+    if (sanitized.length >= maxRecommendations) {
       break;
     }
   }
@@ -251,6 +262,7 @@ async function recommendWithOpenAi(
   items: RecommendableItem[],
   fetchSecret: () => Promise<OpenAiRecommenderSecret>,
   httpPost: FetchLike,
+  maxRecommendations = MAX_RECOMMENDATIONS,
 ): Promise<OutfitRecommendation[]> {
   const secret = await fetchSecret();
   const response = await httpPost(secret.endpoint, {
@@ -265,12 +277,12 @@ async function recommendWithOpenAi(
       temperature: 0.4,
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt(maxRecommendations) },
         {
           role: 'user',
           content: JSON.stringify({
             items,
-            maxRecommendations: MAX_RECOMMENDATIONS,
+            maxRecommendations,
           }),
         },
       ],
@@ -293,7 +305,7 @@ async function recommendWithOpenAi(
     throw new Error('OpenAI recommender response was not a recommendation list');
   }
 
-  return sanitizeRecommendations(extracted, items);
+  return sanitizeRecommendations(extracted, items, maxRecommendations);
 }
 
 async function loadOpenAiRecommenderSecret(): Promise<OpenAiRecommenderSecret> {

@@ -1127,7 +1127,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     );
   });
 
-  test('recommendations Lambda can take a Basic outfit-suggestion cap from CDK context', () => {
+  test('recommendations Lambda takes the Premium outfit-suggestion cap and ignores leftover Basic context', () => {
     const custom = synthTemplate('dev-cap', {
       outfitSuggestionCap: '8',
       outfitSuggestionCapBasic: '2',
@@ -1143,8 +1143,10 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(recommendationsFn?.Properties.Environment?.Variables).toEqual(
       expect.objectContaining({
         OUTFIT_SUGGESTION_CAP: '8',
-        OUTFIT_SUGGESTION_CAP_BASIC: '2',
       }),
+    );
+    expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'OUTFIT_SUGGESTION_CAP_BASIC',
     );
   });
 

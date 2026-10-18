@@ -187,6 +187,27 @@ describe('sanitizeRecommendations', () => {
       ),
     ).toEqual([]);
   });
+
+  it('caps at MAX_RECOMMENDATIONS by default and can keep more when asked', () => {
+    const manyWardrobe: RecommendableItem[] = [];
+    const many: Array<{
+      name: string;
+      items: Array<{ itemId: string; slot: 'TOP' | 'BOTTOM' }>;
+    }> = [];
+    for (let i = 0; i < 10; i += 1) {
+      manyWardrobe.push(item(`item_top_${i}`, 'TOP', ['NAVY']));
+      manyWardrobe.push(item(`item_bottom_${i}`, 'BOTTOM', ['BEIGE']));
+      many.push({
+        name: `Look ${i}`,
+        items: [
+          { itemId: `item_top_${i}`, slot: 'TOP' },
+          { itemId: `item_bottom_${i}`, slot: 'BOTTOM' },
+        ],
+      });
+    }
+    expect(sanitizeRecommendations(many, manyWardrobe)).toHaveLength(8);
+    expect(sanitizeRecommendations(many, manyWardrobe, 12)).toHaveLength(10);
+  });
 });
 
 describe('createOpenAiOutfitRecommender', () => {

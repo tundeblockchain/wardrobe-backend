@@ -88,9 +88,6 @@ export class WardrobePipelineStack extends cdk.Stack {
     if (config.outfitSuggestionCap) {
       synthEnv.OUTFIT_SUGGESTION_CAP = config.outfitSuggestionCap;
     }
-    if (config.outfitSuggestionCapBasic) {
-      synthEnv.OUTFIT_SUGGESTION_CAP_BASIC = config.outfitSuggestionCapBasic;
-    }
 
     const synthCommand = [
       `npx cdk synth --app "${CDK_APP}"`,

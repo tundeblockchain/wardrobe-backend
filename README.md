@@ -32,7 +32,7 @@ Working in this first cut:
 - Move / copy a clothing item to another owned wardrobe (WARDROBE-118; Flutter WARDROBE-119)
 - Outfit CRUD (nested under a wardrobe) plus async try-on / render (`PENDING` → worker → `READY` / `FAILED`). `GET /outfits` lists across the caller's wardrobes (WARDROBE-173).
 - Outfit worn-on log (date-only entries for calendar / habit; Flutter WARDROBE-121)
-- Owner-only outfit recommendations for paid tiers (Basic and Premium; WARDROBE-229; derived, never auto-saved)
+- Owner-only outfit recommendations for paid tiers (Basic and Premium; WARDROBE-229 / WARDROBE-233; derived, never auto-saved). Basic is not product-capped; Premium stays at 8 looks per response.
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
@@ -1693,7 +1693,7 @@ The item must have an image (`originalKey` preferred, else `processedKey`). The 
 
 Identity comes from the Firebase authorizer (`getUserId`). The wardrobe must belong to that user. Suggestions are derived from READY clothing items and are **never written** as outfits — Flutter can `POST /wardrobes/{wardrobeId}/outfits` if the user saves one.
 
-**Entitlement (WARDROBE-229):** Basic and Premium are allowed (`assertPaidOutfitSuggestions` on the existing `paidTier` / entitlement record). Free is rejected with the existing `403 ENTITLEMENT_AI_REQUIRED` envelope (`{ "error": { "code", "message" } }`, message unchanged). Virtual Try On stays Premium-only (`assertPremiumAi`). `GET /me` feature flags are unchanged (`otherAi` stays Premium-only). `GET /billing/plans` does not list this feature and is unchanged.
+**Entitlement (WARDROBE-229 / WARDROBE-233):** Basic and Premium are allowed (`assertPaidOutfitSuggestions` on the existing `paidTier` / entitlement record). Free is rejected with the existing `403 ENTITLEMENT_AI_REQUIRED` envelope (`{ "error": { "code", "message" } }`, message unchanged). Virtual Try On stays Premium-only (`assertPremiumAi`). `GET /me` feature flags are unchanged (`otherAi` stays Premium-only). `GET /billing/plans` does not list this feature and is unchanged.
 
 ```http
 GET /wardrobes/{wardrobeId}/recommendations
@@ -1730,14 +1730,17 @@ Category and colour come from AI metadata when present (`ai.detectedCategory`, `
 
 The recommendations Lambda sets `RECOMMENDER_STRATEGY=openai`. Override at synth/deploy with CDK context `recommenderStrategy` or env `RECOMMENDER_STRATEGY` (`openai` / `rules` / `http`).
 
-**Per-response cap:** configurable, same wiring as other CDK context / env caps (for example `supportContactRateLimit`). Do not invent a Basic-only number in code — leave Basic unset until product sets it.
+**Per-response cap (WARDROBE-233):** this is a look-count limit on a single `GET` response, not a per-day or per-month usage counter.
 
-| Context | Env | Default |
-| --- | --- | --- |
-| `outfitSuggestionCap` | `OUTFIT_SUGGESTION_CAP` | `8` (today's Premium / `MAX_RECOMMENDATIONS` behaviour) |
-| `outfitSuggestionCapBasic` | `OUTFIT_SUGGESTION_CAP_BASIC` | unset — Basic uses `outfitSuggestionCap` / `8` |
+| Caller | Limit |
+| --- | --- |
+| Premium | Configurable `outfitSuggestionCap` / `OUTFIT_SUGGESTION_CAP`, default `8` (today's `MAX_RECOMMENDATIONS` behaviour). Invalid or empty values fall back to `8`. |
+| Basic | Not product-capped. `outfitSuggestionCapBasic` / `OUTFIT_SUGGESTION_CAP_BASIC` is removed and is ignored if still set in the environment. |
+| Free | Not served — `403 ENTITLEMENT_AI_REQUIRED`. |
 
-Set the Basic key at synth/deploy (`-c outfitSuggestionCapBasic=N` or `OUTFIT_SUGGESTION_CAP_BASIC=N`) when product picks a value. Invalid or empty values fall back to the shared / Premium default. The recommendations Lambda receives these as environment variables. No SSM parameter and no secrets.
+An internal constant `MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE` (`256`) is a non-tier safety ceiling so one Lambda response cannot grow unbounded (OpenAI / HTTP vendor lists). It is not CDK context, not an env var, and not an entitlement. Premium still uses the product cap of 8, which is lower. Rule-based generation is already bounded by `MAX_ITEMS_PER_SLOT` (at most a few dozen unique looks).
+
+The recommendations Lambda receives `OUTFIT_SUGGESTION_CAP` only. No SSM parameter and no secrets.
 
 **OpenAI secret** `wardrobe/{stage}/ai-recommender`:
 
@@ -3137,8 +3140,7 @@ Public website contact (WARDROBE-143) — CDK context / env, empty-origins defau
 | `SUPPORT_CONTACT_RATE_LIMIT` / `supportContactRateLimit` | `5` | Max anonymous POSTs per IP per window |
 | `SUPPORT_CONTACT_RATE_WINDOW_SECONDS` / `supportContactRateWindowSeconds` | `3600` | Fixed window length |
 | `UPLOAD_ALLOWED_ORIGINS` / `uploadAllowedOrigins` | Netlify site, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173` | S3 media-bucket CORS origins for browser presigned PUTs. Never `*` |
-| `OUTFIT_SUGGESTION_CAP` / `outfitSuggestionCap` | `8` | Shared / Premium per-response outfit-suggestion cap (WARDROBE-229). Today's Premium behaviour. |
-| `OUTFIT_SUGGESTION_CAP_BASIC` / `outfitSuggestionCapBasic` | unset (falls back to `OUTFIT_SUGGESTION_CAP` / `8`) | Optional Basic override. Leave unset until product sets a value. |
+| `OUTFIT_SUGGESTION_CAP` / `outfitSuggestionCap` | `8` | Premium per-response outfit-suggestion cap (WARDROBE-229 / WARDROBE-233). Today's Premium behaviour. Basic is not product-capped; `OUTFIT_SUGGESTION_CAP_BASIC` is removed. |
 | `BILLING_WEB_ORIGIN` / `billingWebOrigin` | cdk.json context; TEMPORARY fallback if unset | Web origin for Stripe Checkout success/cancel URLs and Billing Portal `return_url`. Server-built. Set in cdk.json context `billingWebOrigin`. |
 | `STRIPE_PORTAL_CONFIGURATION_ID` / `stripePortalConfigurationId` | unset | Optional Stripe Billing Portal configuration id so Basic ↔ Premium switches are allowed |
 

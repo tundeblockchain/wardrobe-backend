@@ -148,29 +148,24 @@ describe('resolveAppConfig', () => {
     expect(config.stripePortalConfigurationId).toBe('bpc_env');
   });
 
-  it('prefers CDK context over env for outfit suggestion caps', () => {
+  it('prefers CDK context over env for the Premium outfit suggestion cap', () => {
     process.env.OUTFIT_SUGGESTION_CAP = '9';
-    process.env.OUTFIT_SUGGESTION_CAP_BASIC = '4';
     const config = resolveAppConfig({
-      tryGetContext: (key: string) => {
-        if (key === 'outfitSuggestionCap') return '8';
-        if (key === 'outfitSuggestionCapBasic') return '2';
-        return undefined;
-      },
+      tryGetContext: (key: string) =>
+        key === 'outfitSuggestionCap' ? '8' : undefined,
     });
     expect(config.outfitSuggestionCap).toBe('8');
-    expect(config.outfitSuggestionCapBasic).toBe('2');
+    expect(config).not.toHaveProperty('outfitSuggestionCapBasic');
   });
 
-  it('reads outfit suggestion caps from env when context is empty', () => {
+  it('reads the Premium outfit suggestion cap from env when context is empty', () => {
     process.env.OUTFIT_SUGGESTION_CAP = '8';
-    process.env.OUTFIT_SUGGESTION_CAP_BASIC = '3';
     const config = resolveAppConfig({ tryGetContext: () => undefined });
     expect(config.outfitSuggestionCap).toBe('8');
-    expect(config.outfitSuggestionCapBasic).toBe('3');
+    expect(config).not.toHaveProperty('outfitSuggestionCapBasic');
   });
 
-  it('leaves outfit suggestion caps undefined when context and env are empty', () => {
+  it('leaves the Premium outfit suggestion cap undefined when context and env are empty', () => {
     delete process.env.OUTFIT_SUGGESTION_CAP;
     delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
     const config = resolveAppConfig({
@@ -180,7 +175,7 @@ describe('resolveAppConfig', () => {
           : undefined,
     });
     expect(config.outfitSuggestionCap).toBeUndefined();
-    expect(config.outfitSuggestionCapBasic).toBeUndefined();
+    expect(config).not.toHaveProperty('outfitSuggestionCapBasic');
   });
 
   it('leaves stripePortalConfigurationId undefined when context and env are empty', () => {
