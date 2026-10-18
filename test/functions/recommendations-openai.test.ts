@@ -319,7 +319,9 @@ describe('createOpenAiOutfitRecommender', () => {
     await expect(recommender.recommend(wardrobe)).resolves.toEqual([
       { name: 'Fallback look', items: [{ itemId: 'item_top', slot: 'TOP' }] },
     ]);
-    expect(fallback.recommend).toHaveBeenCalledWith(wardrobe);
+    expect(fallback.recommend).toHaveBeenCalledWith(wardrobe, {
+      maxRecommendations: 8,
+    });
   });
 
   it('falls back to rule-based on a missing secret or parse failure', async () => {

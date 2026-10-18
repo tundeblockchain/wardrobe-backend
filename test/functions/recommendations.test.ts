@@ -1,6 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import { DynamoItem, OutfitRecommendationsResponse } from '../../src/shared/types';
 import { OutfitRecommender } from '../../src/functions/recommendations/strategy';
+import { MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE } from '../../src/shared/outfit-suggestion-cap';
 
 const mockSend = jest.fn();
 
@@ -444,9 +445,10 @@ describe('recommendations handler (WARDROBE-23)', () => {
           },
         ],
       });
-      expect(recommender.recommend).toHaveBeenCalledWith([
-        expect.objectContaining({ itemId: DRESS_ITEM_ID, slot: 'DRESS' }),
-      ]);
+      expect(recommender.recommend).toHaveBeenCalledWith(
+        [expect.objectContaining({ itemId: DRESS_ITEM_ID, slot: 'DRESS' })],
+        { maxRecommendations: 8 },
+      );
     });
 
     it('does not truncate Basic at the old cap of 8', async () => {
@@ -482,6 +484,10 @@ describe('recommendations handler (WARDROBE-23)', () => {
         .recommendations;
       expect(recommendations).toHaveLength(12);
       expect(recommendations.length).toBeGreaterThan(8);
+      expect(recommender.recommend).toHaveBeenCalledWith(
+        expect.any(Array),
+        { maxRecommendations: MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE },
+      );
     });
 
     it('does not apply OUTFIT_SUGGESTION_CAP or leftover BASIC env to Basic', async () => {
