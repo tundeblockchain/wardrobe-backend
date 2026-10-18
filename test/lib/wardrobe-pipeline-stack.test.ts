@@ -183,7 +183,7 @@ describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
       ...({
         outfitSuggestionCap: '8',
         outfitSuggestionCapBasic: '2',
-      } as AppConfig),
+      } as unknown as AppConfig),
     });
 
     const env = synthStepEnv(template);

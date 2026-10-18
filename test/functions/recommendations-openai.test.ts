@@ -346,7 +346,7 @@ describe('createOpenAiOutfitRecommender', () => {
       { name: 'Fallback look', items: [{ itemId: 'item_top', slot: 'TOP' }] },
     ]);
     expect(fallback.recommend).toHaveBeenCalledWith(wardrobe, {
-      maxRecommendations: 8,
+      maxRecommendations: MAX_RECOMMENDATIONS,
     });
   });
 
