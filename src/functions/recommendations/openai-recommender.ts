@@ -208,7 +208,8 @@ export function recommendationsFromOpenAiResponse(
 
 /**
  * Drop invented item IDs, force wardrobe slots, require a wearable core,
- * de-dupe, and cap at maxRecommendations (Premium default: MAX_RECOMMENDATIONS).
+ * de-dupe, and cap at maxRecommendations (default:
+ * MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE).
  */
 export function sanitizeRecommendations(
   recommendations: OutfitRecommendation[],

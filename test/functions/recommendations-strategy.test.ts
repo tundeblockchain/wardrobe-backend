@@ -147,7 +147,7 @@ describe('recommendFromReadyItems', () => {
     ]);
   });
 
-  it('caps the number of suggestions and stays deterministic', () => {
+  it('stays deterministic and can return more than the old product cap of 8', () => {
     const items: RecommendableItem[] = [];
     for (let i = 0; i < 8; i += 1) {
       items.push(item(`item_top_${i}`, 'TOP', ['BLACK']));
@@ -156,19 +156,22 @@ describe('recommendFromReadyItems', () => {
 
     const first = recommendFromReadyItems(items);
     const second = recommendFromReadyItems(items);
-    expect(first).toHaveLength(MAX_RECOMMENDATIONS);
+    expect(first.length).toBeGreaterThan(8);
+    expect(first.length).toBeLessThanOrEqual(MAX_RECOMMENDATIONS);
     expect(second).toEqual(first);
   });
 
-  it('can return more than the Premium cap of 8 when a higher max is passed', () => {
+  it('honours an explicit max and still stays under the internal 256 bound', () => {
     const items: RecommendableItem[] = [];
     for (let i = 0; i < 8; i += 1) {
       items.push(item(`item_top_${i}`, 'TOP', ['BLACK']));
       items.push(item(`item_bottom_${i}`, 'BOTTOM', ['WHITE']));
     }
 
-    const recommendations = recommendFromReadyItems(items, 20);
-    expect(recommendations.length).toBeGreaterThan(MAX_RECOMMENDATIONS);
+    expect(recommendFromReadyItems(items, 5)).toHaveLength(5);
+    expect(recommendFromReadyItems(items).length).toBeLessThanOrEqual(
+      MAX_RECOMMENDATIONS,
+    );
   });
 
   it('does not persist or invent outfit ids', () => {

@@ -16,12 +16,8 @@ function synthTemplate(
 ): Template {
   const previousStrategy = process.env.RECOMMENDER_STRATEGY;
   const previousBgRemoval = process.env.BACKGROUND_REMOVAL_ENABLED;
-  const previousCap = process.env.OUTFIT_SUGGESTION_CAP;
-  const previousCapBasic = process.env.OUTFIT_SUGGESTION_CAP_BASIC;
   delete process.env.RECOMMENDER_STRATEGY;
   delete process.env.BACKGROUND_REMOVAL_ENABLED;
-  delete process.env.OUTFIT_SUGGESTION_CAP;
-  delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
   try {
     const app = new cdk.App({ context });
     const stack = new WardrobeStack(app, `WardrobeStack-${stage}`, { stage });
@@ -36,16 +32,6 @@ function synthTemplate(
       delete process.env.BACKGROUND_REMOVAL_ENABLED;
     } else {
       process.env.BACKGROUND_REMOVAL_ENABLED = previousBgRemoval;
-    }
-    if (previousCap === undefined) {
-      delete process.env.OUTFIT_SUGGESTION_CAP;
-    } else {
-      process.env.OUTFIT_SUGGESTION_CAP = previousCap;
-    }
-    if (previousCapBasic === undefined) {
-      delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
-    } else {
-      process.env.OUTFIT_SUGGESTION_CAP_BASIC = previousCapBasic;
     }
   }
 }
@@ -964,8 +950,10 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       expect.objectContaining({
         RECOMMENDER_STRATEGY: 'openai',
         AI_RECOMMENDER_SECRET_ARN: expect.anything(),
-        OUTFIT_SUGGESTION_CAP: '8',
       }),
+    );
+    expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'OUTFIT_SUGGESTION_CAP',
     );
     expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
       'OUTFIT_SUGGESTION_CAP_BASIC',
@@ -1122,12 +1110,14 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(recommendationsFn?.Properties.Environment?.Variables).toEqual(
       expect.objectContaining({
         RECOMMENDER_STRATEGY: 'rules',
-        OUTFIT_SUGGESTION_CAP: '8',
       }),
+    );
+    expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'OUTFIT_SUGGESTION_CAP',
     );
   });
 
-  test('recommendations Lambda takes the Premium outfit-suggestion cap and ignores leftover Basic context', () => {
+  test('recommendations Lambda ignores leftover outfit-suggestion cap context', () => {
     const custom = synthTemplate('dev-cap', {
       outfitSuggestionCap: '8',
       outfitSuggestionCapBasic: '2',
@@ -1140,14 +1130,47 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     const recommendationsFn = functions.find(
       (fn) => fn.Properties.Environment?.Variables?.AI_RECOMMENDER_SECRET_ARN,
     );
-    expect(recommendationsFn?.Properties.Environment?.Variables).toEqual(
-      expect.objectContaining({
-        OUTFIT_SUGGESTION_CAP: '8',
-      }),
+    expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'OUTFIT_SUGGESTION_CAP',
     );
     expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
       'OUTFIT_SUGGESTION_CAP_BASIC',
     );
+  });
+
+  test('recommendations Lambda ignores leftover OUTFIT_SUGGESTION_CAP env', () => {
+    const previousCap = process.env.OUTFIT_SUGGESTION_CAP;
+    const previousCapBasic = process.env.OUTFIT_SUGGESTION_CAP_BASIC;
+    process.env.OUTFIT_SUGGESTION_CAP = '8';
+    process.env.OUTFIT_SUGGESTION_CAP_BASIC = '2';
+    try {
+      const leftover = synthTemplate('dev-cap-env');
+      const functions = Object.values(
+        leftover.findResources('AWS::Lambda::Function'),
+      ) as Array<{
+        Properties: { Environment?: { Variables?: Record<string, unknown> } };
+      }>;
+      const recommendationsFn = functions.find(
+        (fn) => fn.Properties.Environment?.Variables?.AI_RECOMMENDER_SECRET_ARN,
+      );
+      expect(
+        recommendationsFn?.Properties.Environment?.Variables,
+      ).not.toHaveProperty('OUTFIT_SUGGESTION_CAP');
+      expect(
+        recommendationsFn?.Properties.Environment?.Variables,
+      ).not.toHaveProperty('OUTFIT_SUGGESTION_CAP_BASIC');
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.OUTFIT_SUGGESTION_CAP;
+      } else {
+        process.env.OUTFIT_SUGGESTION_CAP = previousCap;
+      }
+      if (previousCapBasic === undefined) {
+        delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
+      } else {
+        process.env.OUTFIT_SUGGESTION_CAP_BASIC = previousCapBasic;
+      }
+    }
   });
 
   test('media bucket CORS is PUT-only for configured origins and is not a public website', () => {

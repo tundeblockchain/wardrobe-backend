@@ -39,7 +39,6 @@ const envToContext = {
   STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'stripeLookupKeyBasicMonthly',
   STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'stripeLookupKeyPremiumMonthly',
   BILLING_WEB_ORIGIN: 'billingWebOrigin',
-  OUTFIT_SUGGESTION_CAP: 'outfitSuggestionCap',
 };
 
 for (const [envName, contextKey] of Object.entries(envToContext)) {

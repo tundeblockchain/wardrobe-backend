@@ -1,4 +1,8 @@
-import { OutfitRecommender, RecommendableItem } from '../../src/functions/recommendations/strategy';
+import {
+  MAX_RECOMMENDATIONS,
+  OutfitRecommender,
+  RecommendableItem,
+} from '../../src/functions/recommendations/strategy';
 import {
   DEFAULT_OPENAI_CHAT_ENDPOINT,
   DEFAULT_OPENAI_MODEL,
@@ -188,7 +192,7 @@ describe('sanitizeRecommendations', () => {
     ).toEqual([]);
   });
 
-  it('caps at MAX_RECOMMENDATIONS by default and can keep more when asked', () => {
+  it('does not truncate at the old product cap of 8 and honours an explicit max', () => {
     const manyWardrobe: RecommendableItem[] = [];
     const many: Array<{
       name: string;
@@ -205,8 +209,30 @@ describe('sanitizeRecommendations', () => {
         ],
       });
     }
-    expect(sanitizeRecommendations(many, manyWardrobe)).toHaveLength(8);
-    expect(sanitizeRecommendations(many, manyWardrobe, 12)).toHaveLength(10);
+    expect(sanitizeRecommendations(many, manyWardrobe)).toHaveLength(10);
+    expect(sanitizeRecommendations(many, manyWardrobe, 5)).toHaveLength(5);
+  });
+
+  it('caps sanitize at MAX_RECOMMENDATIONS when a vendor list is huge', () => {
+    const manyWardrobe: RecommendableItem[] = [];
+    const many: Array<{
+      name: string;
+      items: Array<{ itemId: string; slot: 'TOP' | 'BOTTOM' }>;
+    }> = [];
+    for (let i = 0; i < MAX_RECOMMENDATIONS + 5; i += 1) {
+      manyWardrobe.push(item(`item_top_${i}`, 'TOP', ['NAVY']));
+      manyWardrobe.push(item(`item_bottom_${i}`, 'BOTTOM', ['BEIGE']));
+      many.push({
+        name: `Look ${i}`,
+        items: [
+          { itemId: `item_top_${i}`, slot: 'TOP' },
+          { itemId: `item_bottom_${i}`, slot: 'BOTTOM' },
+        ],
+      });
+    }
+    expect(sanitizeRecommendations(many, manyWardrobe)).toHaveLength(
+      MAX_RECOMMENDATIONS,
+    );
   });
 });
 
@@ -320,7 +346,7 @@ describe('createOpenAiOutfitRecommender', () => {
       { name: 'Fallback look', items: [{ itemId: 'item_top', slot: 'TOP' }] },
     ]);
     expect(fallback.recommend).toHaveBeenCalledWith(wardrobe, {
-      maxRecommendations: 8,
+      maxRecommendations: MAX_RECOMMENDATIONS,
     });
   });
 
