@@ -6,7 +6,8 @@ import { Errors } from '../../shared/errors';
 import { errorResponse, ok } from '../../shared/http';
 import {
   applyOutfitSuggestionCap,
-  resolveOutfitSuggestionCap,
+  resolveGenerationOutfitSuggestionCap,
+  resolveResponseOutfitSuggestionCap,
 } from '../../shared/outfit-suggestion-cap';
 import { OutfitRecommendationsResponse } from '../../shared/types';
 import { createHttpOutfitRecommender } from './http-recommender';
@@ -27,8 +28,9 @@ export interface RecommendationsHandlerDeps {
  * GET /wardrobes/{wardrobeId}/recommendations
  *
  * Owner-only derived suggestions for any paid tier (Basic or Premium).
- * Free keeps `403 ENTITLEMENT_AI_REQUIRED`. Never persists outfits —
- * Flutter can POST /wardrobes/{wardrobeId}/outfits if the user saves one.
+ * Free keeps `403 ENTITLEMENT_AI_REQUIRED`. Basic is not product-capped
+ * (WARDROBE-233); Premium stays at OUTFIT_SUGGESTION_CAP / 8. Never persists
+ * outfits — Flutter can POST /wardrobes/{wardrobeId}/outfits if the user saves one.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -56,8 +58,13 @@ export async function handleRecommendations(
     await getOwnedWardrobe(userId, wardrobeId);
     const entitlement = await assertPaidOutfitSuggestions(userId);
     const recommendations = applyOutfitSuggestionCap(
-      await listRecommendations(userId, wardrobeId, deps),
-      resolveOutfitSuggestionCap(entitlement.tier),
+      await listRecommendations(
+        userId,
+        wardrobeId,
+        deps,
+        resolveGenerationOutfitSuggestionCap(entitlement.tier),
+      ),
+      resolveResponseOutfitSuggestionCap(entitlement.tier),
     );
     const body: OutfitRecommendationsResponse = { recommendations };
     return ok(body);
@@ -70,6 +77,7 @@ async function listRecommendations(
   userId: string,
   wardrobeId: string,
   deps: RecommendationsHandlerDeps,
+  maxRecommendations: number,
 ) {
   await getOwnedWardrobe(userId, wardrobeId);
 
@@ -85,7 +93,7 @@ async function listRecommendations(
     .filter((item): item is NonNullable<typeof item> => item !== undefined);
 
   const recommender = deps.recommender ?? createDefaultRecommender();
-  return recommender.recommend(items);
+  return recommender.recommend(items, { maxRecommendations });
 }
 
 /**

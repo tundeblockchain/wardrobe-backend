@@ -1,6 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import { DynamoItem, OutfitRecommendationsResponse } from '../../src/shared/types';
 import { OutfitRecommender } from '../../src/functions/recommendations/strategy';
+import { MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE } from '../../src/shared/outfit-suggestion-cap';
 
 const mockSend = jest.fn();
 
@@ -444,12 +445,53 @@ describe('recommendations handler (WARDROBE-23)', () => {
           },
         ],
       });
-      expect(recommender.recommend).toHaveBeenCalledWith([
-        expect.objectContaining({ itemId: DRESS_ITEM_ID, slot: 'DRESS' }),
-      ]);
+      expect(recommender.recommend).toHaveBeenCalledWith(
+        [expect.objectContaining({ itemId: DRESS_ITEM_ID, slot: 'DRESS' })],
+        { maxRecommendations: 8 },
+      );
     });
 
-    it('caps Basic suggestions using OUTFIT_SUGGESTION_CAP_BASIC', async () => {
+    it('does not truncate Basic at the old cap of 8', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Query') {
+          return {
+            Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const look = {
+        name: 'Look',
+        items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
+      };
+      const recommender: OutfitRecommender = {
+        recommend: jest.fn(async () => Array.from({ length: 12 }, () => look)),
+      };
+
+      const result = asResult(
+        await handleRecommendations(event(), { recommender }),
+      );
+
+      expect(result.statusCode).toBe(200);
+      const recommendations = (bodyOf(result) as OutfitRecommendationsResponse)
+        .recommendations;
+      expect(recommendations).toHaveLength(12);
+      expect(recommendations.length).toBeGreaterThan(8);
+      expect(recommender.recommend).toHaveBeenCalledWith(
+        expect.any(Array),
+        { maxRecommendations: MAX_OUTFIT_SUGGESTIONS_PER_RESPONSE },
+      );
+    });
+
+    it('does not apply OUTFIT_SUGGESTION_CAP or leftover BASIC env to Basic', async () => {
+      process.env.OUTFIT_SUGGESTION_CAP = '3';
       process.env.OUTFIT_SUGGESTION_CAP_BASIC = '2';
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
@@ -471,7 +513,7 @@ describe('recommendations handler (WARDROBE-23)', () => {
         items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
       };
       const recommender: OutfitRecommender = {
-        recommend: jest.fn(async () => [look, look, look, look]),
+        recommend: jest.fn(async () => Array.from({ length: 10 }, () => look)),
       };
 
       const result = asResult(
@@ -481,17 +523,11 @@ describe('recommendations handler (WARDROBE-23)', () => {
       expect(result.statusCode).toBe(200);
       expect(
         (bodyOf(result) as OutfitRecommendationsResponse).recommendations,
-      ).toHaveLength(2);
+      ).toHaveLength(10);
     });
 
-    it('falls Basic back to the current Premium cap when Basic config is unset', async () => {
-      mockSend.mockImplementation(async (command: Command) => {
-        if (isEntitlementGet(command)) {
-          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'BASIC'));
-        }
-        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
-          return { Item: dynamoWardrobe() };
-        }
+    it('keeps Premium at 8 when more looks are produced', async () => {
+      mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Query') {
           return {
             Items: [dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' })],
@@ -505,7 +541,7 @@ describe('recommendations handler (WARDROBE-23)', () => {
         items: [{ itemId: DRESS_ITEM_ID, slot: 'DRESS' as const }],
       };
       const recommender: OutfitRecommender = {
-        recommend: jest.fn(async () => Array.from({ length: 10 }, () => look)),
+        recommend: jest.fn(async () => Array.from({ length: 12 }, () => look)),
       };
 
       const result = asResult(

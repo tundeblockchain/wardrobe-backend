@@ -14,6 +14,10 @@ import { DEFAULT_OUTFIT_SUGGESTION_CAP } from '../../shared/outfit-suggestion-ca
 export const MAX_RECOMMENDATIONS = DEFAULT_OUTFIT_SUGGESTION_CAP;
 export const MAX_ITEMS_PER_SLOT = 6;
 
+export interface RecommendOptions {
+  maxRecommendations?: number;
+}
+
 /** Wearable core: TOP+BOTTOM, or DRESS. Used to skip vendor calls and empty lists. */
 export function hasWearableCore(
   items: Array<{ slot: ClothingCategory }>,
@@ -32,7 +36,10 @@ export interface RecommendableItem {
 }
 
 export interface OutfitRecommender {
-  recommend(items: RecommendableItem[]): Promise<OutfitRecommendation[]>;
+  recommend(
+    items: RecommendableItem[],
+    options?: RecommendOptions,
+  ): Promise<OutfitRecommendation[]>;
 }
 
 const NEUTRAL_COLOURS = new Set<ClothingColour>([
@@ -70,14 +77,23 @@ const COOL_COLOURS = new Set<ClothingColour>([
  */
 export function createRuleBasedRecommender(): OutfitRecommender {
   return {
-    recommend(items: RecommendableItem[]): Promise<OutfitRecommendation[]> {
-      return Promise.resolve(recommendFromReadyItems(items));
+    recommend(
+      items: RecommendableItem[],
+      options?: RecommendOptions,
+    ): Promise<OutfitRecommendation[]> {
+      return Promise.resolve(
+        recommendFromReadyItems(
+          items,
+          options?.maxRecommendations ?? MAX_RECOMMENDATIONS,
+        ),
+      );
     },
   };
 }
 
 export function recommendFromReadyItems(
   items: RecommendableItem[],
+  maxRecommendations = MAX_RECOMMENDATIONS,
 ): OutfitRecommendation[] {
   const bySlot = groupBySlot(items);
   const tops = takeStable(bySlot.TOP);
@@ -132,7 +148,7 @@ export function recommendFromReadyItems(
     }
     seen.add(candidate.signature);
     recommendations.push(candidate.recommendation);
-    if (recommendations.length >= MAX_RECOMMENDATIONS) {
+    if (recommendations.length >= maxRecommendations) {
       break;
     }
   }

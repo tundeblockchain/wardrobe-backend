@@ -160,6 +160,17 @@ describe('recommendFromReadyItems', () => {
     expect(second).toEqual(first);
   });
 
+  it('can return more than the Premium cap of 8 when a higher max is passed', () => {
+    const items: RecommendableItem[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      items.push(item(`item_top_${i}`, 'TOP', ['BLACK']));
+      items.push(item(`item_bottom_${i}`, 'BOTTOM', ['WHITE']));
+    }
+
+    const recommendations = recommendFromReadyItems(items, 20);
+    expect(recommendations.length).toBeGreaterThan(MAX_RECOMMENDATIONS);
+  });
+
   it('does not persist or invent outfit ids', () => {
     const recommendations = recommendFromReadyItems([
       item('item_top', 'TOP', ['BLACK']),
