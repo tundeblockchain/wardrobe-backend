@@ -674,7 +674,11 @@ export interface EntitlementFeatures {
   unlimitedCatalog: boolean;
   /** Virtual Try On — outfit and item render. Premium only. */
   aiTryOn: boolean;
-  /** Classify, colour, bg-removal enqueue, recommendations. Premium only. */
+  /**
+   * Classify, colour, bg-removal enqueue, and PERSONAL Virtual Profiles.
+   * Premium only. Outfit suggestions are paid-tier (Basic + Premium) and
+   * are gated by `assertPaidOutfitSuggestions`, not this flag.
+   */
   otherAi: boolean;
 }
 

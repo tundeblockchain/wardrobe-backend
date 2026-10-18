@@ -16,8 +16,12 @@ function synthTemplate(
 ): Template {
   const previousStrategy = process.env.RECOMMENDER_STRATEGY;
   const previousBgRemoval = process.env.BACKGROUND_REMOVAL_ENABLED;
+  const previousCap = process.env.OUTFIT_SUGGESTION_CAP;
+  const previousCapBasic = process.env.OUTFIT_SUGGESTION_CAP_BASIC;
   delete process.env.RECOMMENDER_STRATEGY;
   delete process.env.BACKGROUND_REMOVAL_ENABLED;
+  delete process.env.OUTFIT_SUGGESTION_CAP;
+  delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
   try {
     const app = new cdk.App({ context });
     const stack = new WardrobeStack(app, `WardrobeStack-${stage}`, { stage });
@@ -32,6 +36,16 @@ function synthTemplate(
       delete process.env.BACKGROUND_REMOVAL_ENABLED;
     } else {
       process.env.BACKGROUND_REMOVAL_ENABLED = previousBgRemoval;
+    }
+    if (previousCap === undefined) {
+      delete process.env.OUTFIT_SUGGESTION_CAP;
+    } else {
+      process.env.OUTFIT_SUGGESTION_CAP = previousCap;
+    }
+    if (previousCapBasic === undefined) {
+      delete process.env.OUTFIT_SUGGESTION_CAP_BASIC;
+    } else {
+      process.env.OUTFIT_SUGGESTION_CAP_BASIC = previousCapBasic;
     }
   }
 }
@@ -950,7 +964,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       expect.objectContaining({
         RECOMMENDER_STRATEGY: 'openai',
         AI_RECOMMENDER_SECRET_ARN: expect.anything(),
+        OUTFIT_SUGGESTION_CAP: '8',
       }),
+    );
+    expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
+      'OUTFIT_SUGGESTION_CAP_BASIC',
     );
     expect(recommendationsFn?.Properties.Environment?.Variables).not.toHaveProperty(
       'AI_RECOMMENDER_API_KEY',
@@ -1104,6 +1122,28 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(recommendationsFn?.Properties.Environment?.Variables).toEqual(
       expect.objectContaining({
         RECOMMENDER_STRATEGY: 'rules',
+        OUTFIT_SUGGESTION_CAP: '8',
+      }),
+    );
+  });
+
+  test('recommendations Lambda can take a Basic outfit-suggestion cap from CDK context', () => {
+    const custom = synthTemplate('dev-cap', {
+      outfitSuggestionCap: '8',
+      outfitSuggestionCapBasic: '2',
+    });
+    const functions = Object.values(
+      custom.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties: { Environment?: { Variables?: Record<string, unknown> } };
+    }>;
+    const recommendationsFn = functions.find(
+      (fn) => fn.Properties.Environment?.Variables?.AI_RECOMMENDER_SECRET_ARN,
+    );
+    expect(recommendationsFn?.Properties.Environment?.Variables).toEqual(
+      expect.objectContaining({
+        OUTFIT_SUGGESTION_CAP: '8',
+        OUTFIT_SUGGESTION_CAP_BASIC: '2',
       }),
     );
   });
