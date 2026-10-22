@@ -21,7 +21,7 @@
     "cdk": "cdk"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.145",

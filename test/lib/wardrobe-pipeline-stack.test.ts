@@ -71,6 +71,40 @@ function synthStepEnv(template: Template): Record<string, string> {
   return env;
 }
 
+describe('WardrobePipelineStack Node 22 build tooling (WARDROBE-238)', () => {
+  test('CodeBuild uses STANDARD_7_0 and runtime-versions nodejs 22', () => {
+    const template = synthPipeline(pipelineSource);
+    const projects = Object.values(
+      template.findResources('AWS::CodeBuild::Project'),
+    ) as Array<{
+      Properties?: {
+        Environment?: { Image?: string };
+        Source?: { BuildSpec?: string };
+      };
+    }>;
+
+    expect(projects.length).toBeGreaterThan(0);
+
+    const specsWithRuntime = projects.filter((project) =>
+      project.Properties?.Source?.BuildSpec?.includes('runtime-versions'),
+    );
+    expect(specsWithRuntime.length).toBeGreaterThan(0);
+
+    for (const project of specsWithRuntime) {
+      const spec = project.Properties?.Source?.BuildSpec ?? '';
+      expect(spec).toMatch(/nodejs['"]?\s*:\s*['"]?22\b/);
+      expect(spec).not.toMatch(/nodejs['"]?\s*:\s*['"]?20\b/);
+      expect(project.Properties?.Environment?.Image).toBe(
+        'aws/codebuild/standard:7.0',
+      );
+    }
+
+    const synthSpec = synthBuildSpec(template);
+    expect(synthSpec).toMatch(/nodejs['"]?\s*:\s*['"]?22\b/);
+    expect(synthSpec).not.toMatch(/nodejs['"]?\s*:\s*['"]?20\b/);
+  });
+});
+
 describe('WardrobePipelineStack support-contact synth env (WARDROBE-144)', () => {
   test('bakes non-empty support-contact settings into the Synth project', () => {
     const template = synthPipeline({

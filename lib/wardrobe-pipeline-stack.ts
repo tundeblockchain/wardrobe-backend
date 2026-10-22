@@ -115,7 +115,7 @@ export class WardrobePipelineStack extends cdk.Stack {
           phases: {
             install: {
               'runtime-versions': {
-                nodejs: '20',
+                nodejs: '22',
               },
             },
           },
