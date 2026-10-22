@@ -43,7 +43,7 @@ Working in this first cut:
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - AWS CLI configured with credentials
 - An AWS account that can deploy CDK stacks
 - A Firebase project (needed for authenticated routes)

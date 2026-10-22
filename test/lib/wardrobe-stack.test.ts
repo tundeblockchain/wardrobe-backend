@@ -36,6 +36,35 @@ function synthTemplate(
   }
 }
 
+describe('WardrobeStack Node 22 Lambda runtimes (WARDROBE-238)', () => {
+  test('application Lambdas stay on nodejs22.x', () => {
+    const template = synthTemplate('dev');
+    const functions = Object.values(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<{
+      Properties?: {
+        Runtime?: string;
+        Environment?: { Variables?: Record<string, unknown> };
+      };
+    }>;
+
+    const applicationFns = functions.filter(
+      (fn) =>
+        fn.Properties?.Environment?.Variables?.POWERTOOLS_SERVICE_NAME ===
+        'wardrobe-backend',
+    );
+
+    expect(applicationFns.length).toBeGreaterThan(0);
+    for (const fn of applicationFns) {
+      expect(fn.Properties?.Runtime).toBe('nodejs22.x');
+    }
+
+    for (const fn of functions) {
+      expect(fn.Properties?.Runtime).not.toBe('nodejs20.x');
+    }
+  });
+});
+
 describe('WardrobeStack foundation (WARDROBE-4)', () => {
   const template = synthTemplate('dev');
 
