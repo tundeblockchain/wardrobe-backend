@@ -772,6 +772,50 @@ export interface SharePreview {
   expiresAt: string;
 }
 
+/**
+ * Per-user wish-list item (WARDROBE-244). Own entity — never an ITEM with
+ * an owned flag. Keyed `USER#{uid} / WISH#{wishId}`. Does not count toward
+ * wardrobe item / outfit / AI / plan caps.
+ */
+export const WISHLIST_MAX_ITEMS = 500;
+export const DEFAULT_WISH_LIST_LIMIT = 20;
+export const MAX_WISH_LIST_LIMIT = 50;
+export const WISH_NAME_MAX = 100;
+export const WISH_NOTES_MAX = 1000;
+export const WISH_LINK_MAX = 2048;
+
+/** Display-only price. No conversion, no alerts. */
+export interface WishPrice {
+  amount: number;
+  currency: string;
+}
+
+/**
+ * Flutter / web Wish DTO. Never expose Dynamo `PK` / `SK`.
+ * `originalImageUrl` is a short-lived presigned GET — never persisted.
+ */
+export interface Wish {
+  wishId: string;
+  name: string;
+  category?: ClothingCategory;
+  subcategory?: ClothingSubcategory;
+  image?: {
+    originalKey: string;
+  };
+  originalImageUrl?: string;
+  link?: string;
+  price?: WishPrice;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `GET /wishlist` — newest first. Opaque `nextCursor` when more remain. */
+export interface WishList {
+  wishes: Wish[];
+  nextCursor?: string;
+}
+
 export type EntityType =
   | 'PROFILE'
   | 'WARDROBE'
@@ -788,7 +832,8 @@ export type EntityType =
   | 'RATE_LIMIT'
   | 'ACCOUNT_DELETION'
   | 'STRIPE_EVENT'
-  | 'STRIPE_CUSTOMER';
+  | 'STRIPE_CUSTOMER'
+  | 'WISH';
 
 export interface DynamoItem {
   PK: string;

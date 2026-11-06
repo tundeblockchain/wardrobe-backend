@@ -328,6 +328,11 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     expect(itemsSqs).not.toContain('sqs:DeleteMessage');
     expect(itemsSqs).not.toContain('sqs:*');
 
+    const wishlistSqs = sqsActionsFor('WishlistFn');
+    expect(wishlistSqs).toEqual(expect.arrayContaining(['sqs:SendMessage']));
+    expect(wishlistSqs).not.toContain('sqs:ReceiveMessage');
+    expect(wishlistSqs).not.toContain('sqs:*');
+
     expect(processingSqs).toEqual(
       expect.arrayContaining([
         'sqs:ReceiveMessage',
@@ -1576,6 +1581,13 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'PATCH /wardrobes/{wardrobeId}',
       'DELETE /wardrobes/{wardrobeId}',
       'POST /uploads',
+      'POST /wishlist/uploads',
+      'GET /wishlist',
+      'POST /wishlist',
+      'GET /wishlist/{wishId}',
+      'PATCH /wishlist/{wishId}',
+      'DELETE /wishlist/{wishId}',
+      'POST /wishlist/{wishId}/acquire',
       'GET /wardrobes/{wardrobeId}/items',
       'POST /wardrobes/{wardrobeId}/items',
       'GET /wardrobes/{wardrobeId}/items/{itemId}',

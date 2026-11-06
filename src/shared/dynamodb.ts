@@ -34,6 +34,12 @@ export const keys = {
   wardrobeSk: (wardrobeId: string) => `WARDROBE#${wardrobeId}`,
   wardrobePk: (wardrobeId: string) => `WARDROBE#${wardrobeId}`,
   itemSk: (itemId: string) => `ITEM#${itemId}`,
+  /**
+   * Per-user wish (WARDROBE-244). Lives under `USER#{uid}` so item lists,
+   * wardrobe counts, outfits, and try-on never see it.
+   */
+  wishSk: (wishId: string) => `WISH#${wishId}`,
+  wishSkPrefix: 'WISH#',
   outfitSk: (outfitId: string) => `OUTFIT#${outfitId}`,
   /**
    * Date-only worn-on entry under the same wardrobe PK as the outfit
@@ -330,6 +336,10 @@ export function isConditionalCheckFailed(error: unknown): boolean {
   return error instanceof Error && error.name === 'ConditionalCheckFailedException';
 }
 
+export function isTransactionCanceled(error: unknown): boolean {
+  return error instanceof Error && error.name === 'TransactionCanceledException';
+}
+
 /**
  * Atomic put + delete for same-table moves (WARDROBE-118).
  * Clothing items are keyed by `WARDROBE#{id}` — a wardrobe change is a
@@ -579,6 +589,24 @@ export async function getOwnedItemById(
     }
   }
   throw Errors.itemNotFound();
+}
+
+export async function getOwnedWish(
+  userId: string,
+  wishId: string,
+): Promise<DynamoItem> {
+  const item = await getItem(keys.userPk(userId), keys.wishSk(wishId));
+  if (!item || item.entityType !== 'WISH' || item.userId !== userId) {
+    throw Errors.wishNotFound();
+  }
+  return item;
+}
+
+export async function listOwnedWishes(userId: string): Promise<DynamoItem[]> {
+  const items = await queryByPk(keys.userPk(userId), keys.wishSkPrefix);
+  return items.filter(
+    (item) => item.entityType === 'WISH' && item.userId === userId,
+  );
 }
 
 export async function getOwnedOutfit(

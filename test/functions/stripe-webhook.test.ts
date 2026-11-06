@@ -172,7 +172,7 @@ function entitlementRow(overrides: Partial<StoredEntitlement> = {}): Record<stri
     status: 'ACTIVE',
     store: 'STRIPE',
     source: 'stripe',
-    expiresAt: '2026-11-01T00:00:00.000Z',
+    expiresAt: '2099-11-01T00:00:00.000Z',
     createdAt: '2026-10-01T00:00:00.000Z',
     updatedAt: '2026-10-01T00:00:00.000Z',
     ...overrides,

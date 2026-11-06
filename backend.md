@@ -80,7 +80,8 @@ AWS Lambda
    |         ├── Users
    |         ├── Wardrobes
    |         ├── Clothing Items
-   |         └── Outfits
+   |         ├── Outfits
+   |         └── Wishes
    |
    |------ S3
    |         |
@@ -748,6 +749,7 @@ USER#123                   WARDROBE#wd2
 USER#123                   AIPROFILE#profile1         (sparse — PERSONAL)
 USER#123                   EVENT#evt_item_item1_READY
 USER#123                   DEVICE#iphone-1
+USER#123                   WISH#wish1
 
 WARDROBE#wd1               ITEM#item1
 WARDROBE#wd1               ITEM#item2
@@ -1297,6 +1299,20 @@ POST /billing/stripe-webhook
 
 `GET /billing/plans` is public (WARDROBE-207; no Firebase authorizer; route throttle 10 rps / burst 20). `POST /billing/checkout-session` is Firebase-auth (WARDROBE-189 / WARDROBE-196; `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }` → `{ "url" }`). `POST /billing/portal-session` is Firebase-auth (WARDROBE-191; Stripe-source paid tier + stored `stripeCustomerId` only). `POST /billing/stripe-webhook` is public (WARDROBE-190): Stripe-Signature against the raw body, no Firebase authorizer. Webhook monthly and yearly lookup keys map to the same tier. Return URLs for checkout and portal are server-built from cdk.json context `billingWebOrigin` (WARDROBE-198). If unset, the TEMPORARY fallback is used. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` exactly on scheme + host + port.
 
+### Wish list (WARDROBE-244)
+
+Own entity under `USER#{uid} / WISH#{wishId}`. Not a clothing item. All tiers including Free. Cap 500 per user (`409 WISHLIST_LIMIT`). See README.
+
+```http
+GET    /wishlist
+POST   /wishlist
+GET    /wishlist/{wishId}
+PATCH  /wishlist/{wishId}
+DELETE /wishlist/{wishId}
+POST   /wishlist/uploads
+POST   /wishlist/{wishId}/acquire
+```
+
 ### Uploads
 
 ```http
@@ -1354,6 +1370,8 @@ UNAUTHORIZED
 VALIDATION_ERROR
 WARDROBE_NOT_FOUND
 ITEM_NOT_FOUND
+WISH_NOT_FOUND
+WISHLIST_LIMIT
 OUTFIT_NOT_FOUND
 AI_PROFILE_NOT_FOUND
 UPLOAD_INVALID

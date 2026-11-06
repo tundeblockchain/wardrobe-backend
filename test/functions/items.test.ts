@@ -847,6 +847,38 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       });
     });
 
+    it('does not list wish-list rows (WARDROBE-244)', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [
+              dynamoItem(),
+              {
+                PK: `WARDROBE#${WARDROBE_ID}`,
+                SK: 'ITEM#wish_leak00001',
+                entityType: 'WISH',
+                userId: OWNER_ID,
+                wardrobeId: WARDROBE_ID,
+                wishId: 'wish_leak00001',
+                itemId: 'wish_leak00001',
+                name: 'Wanted coat',
+                category: 'OUTERWEAR',
+                createdAt: '2026-11-06T10:00:00.000Z',
+                updatedAt: '2026-11-06T10:00:00.000Z',
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event({ method: 'GET' })));
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as { items: ClothingItem[] };
+      expect(body.items).toEqual([itemDto()]);
+      expect(body.items.map((item) => item.itemId)).not.toContain('wish_leak00001');
+    });
+
     it('includes processingError on FAILED items (WARDROBE-59)', async () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Query') {
@@ -1483,6 +1515,18 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
         throw new Error(`unexpected op ${command._op}`);
       });
     }
+
+    it('does not resolve a wish id as a clothing item (WARDROBE-244)', async () => {
+      mockOwnedItemById(undefined);
+
+      const result = asResult(
+        await handler(
+          event({ method: 'GET', itemId: 'wish_abc123xyz0', itemById: true }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
+    });
 
     it('returns the owned ClothingItem DTO without a wardrobeId', async () => {
       mockOwnedItemById(dynamoItem());
@@ -3175,6 +3219,25 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
         imageKey: RENDER_KEY,
         imageUrl: `https://signed.example/${RENDER_KEY}`,
       });
+    });
+
+    it('does not render a wish id (WARDROBE-244)', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return {};
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(
+          event({ method: 'GET', itemId: 'wish_abc123xyz0', suffix: 'render' }),
+        ),
+      );
+      expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
     });
 
     it('does not require Premium on GET', async () => {

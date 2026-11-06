@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
@@ -90,6 +91,70 @@ export async function createPresignedPutUrl(params: {
 
 export function processedImageObjectKey(userId: string, itemId: string): string {
   return `users/${userId}/items/${itemId}/processed.png`;
+}
+
+/**
+ * Destination for a wish image copied onto a clothing item (WARDROBE-244).
+ * `users/{uid}/items/{itemId}/original.{ext}`
+ */
+export function itemOriginalObjectKey(
+  userId: string,
+  itemId: string,
+  extension: string,
+): string {
+  const ext = extension.replace(/^\./, '').trim().toLowerCase();
+  if (!ext || !isSafeObjectKeySegment(ext)) {
+    throw Errors.internal(
+      'Refusing to build an item original key for an invalid extension.',
+    );
+  }
+  return `${itemMediaPrefix(userId, itemId)}original.${ext}`;
+}
+
+/**
+ * Owner-scoped prefix for wish-list uploads (WARDROBE-244).
+ * `users/{uid}/wishlist/`
+ */
+export function wishlistMediaPrefix(userId: string): string {
+  const uid = userId.trim();
+  if (!isSafeObjectKeySegment(uid)) {
+    throw Errors.internal('Refusing to build a wishlist prefix for an invalid user id.');
+  }
+  return `users/${uid}/wishlist/`;
+}
+
+export function extensionFromObjectKey(objectKey: string): string {
+  const trimmed = objectKey.trim();
+  const slash = trimmed.lastIndexOf('/');
+  const name = slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) {
+    return 'jpg';
+  }
+  const ext = name.slice(dot + 1).toLowerCase();
+  return ext || 'jpg';
+}
+
+/**
+ * Same-bucket copy used when acquiring a wish into a wardrobe. Source and
+ * destination must already be owner-scoped keys.
+ */
+export async function copyObject(params: {
+  sourceKey: string;
+  destinationKey: string;
+}): Promise<void> {
+  const bucket = bucketName();
+  const encodedSource = params.sourceKey
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  await s3.send(
+    new CopyObjectCommand({
+      Bucket: bucket,
+      CopySource: `${bucket}/${encodedSource}`,
+      Key: params.destinationKey,
+    }),
+  );
 }
 
 /**

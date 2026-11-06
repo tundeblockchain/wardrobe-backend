@@ -198,6 +198,30 @@ describe('shared error envelope', () => {
     });
   });
 
+  it('maps WISHLIST_LIMIT to a 409 envelope', () => {
+    const result = asResult(errorResponse(Errors.wishlistLimit()));
+
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'WISHLIST_LIMIT',
+        message: 'Wish list can hold 500 items.',
+      },
+    });
+  });
+
+  it('maps WISH_NOT_FOUND to a 404 envelope', () => {
+    const result = asResult(errorResponse(Errors.wishNotFound()));
+
+    expect(result.statusCode).toBe(404);
+    expect(bodyOf(result)).toEqual({
+      error: {
+        code: 'WISH_NOT_FOUND',
+        message: 'Wish not found.',
+      },
+    });
+  });
+
   it('maps ENTITLEMENT_ITEM_LIMIT to a 403 envelope', () => {
     const result = asResult(errorResponse(Errors.itemLimit()));
 

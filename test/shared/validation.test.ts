@@ -17,8 +17,13 @@ import {
   parseAiProfileDisplayFields,
   requireAiProfileType,
   requireAttachReferenceImageKeys,
+  optionalCategory,
+  optionalHttpsUrl,
+  optionalSubcategory,
+  optionalWishPrice,
   requireCategory,
   requireColour,
+  requireHttpsUrl,
   requireCreatePersonalType,
   requireExistingReferenceImageKey,
   requireIsoDate,
@@ -157,6 +162,60 @@ describe('validation', () => {
           'category must be one of: TOP, BOTTOM, DRESS, OUTERWEAR, SHOES, ACCESSORY, BAG.',
         );
       }
+    });
+
+    it('optionalCategory omits blanks and validates present values', () => {
+      expect(optionalCategory(undefined)).toBeUndefined();
+      expect(optionalCategory(null)).toBeUndefined();
+      expect(optionalCategory('')).toBeUndefined();
+      expect(optionalCategory('TOP')).toBe('TOP');
+      expect(() => optionalCategory('HAT')).toThrow(AppError);
+    });
+
+    it('optionalSubcategory uses the same list as items', () => {
+      expect(optionalSubcategory(undefined)).toBeUndefined();
+      expect(optionalSubcategory('TSHIRT')).toBe('TSHIRT');
+      expect(() => optionalSubcategory('NOT_A_SUB')).toThrow(AppError);
+    });
+  });
+
+  describe('https URLs (WARDROBE-244)', () => {
+    it('accepts https links', () => {
+      expect(requireHttpsUrl('https://shop.example/item', 'link')).toBe(
+        'https://shop.example/item',
+      );
+    });
+
+    it('rejects anything that is not https', () => {
+      expect(() => requireHttpsUrl('http://shop.example/item', 'link')).toThrow(
+        AppError,
+      );
+      expect(() => requireHttpsUrl('javascript:alert(1)', 'link')).toThrow(
+        AppError,
+      );
+      expect(() => requireHttpsUrl('ftp://shop.example/item', 'link')).toThrow(
+        AppError,
+      );
+      expect(optionalHttpsUrl(undefined, 'link')).toBeUndefined();
+    });
+  });
+
+  describe('wish price (WARDROBE-244)', () => {
+    it('stores amount and uppercase currency', () => {
+      expect(optionalWishPrice({ amount: 19.99, currency: 'gbp' })).toEqual({
+        amount: 19.99,
+        currency: 'GBP',
+      });
+    });
+
+    it('rejects negative amounts and non-ISO currency', () => {
+      expect(() =>
+        optionalWishPrice({ amount: -1, currency: 'GBP' }),
+      ).toThrow(AppError);
+      expect(() =>
+        optionalWishPrice({ amount: 10, currency: 'US' }),
+      ).toThrow(AppError);
+      expect(optionalWishPrice(undefined)).toBeUndefined();
     });
   });
 

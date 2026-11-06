@@ -9,7 +9,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | Resource | Purpose |
 | --- | --- |
 | HTTP API Gateway | Public API with a Firebase Lambda authorizer |
-| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (public plans catalog, Stripe Checkout + customer portal), Stripe webhook, events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, AI profiles, processing, outfit-render, Superwall entitlements webhook |
+| Lambda (domain handlers) | Health, me (entitlement / clear content / delete account), billing (public plans catalog, Stripe Checkout + customer portal), Stripe webhook, events (job-done inbox + FCM devices), wardrobes, items, outfits, shares (item/outfit share tokens + public preview), recommendations, shopping-links, uploads, wishlist, AI profiles, processing, outfit-render, Superwall entitlements webhook |
 | DynamoDB | Single-table design (`PK` / `SK`) |
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
@@ -36,6 +36,7 @@ Working in this first cut:
 - Related shopping links (OpenAI image→keywords + Bright Data SERP; Free/Basic/Premium — not entitlement-gated)
 - Share links for a single clothing item or outfit (WARDROBE-126; Flutter WARDROBE-128 / Frontend WARDROBE-127). Growth feature — Free/Basic/Premium, not entitlement-gated. Public preview is unauthenticated.
 - `POST /uploads` (S3 pre-signed PUT URL for clothing items)
+- Wish list CRUD (WARDROBE-244): per-user `WISH` entity, all tiers including Free, 500-wish abuse cap, acquire into a wardrobe as a real clothing item
 - Virtual Profile CRUD plus PERSONAL reference-image presign/attach, explicit main photo (`mainImageKey`), optional display `label` / `notes` (WARDROBE-158), seeded GENERIC_MODEL catalog, and short-lived `frontImageUrl` on list/get (WARDROBE-73 / WARDROBE-157). PERSONAL create/list/get/mutate is Premium (`assertPremiumAi` / `ENTITLEMENT_AI_REQUIRED`, WARDROBE-160). GENERIC_MODEL catalog reads stay ungated. API paths stay `/ai-profiles`.
 - Outfit and item try-on worker (Gemini `generateContent` image; writes unique `renders/{renderId}.png` keys and appends them to outfit / item history)
 - Processing worker (Dynamo-validated `PENDING` → `PROCESSING` → `READY` / `FAILED`; exhausted retries and the DLQ write `FAILED` so Flutter is never stuck on `PROCESSING`; background removal writes `processed.png`; classification and colour detection persist under `ai`)
@@ -241,7 +242,7 @@ POST /billing/stripe-webhook
 
 `GET /billing/plans` is public (WARDROBE-207; no Firebase authorizer). `POST /billing/checkout-session` and `POST /billing/portal-session` are Firebase-auth (WARDROBE-189 / WARDROBE-191). `POST /billing/stripe-webhook` is public — Stripe-Signature only, no Firebase authorizer. See **Stripe billing**.
 
-`DELETE /me/content` wipes the caller's wardrobes, items, outfits, worn-on dates, personal AI profiles, job-done events, FCM device tokens, and share-link tokens in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, Virtual Profile refs, Virtual Try On renders). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
+`DELETE /me/content` wipes the caller's wardrobes, items, outfits, worn-on dates, wishes, personal AI profiles, job-done events, FCM device tokens, and share-link tokens in DynamoDB, then best-effort delete S3 objects under `users/{uid}/` (uploads, processed images, wish-list images, Virtual Profile refs, Virtual Try On renders). Seeded `GENERIC_MODEL` catalog rows are never deleted. Individual S3 failures are logged and counted; they do **not** fail the request if DynamoDB is clean. An already-empty account still returns `200`. Hard Dynamo / S3 setup failures return `500` `INTERNAL_ERROR`. Missing or invalid tokens return `401` `UNAUTHENTICATED`.
 
 `DELETE /me` cancels any active Stripe subscription for the account first (WARDROBE-192), then does the same wipe (plus PROFILE + ENTITLEMENT), attempts best-effort App Store / Play cancel, and deletes the Firebase Auth user with the Admin SDK. A Stripe cancel failure **does not** delete the account (`503` `BILLING_CANCEL_FAILED`). S3 failures **do** fail the request (`500` `ACCOUNT_DELETION_FAILED`) so the client can retry. Success is returned only after Auth delete succeeds.
 
@@ -282,8 +283,8 @@ Server order (Stripe cancel first, then data, Auth last — safe to retry):
 1. Load `USER#{uid}/ENTITLEMENT` if present and `USER#{uid}/PROFILE.stripeCustomerId` if present.
 2. If `stripeCustomerId` is set, list that customer's Stripe subscriptions with status `active` / `trialing` / `past_due` and **cancel each immediately** (`subscriptions.cancel`, not `cancel_at_period_end`) using idempotency key `account-delete-cancel-{subscriptionId}`. Uses `getStripeConfig` / `getStripeClient` (WARDROBE-187 secret). Superwall `stripeSecretKey` is a compatibility fallback only. No `stripeCustomerId`: skip Stripe cancel and continue. No matching subs, `resource_missing`, or already-canceled: proceed. Stored `stripeCustomerId` with empty / placeholder / unavailable Stripe config, or any other Stripe cancel failure: **stop** — `503` `BILLING_CANCEL_FAILED`, nothing is deleted.
 3. Attempt App Store / Play store cancel when the backend can. Superwall has no cancel API. **App Store and Play subscriptions cannot be cancelled by this server** when store APIs are unavailable or Apple-only — entitlement is still revoked; the user may need Settings → Subscriptions to stop billing. This is not faked as a successful store cancel. Store-purchase (ios / android) behaviour is unchanged: cancel failure does **not** block delete.
-4. Delete all caller-owned Dynamo rows (wardrobes, items, outfits, worn-on, personal Virtual Profiles, try-on metadata on those rows, shopping cache, job-done events, FCM devices, share links, PROFILE, ENTITLEMENT) using paginated queries and batched `BatchWriteItem` (25). Seeded `GENERIC_MODEL` rows are never deleted.
-5. Delete every S3 object under `users/{uid}/` (originals, processed / background-removed images, Virtual Profile images, Virtual Try On renders). Paginated list + batched delete. Failures fail the request.
+4. Delete all caller-owned Dynamo rows (wardrobes, items, outfits, worn-on, wishes, personal Virtual Profiles, try-on metadata on those rows, shopping cache, job-done events, FCM devices, share links, PROFILE, ENTITLEMENT) using paginated queries and batched `BatchWriteItem` (25). Seeded `GENERIC_MODEL` rows are never deleted.
+5. Delete every S3 object under `users/{uid}/` (originals, processed / background-removed images, wish-list images, Virtual Profile images, Virtual Try On renders). Paginated list + batched delete. Failures fail the request.
 6. Write a short-lived `USER#{uid}/DELETION` marker, then `firebase-admin` `auth().deleteUser(uid)`. `auth/user-not-found` is treated as success. The marker is removed after Auth delete.
 7. Return `200` only when every step above succeeded. Success body is still `{ "deleted": true }`.
 
@@ -686,6 +687,136 @@ Response (`UploadTicket`):
 Identity always comes from the Firebase token. A body `userId` is ignored.
 
 The client then `PUT`s the image directly to `uploadUrl` with the same `Content-Type` (and `Content-Length` when it was declared). The media bucket stays private; the URL is time-limited.
+
+### Wish list (WARDROBE-244)
+
+A wish is its own Dynamo entity (`USER#{uid} / WISH#{wishId}`, `entityType: WISH`). It is **not** a clothing item with an owned flag. Wishes never appear in item lists, wardrobe item counts, outfits, AI outfit suggestions, Virtual Try On, or plan/item-limit counting.
+
+Available on **every tier including Free**. Firebase auth only — no entitlement or paywall check. A flat **500** wishes per user (same on every tier) is abuse protection only.
+
+```http
+GET    /wishlist
+POST   /wishlist
+GET    /wishlist/{wishId}
+PATCH  /wishlist/{wishId}
+DELETE /wishlist/{wishId}
+POST   /wishlist/uploads
+POST   /wishlist/{wishId}/acquire
+```
+
+All routes are Firebase-authorized. Identity comes from the token. Body / query `userId` is ignored. Another user's `wishId` is `404` `WISH_NOT_FOUND` (lookup is only under the caller's `USER#` partition).
+
+Length limits: `name` 100 (required), `notes` 1000, `link` 2048. `category` / `subcategory` use the same controlled lists as clothing items. `link` must be `https://` — `http://` and other schemes are `400` `VALIDATION_ERROR`. `price` is display-only `{ "amount": number, "currency": "GBP" }` (3-letter ISO, stored uppercase). No conversion or alerts.
+
+#### `GET /wishlist`
+
+Query: `limit` (default 20, max 50), `cursor` (opaque `nextCursor` from a previous page), `category` (optional controlled category). Newest first (`createdAt` desc, then `wishId` desc).
+
+**200**
+
+```json
+{
+  "wishes": [
+    {
+      "wishId": "wish_abc123xyz0",
+      "name": "Wanted coat",
+      "category": "OUTERWEAR",
+      "subcategory": "COAT",
+      "image": { "originalKey": "users/{uid}/wishlist/uploads/{id}.jpg" },
+      "originalImageUrl": "https://...presigned GetObject...",
+      "link": "https://shop.example/coat",
+      "price": { "amount": 89.5, "currency": "GBP" },
+      "notes": "Black wool",
+      "createdAt": "2026-11-06T10:00:00.000Z",
+      "updatedAt": "2026-11-06T10:00:00.000Z"
+    }
+  ],
+  "nextCursor": "optional-opaque-string"
+}
+```
+
+`nextCursor` is omitted on the last page. Soft-omit empty optionals — never JSON `null`. `originalImageUrl` is omitted when there is no image or presign fails. Free users receive **200**.
+
+#### `POST /wishlist`
+
+Request:
+
+```json
+{
+  "name": "Wanted coat",
+  "category": "OUTERWEAR",
+  "subcategory": "COAT",
+  "imageKey": "users/{uid}/wishlist/uploads/{id}.jpg",
+  "link": "https://shop.example/coat",
+  "price": { "amount": 89.5, "currency": "GBP" },
+  "notes": "Black wool"
+}
+```
+
+`name` is required. All other fields optional. `imageKey` must be under `users/{uid}/`.
+
+**201** — same Wish DTO as get.
+
+**409** `WISHLIST_LIMIT` when the caller already has 500 wishes:
+
+```json
+{
+  "error": {
+    "code": "WISHLIST_LIMIT",
+    "message": "Wish list can hold 500 items."
+  }
+}
+```
+
+**400** `VALIDATION_ERROR` for missing name, unknown category/subcategory, non-https `link`, or invalid `price`.
+
+#### `GET /wishlist/{wishId}`
+
+**200** Wish DTO. **404** `WISH_NOT_FOUND`.
+
+#### `PATCH /wishlist/{wishId}`
+
+At least one field required. `null` / `""` clears optional fields (`category`, `subcategory`, `link`, `price`, `notes`, `imageKey`). Replacing `imageKey` deletes the previous object best-effort. **200** Wish DTO. **404** `WISH_NOT_FOUND`.
+
+#### `DELETE /wishlist/{wishId}`
+
+**204** empty body. Deletes the wish row and best-effort deletes its image. **404** `WISH_NOT_FOUND`.
+
+#### `POST /wishlist/uploads`
+
+Same content-type allowlist and 10MB size limit as `POST /uploads` (`image/jpeg`, `image/png`, `image/webp`, `image/heic`). Optional `purpose` must be `WISHLIST` when sent. Optional `contentLength` 1..10485760.
+
+**201**
+
+```json
+{
+  "uploadUrl": "https://...",
+  "objectKey": "users/{uid}/wishlist/uploads/{id}.jpg",
+  "expiresIn": 900
+}
+```
+
+Then `PUT` the bytes to `uploadUrl` and pass `objectKey` as `imageKey` on create/patch.
+
+#### `POST /wishlist/{wishId}/acquire`
+
+Moves the wish into an owned wardrobe as a **real clothing item** through the same server-side item-create path (wardrobe ownership, `assertCanCreateCatalog('item')`, Premium AI enqueue). Copies the wish image to `users/{uid}/items/{itemId}/original.{ext}`, then transacts put-ITEM + delete-WISH. The wish image is deleted after success.
+
+Request:
+
+```json
+{ "wardrobeId": "wd_abc123xyz0" }
+```
+
+The wish must already have `category` and an image (`400` `VALIDATION_ERROR` otherwise).
+
+**201** — ClothingItem DTO (same shape as `POST /wardrobes/{wardrobeId}/items`).
+
+**403** `ENTITLEMENT_ITEM_LIMIT` — exact same status and code as a normal item create at the Free 5-item cap. The wish is unchanged (no copy, no delete).
+
+**404** `WISH_NOT_FOUND` or `WARDROBE_NOT_FOUND`.
+
+**400** `VALIDATION_ERROR` when the wish is missing category or image, or `wardrobeId` is missing.
 
 Browser `PUT`s (WARDROBE-176) need S3 bucket CORS on this media bucket only. The rule is `PUT`, `Content-Type`, `ETag`, `maxAge` 3000, and these origins by default: `https://wende-wardrobe.netlify.app`, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173`. Override with CDK context `uploadAllowedOrigins` or env `UPLOAD_ALLOWED_ORIGINS` (comma-separated). Never `*`. API Gateway CORS stays `allowOrigins: ['*']`. The presign body, response fields, and Flutter contract are unchanged. The same rule covers `POST /ai-profiles/{aiProfileId}/uploads`.
 
