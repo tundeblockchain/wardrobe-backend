@@ -3035,7 +3035,9 @@ No email, phone, name, item text, or raw ids in plain text.
 
 **Trial vs subscribe.** Matches the app: `StartTrial` only for a free trial or intro offer with price 0. Stripe: `status=trialing` and no charge. Superwall: `periodType` `TRIAL` or `INTRO` with price 0. A paid intro (price > 0) is `Subscribe`. Trial conversion (user pays after a trial) is `Subscribe`, not `SubscriptionRenewed`. Only later paid cycles are `SubscriptionRenewed`.
 
-**Meta app events.** Superwall / app-sourced events skip Meta CAPI entirely (info log). The app SDK is the Meta path for app purchases. Server-side Meta is website/Stripe only (`action_source=website`).
+**Meta app events.** Superwall / app-sourced events skip Meta CAPI entirely (info log). The app SDK is the Meta path for app purchases the client can see. Server-side Meta is website/Stripe only (`action_source=website`).
+
+**Known gap.** App-store trial conversions and renewals (Superwall) are not sent to Meta. Meta CAPI `action_source=app` events need `app_data` (ATT status / `extinfo`) that the server does not have. TikTok still receives them. The app SDK cannot see these events — they arrive only on Superwall webhooks. A follow-up could have the app send ATT/device context to the backend at purchase so the server can send valid Meta app events.
 
 **TikTok app events.** Superwall sends TikTok `event_source=app` with `event_source_id` set to the secret's `pixelCode`. TikTok app events typically expect a TikTok App ID as `event_source_id`; if the pixel code is not accepted for app events, put the App ID in `pixelCode` (the JSON field name stays `pixelCode`).
 
