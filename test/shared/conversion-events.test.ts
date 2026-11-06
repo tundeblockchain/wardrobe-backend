@@ -3,8 +3,6 @@ import {
   CONVERSION_EVENT_RENEWED,
   CONVERSION_EVENT_START_TRIAL,
   CONVERSION_EVENT_SUBSCRIBE,
-  STRIPE_CHECKOUT_UA_MAX_LENGTH,
-  checkoutUserAgentFromHeaders,
   hashExternalId,
   mapStripeConversionEvent,
   mapSuperwallConversionEvent,
@@ -13,7 +11,6 @@ import {
   stripeMinorToMajor,
   superwallConversionEventId,
   superwallIsTrialStart,
-  truncateCheckoutUserAgent,
 } from '../../src/shared/conversion-events';
 import { SuperwallWebhookEvent } from '../../src/shared/entitlements';
 
@@ -87,53 +84,30 @@ describe('mapStripeConversionEvent', () => {
     assertNoPii(event);
   });
 
-  it('maps checkout.session.completed with stored UA to website Subscribe', () => {
-    const ua = 'Mozilla/5.0 WardrobeTest/1.0';
-    const sourceUrl = 'https://app.example/app/billing/success';
+  it('keeps eventSourceUrl on Stripe events for TikTok page.url', () => {
     const event = mapStripeConversionEvent({
       type: 'checkout.session.completed',
       object: {
-        id: 'cs_test_ua',
+        id: 'cs_test_1',
         amount_total: 1500,
         currency: 'gbp',
-        customer: 'cus_1',
-        metadata: { ua },
       },
       userId: UID,
       subscription: paidSubscription,
       eventTimeSeconds: EVENT_TIME,
-      eventSourceUrl: sourceUrl,
+      eventSourceUrl: 'https://app.example/app/billing/success',
     });
 
     expect(event).toEqual({
       eventName: CONVERSION_EVENT_SUBSCRIBE,
-      eventId: 'stripe_cs_test_ua',
+      eventId: 'stripe_cs_test_1',
       eventTimeSeconds: EVENT_TIME,
-      actionSource: 'website',
+      actionSource: 'system_generated',
       externalId: HASHED,
-      clientUserAgent: ua,
-      eventSourceUrl: sourceUrl,
+      eventSourceUrl: 'https://app.example/app/billing/success',
       value: 15,
       currency: 'GBP',
     });
-    assertNoPii(event);
-  });
-
-  it('truncates Checkout User-Agent and reads it from headers', () => {
-    const long = `Mozilla/5.0 ${'x'.repeat(500)}`;
-    expect(truncateCheckoutUserAgent(long)?.length).toBe(
-      STRIPE_CHECKOUT_UA_MAX_LENGTH,
-    );
-    expect(truncateCheckoutUserAgent('  ')).toBeUndefined();
-    expect(
-      checkoutUserAgentFromHeaders(
-        { 'User-Agent': 'Mozilla/5.0 HeaderAgent' },
-        'fallback',
-      ),
-    ).toBe('Mozilla/5.0 HeaderAgent');
-    expect(checkoutUserAgentFromHeaders({}, '  request-ua  ')).toBe(
-      'request-ua',
-    );
   });
 
   it('maps checkout.session.completed with status trialing to StartTrial', () => {

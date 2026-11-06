@@ -173,7 +173,7 @@ export function checkoutSuccessUrl(origin: string): string {
   return `${base}/app/billing/success?session_id=${CHECKOUT_SESSION_ID_PLACEHOLDER}`;
 }
 
-/** Stable billing success page (no session_id placeholder). Meta `event_source_url`. */
+/** Stable billing success page (no session_id placeholder). TikTok web `page.url`. */
 export function checkoutEventSourceUrl(origin?: string): string {
   const base = origin
     ? resolveConfiguredOrFallback(origin)

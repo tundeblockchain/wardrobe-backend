@@ -67,22 +67,19 @@ export function buildMetaCapiPayload(
   event: ConversionEvent,
   testEventCode?: string,
 ): Record<string, unknown> {
-  const userData: Record<string, unknown> = {
-    external_id: event.externalId,
-  };
-  if (event.actionSource === 'website' && event.clientUserAgent) {
-    userData.client_user_agent = event.clientUserAgent;
-  }
   const body: Record<string, unknown> = {
     event_name: event.eventName,
     event_time: event.eventTimeSeconds,
     event_id: event.eventId,
-    action_source: event.actionSource,
-    user_data: userData,
+    // Stripe webhooks have no browser UA/URL. Meta rejects action_source=
+    // website without those fields; system_generated does not need them.
+    // Pixel dedupe still matches event_name + event_id (stripe_...).
+    action_source:
+      event.actionSource === 'app' ? 'app' : 'system_generated',
+    user_data: {
+      external_id: event.externalId,
+    },
   };
-  if (event.actionSource === 'website' && event.eventSourceUrl) {
-    body.event_source_url = event.eventSourceUrl;
-  }
   const customData = customDataOf(event);
   if (customData) {
     body.custom_data = customData;
@@ -99,17 +96,13 @@ export function buildTikTokEventsPayload(
   pixelCode: string,
   testEventCode?: string,
 ): Record<string, unknown> {
-  const user: Record<string, unknown> = {
-    external_id: event.externalId,
-  };
-  if (event.actionSource !== 'app' && event.clientUserAgent) {
-    user.user_agent = event.clientUserAgent;
-  }
   const item: Record<string, unknown> = {
     event: event.eventName,
     event_time: event.eventTimeSeconds,
     event_id: event.eventId,
-    user,
+    user: {
+      external_id: event.externalId,
+    },
   };
   if (event.actionSource !== 'app') {
     item.page = {

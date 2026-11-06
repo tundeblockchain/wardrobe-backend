@@ -251,15 +251,6 @@ async function trackStripeConversion(options: {
     if (!event) {
       return;
     }
-    if (event.actionSource === 'system_generated') {
-      options.log.info(
-        'Conversion using Meta action_source system_generated; no browser user agent',
-        {
-          eventName: event.eventName,
-          eventId: event.eventId,
-        },
-      );
-    }
     if (options.deps.trackConversion) {
       await options.deps.trackConversion(event);
       return;

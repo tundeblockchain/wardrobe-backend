@@ -1,5 +1,4 @@
 import { createHash } from 'crypto';
-import { checkoutEventSourceUrl } from './billing-urls';
 import { SuperwallWebhookEvent } from './entitlements';
 import { StripeSubscriptionLike } from './stripe-webhook';
 
@@ -12,12 +11,7 @@ export type ConversionEventName =
   | typeof CONVERSION_EVENT_START_TRIAL
   | typeof CONVERSION_EVENT_RENEWED;
 
-export type ConversionActionSource = 'website' | 'system_generated' | 'app';
-
-/** Stripe Checkout Session metadata key for the truncated request User-Agent. */
-export const STRIPE_CHECKOUT_UA_METADATA_KEY = 'ua';
-/** Stripe metadata values max out at 500 characters; stay under that. */
-export const STRIPE_CHECKOUT_UA_MAX_LENGTH = 400;
+export type ConversionActionSource = 'system_generated' | 'app';
 
 export interface ConversionEvent {
   eventName: ConversionEventName;
@@ -26,9 +20,7 @@ export interface ConversionEvent {
   actionSource: ConversionActionSource;
   /** SHA-256 hex of the Firebase uid. Never the raw uid. */
   externalId: string;
-  /** Browser UA from Checkout Session metadata. Website events only. */
-  clientUserAgent?: string;
-  /** Billing success page URL. Website events only (Meta `event_source_url`). */
+  /** Billing success page URL for TikTok web `page.url`. Not sent to Meta. */
   eventSourceUrl?: string;
   value?: number;
   currency?: string;
@@ -67,27 +59,6 @@ const STRIPE_ZERO_DECIMAL = new Set([
 
 export function hashExternalId(userId: string): string {
   return createHash('sha256').update(userId.trim(), 'utf8').digest('hex');
-}
-
-export function truncateCheckoutUserAgent(value: unknown): string | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  return trimmed.length <= STRIPE_CHECKOUT_UA_MAX_LENGTH
-    ? trimmed
-    : trimmed.slice(0, STRIPE_CHECKOUT_UA_MAX_LENGTH);
-}
-
-export function checkoutUserAgentFromHeaders(
-  headers?: Record<string, string | undefined> | null,
-  requestUserAgent?: string,
-): string | undefined {
-  const fromHeader = headerIgnoreCase(headers, 'user-agent');
-  return truncateCheckoutUserAgent(fromHeader ?? requestUserAgent);
 }
 
 export function stripeCheckoutEventId(checkoutSessionId: string): string {
@@ -203,21 +174,13 @@ export function mapStripeConversionEvent(options: {
     }
     const value = stripeMoney(object.amount_total, object.currency);
     const trial = isStripeFreeTrialCheckout(options.subscription, value);
-    const userAgent = truncateCheckoutUserAgent(
-      asRecord(object.metadata)?.[STRIPE_CHECKOUT_UA_METADATA_KEY],
-    );
-    const website = Boolean(userAgent);
-    const eventSourceUrl = website
-      ? optionalString(options.eventSourceUrl) ?? checkoutEventSourceUrl()
-      : undefined;
     return buildConversionEvent({
       eventName: trial ? CONVERSION_EVENT_START_TRIAL : CONVERSION_EVENT_SUBSCRIBE,
       eventId: stripeCheckoutEventId(sessionId),
       eventTimeSeconds,
-      actionSource: website ? 'website' : 'system_generated',
+      actionSource: 'system_generated',
       userId,
-      clientUserAgent: userAgent,
-      eventSourceUrl,
+      eventSourceUrl: optionalString(options.eventSourceUrl),
       value,
       currency: optionalString(object.currency)?.toUpperCase(),
     });
@@ -242,6 +205,7 @@ export function mapStripeConversionEvent(options: {
       eventTimeSeconds,
       actionSource: 'system_generated',
       userId,
+      eventSourceUrl: optionalString(options.eventSourceUrl),
       value: stripeMoney(object.amount_paid, object.currency),
       currency: optionalString(object.currency)?.toUpperCase(),
     });
@@ -406,7 +370,6 @@ function buildConversionEvent(options: {
   eventTimeSeconds: number;
   actionSource: ConversionActionSource;
   userId: string;
-  clientUserAgent?: string;
   eventSourceUrl?: string;
   value?: number;
   currency?: string;
@@ -418,9 +381,6 @@ function buildConversionEvent(options: {
     actionSource: options.actionSource,
     externalId: hashExternalId(options.userId),
   };
-  if (options.clientUserAgent) {
-    event.clientUserAgent = options.clientUserAgent;
-  }
   if (options.eventSourceUrl) {
     event.eventSourceUrl = options.eventSourceUrl;
   }
@@ -431,22 +391,6 @@ function buildConversionEvent(options: {
     event.currency = options.currency;
   }
   return event;
-}
-
-function headerIgnoreCase(
-  headers: Record<string, string | undefined> | null | undefined,
-  name: string,
-): string | undefined {
-  if (!headers) {
-    return undefined;
-  }
-  const wanted = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === wanted) {
-      return typeof value === 'string' ? value : undefined;
-    }
-  }
-  return undefined;
 }
 
 function stripeMoney(
