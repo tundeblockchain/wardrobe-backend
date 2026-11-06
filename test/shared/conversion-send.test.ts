@@ -19,6 +19,8 @@ const UID = 'firebase-uid-owner';
 const HASHED = createHash('sha256').update(UID, 'utf8').digest('hex');
 const META_TOKEN = 'EAA_this_must_not_appear_in_logs';
 const TIKTOK_TOKEN = 'tiktok_access_token_secret_value';
+const SOURCE_URL = 'https://app.example/app/billing/success';
+const USER_AGENT = 'Mozilla/5.0 WardrobeTest/1.0';
 
 const subscribeEvent: ConversionEvent = {
   eventName: CONVERSION_EVENT_SUBSCRIBE,
@@ -26,8 +28,16 @@ const subscribeEvent: ConversionEvent = {
   eventTimeSeconds: 1_717_000_000,
   actionSource: 'system_generated',
   externalId: HASHED,
+  eventSourceUrl: SOURCE_URL,
   value: 15,
   currency: 'GBP',
+};
+
+const checkoutWebsiteEvent: ConversionEvent = {
+  ...subscribeEvent,
+  actionSource: 'website',
+  clientUserAgent: USER_AGENT,
+  eventSourceUrl: SOURCE_URL,
 };
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -122,9 +132,7 @@ describe('platform payloads', () => {
       const metaBody = (meta.data as Array<Record<string, unknown>>)[0];
       expect(metaBody.event_name).toBe(event.eventName);
       expect(metaBody.event_id).toBe(event.eventId);
-      expect(metaBody.action_source).toBe(
-        event.actionSource === 'app' ? 'app' : 'system_generated',
-      );
+      expect(metaBody.action_source).toBe(event.actionSource);
       expect(meta.test_event_code).toBe('TEST12345');
 
       const ttBody = (tiktok.data as Array<Record<string, unknown>>)[0];
@@ -135,23 +143,91 @@ describe('platform payloads', () => {
       );
       expect(tiktok.event_source_id).toBe('C1PIXEL');
       expect(tiktok.test_event_code).toBe('TEST12345');
+      if (event.actionSource !== 'app') {
+        expect(ttBody.page).toEqual({ url: SOURCE_URL });
+        expect(JSON.stringify(ttBody)).not.toContain('"ip"');
+      } else {
+        expect(ttBody).not.toHaveProperty('page');
+      }
     },
   );
 
-  it('sends Stripe Meta events as system_generated without browser fields', () => {
+  it('sends checkout Meta events as website with UA and event_source_url only', () => {
+    const meta = buildMetaCapiPayload(checkoutWebsiteEvent);
+    expect(meta).toEqual({
+      data: [
+        {
+          event_name: CONVERSION_EVENT_SUBSCRIBE,
+          event_time: 1_717_000_000,
+          event_id: 'stripe_cs_1',
+          action_source: 'website',
+          event_source_url: SOURCE_URL,
+          user_data: {
+            external_id: HASHED,
+            client_user_agent: USER_AGENT,
+          },
+          custom_data: { value: 15, currency: 'GBP' },
+        },
+      ],
+    });
+    const userData = (
+      (meta.data as Array<Record<string, unknown>>)[0].user_data as Record<
+        string,
+        unknown
+      >
+    );
+    expect(Object.keys(userData).sort()).toEqual([
+      'client_user_agent',
+      'external_id',
+    ]);
+  });
+
+  it('sends invoice.paid / no-UA Meta events as system_generated without browser fields', () => {
     const meta = buildMetaCapiPayload(subscribeEvent);
     const metaBody = (meta.data as Array<Record<string, unknown>>)[0];
     const serialized = JSON.stringify(meta);
 
-    expect(metaBody.action_source).toBe('system_generated');
-    expect(metaBody.event_name).toBe(CONVERSION_EVENT_SUBSCRIBE);
-    expect(metaBody.event_id).toBe('stripe_cs_1');
-    expect(metaBody.user_data).toEqual({ external_id: HASHED });
+    expect(meta).toEqual({
+      data: [
+        {
+          event_name: CONVERSION_EVENT_SUBSCRIBE,
+          event_time: 1_717_000_000,
+          event_id: 'stripe_cs_1',
+          action_source: 'system_generated',
+          user_data: { external_id: HASHED },
+          custom_data: { value: 15, currency: 'GBP' },
+        },
+      ],
+    });
     expect(metaBody).not.toHaveProperty('client_user_agent');
     expect(metaBody).not.toHaveProperty('event_source_url');
     expect(serialized).not.toContain('client_user_agent');
     expect(serialized).not.toContain('event_source_url');
     expect(serialized).not.toContain('"website"');
+    expect(serialized).not.toContain(USER_AGENT);
+  });
+
+  it('sends TikTok web events with required page.url and no IP', () => {
+    const tiktok = buildTikTokEventsPayload(checkoutWebsiteEvent, 'C1PIXEL');
+    expect(tiktok).toEqual({
+      event_source: 'web',
+      event_source_id: 'C1PIXEL',
+      data: [
+        {
+          event: CONVERSION_EVENT_SUBSCRIBE,
+          event_time: 1_717_000_000,
+          event_id: 'stripe_cs_1',
+          user: {
+            external_id: HASHED,
+            user_agent: USER_AGENT,
+          },
+          page: { url: SOURCE_URL },
+          properties: { value: 15, currency: 'GBP' },
+        },
+      ],
+    });
+    expect(JSON.stringify(tiktok)).not.toContain('"ip"');
+    expect(JSON.stringify(tiktok)).not.toContain(UID);
   });
 });
 

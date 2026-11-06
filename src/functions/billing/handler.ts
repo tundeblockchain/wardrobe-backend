@@ -7,6 +7,7 @@ import { errorResponse, ok, parseJsonBody, parseOptionalJsonBody, routeKey } fro
 import { logger } from '../../shared/logger';
 import { parseAllowedOrigins, requestOrigin } from '../support/origins';
 import { toPaidTierStatus } from '../../shared/paid-tier';
+import { checkoutUserAgentFromHeaders } from '../../shared/conversion-events';
 import {
   createSubscriptionCheckoutSession,
   parseCheckoutInterval,
@@ -171,6 +172,10 @@ async function createCheckoutSession(
     stripe,
     config,
     origin,
+    userAgent: checkoutUserAgentFromHeaders(
+      event.headers,
+      event.requestContext.http.userAgent,
+    ),
     log,
   });
 }

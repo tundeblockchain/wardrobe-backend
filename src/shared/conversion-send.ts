@@ -1,6 +1,7 @@
 import { logger } from './logger';
 import { getSecretString, parseJsonObjectOrString } from './secrets';
 import { looksLikePlaceholderCredential } from './superwall-config';
+import { checkoutEventSourceUrl } from './billing-urls';
 import { ConversionEvent } from './conversion-events';
 
 export const META_CAPI_SECRET_ARN_ENV = 'META_CAPI_SECRET_ARN';
@@ -66,18 +67,22 @@ export function buildMetaCapiPayload(
   event: ConversionEvent,
   testEventCode?: string,
 ): Record<string, unknown> {
+  const userData: Record<string, unknown> = {
+    external_id: event.externalId,
+  };
+  if (event.actionSource === 'website' && event.clientUserAgent) {
+    userData.client_user_agent = event.clientUserAgent;
+  }
   const body: Record<string, unknown> = {
     event_name: event.eventName,
     event_time: event.eventTimeSeconds,
     event_id: event.eventId,
-    // Webhooks have no client_user_agent / event_source_url, which Meta
-    // requires for action_source=website. system_generated does not.
-    action_source:
-      event.actionSource === 'app' ? 'app' : 'system_generated',
-    user_data: {
-      external_id: event.externalId,
-    },
+    action_source: event.actionSource,
+    user_data: userData,
   };
+  if (event.actionSource === 'website' && event.eventSourceUrl) {
+    body.event_source_url = event.eventSourceUrl;
+  }
   const customData = customDataOf(event);
   if (customData) {
     body.custom_data = customData;
@@ -94,14 +99,23 @@ export function buildTikTokEventsPayload(
   pixelCode: string,
   testEventCode?: string,
 ): Record<string, unknown> {
+  const user: Record<string, unknown> = {
+    external_id: event.externalId,
+  };
+  if (event.actionSource !== 'app' && event.clientUserAgent) {
+    user.user_agent = event.clientUserAgent;
+  }
   const item: Record<string, unknown> = {
     event: event.eventName,
     event_time: event.eventTimeSeconds,
     event_id: event.eventId,
-    user: {
-      external_id: event.externalId,
-    },
+    user,
   };
+  if (event.actionSource !== 'app') {
+    item.page = {
+      url: event.eventSourceUrl ?? checkoutEventSourceUrl(),
+    };
+  }
   const properties = customDataOf(event);
   if (properties) {
     item.properties = properties;

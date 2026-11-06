@@ -407,6 +407,12 @@ export class WardrobeStack extends cdk.Stack {
     const stripeWebhookFn = this.lambda('StripeWebhookFn', 'stripe-webhook', {
       ...commonLambdaProps,
       timeout: cdk.Duration.seconds(CONVERSION_WEBHOOK_LAMBDA_TIMEOUT_SECONDS),
+      environment: {
+        ...commonLambdaProps.environment,
+        ...(billingWebOrigin
+          ? { BILLING_WEB_ORIGIN: billingWebOrigin.replace(/\/+$/, '') }
+          : {}),
+      },
     });
     // WARDROBE-114 job-done inbox + FCM device registration. Workers write
     // events; this Lambda only lists / acks / registers tokens.

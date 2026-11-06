@@ -173,6 +173,14 @@ export function checkoutSuccessUrl(origin: string): string {
   return `${base}/app/billing/success?session_id=${CHECKOUT_SESSION_ID_PLACEHOLDER}`;
 }
 
+/** Stable billing success page (no session_id placeholder). Meta `event_source_url`. */
+export function checkoutEventSourceUrl(origin?: string): string {
+  const base = origin
+    ? resolveConfiguredOrFallback(origin)
+    : resolveBillingWebOrigin();
+  return `${base}/app/billing/success`;
+}
+
 export function checkoutCancelUrl(origin: string): string {
   const base = resolveConfiguredOrFallback(origin);
   return `${base}/app/billing/cancel`;

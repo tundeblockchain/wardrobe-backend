@@ -409,8 +409,60 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
       line_items: [{ price: 'price_from_lookup', quantity: 1 }],
       success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
       cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
+      metadata: { ua: 'jest' },
       subscription_data: { metadata: { uid: UID, tier: 'premium' } },
     });
+  });
+
+  it('stores a truncated User-Agent in Checkout Session metadata', async () => {
+    const stripe = mockStripe();
+    const longUa = `Mozilla/5.0 ${'x'.repeat(500)}`;
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    const result = asResult(
+      await handler(
+        event({
+          body: { tier: 'basic' },
+          headers: { 'user-agent': longUa },
+        }),
+        {
+          resolveEntitlement: async () => freeEntitlement(),
+          ensureStripeCustomer: async () => 'cus_123',
+          getStripeConfig: async () => stripeConfig(),
+          getStripeClient: async () => stripe,
+          log,
+        },
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    const created = stripe.sessionsCreate.mock.calls[0]?.[0] as {
+      metadata?: { ua?: string };
+    };
+    expect(created.metadata?.ua).toHaveLength(400);
+    expect(created.metadata?.ua?.startsWith('Mozilla/5.0 ')).toBe(true);
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain(longUa);
+  });
+
+  it('omits Checkout Session metadata.ua when User-Agent is missing', async () => {
+    const stripe = mockStripe();
+    const missingUa = event({ body: { tier: 'basic' } });
+    missingUa.headers = { ...missingUa.headers };
+    delete missingUa.headers['user-agent'];
+    delete missingUa.headers['User-Agent'];
+    missingUa.requestContext.http.userAgent = '';
+
+    await handler(missingUa, {
+      resolveEntitlement: async () => freeEntitlement(),
+      ensureStripeCustomer: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripeClient: async () => stripe,
+    });
+
+    const created = stripe.sessionsCreate.mock.calls[0]?.[0] as {
+      metadata?: unknown;
+    };
+    expect(created.metadata).toBeUndefined();
   });
 
   it('resolves a pinned price id from config without listing lookup keys', async () => {

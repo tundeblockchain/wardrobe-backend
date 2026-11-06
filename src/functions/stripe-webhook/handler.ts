@@ -1,4 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { checkoutEventSourceUrl } from '../../shared/billing-urls';
 import {
   ConversionEvent,
   mapStripeConversionEvent,
@@ -245,9 +246,19 @@ async function trackStripeConversion(options: {
       userId,
       subscription: options.subscription,
       eventTimeSeconds: options.eventTimeSeconds,
+      eventSourceUrl: checkoutEventSourceUrl(),
     });
     if (!event) {
       return;
+    }
+    if (event.actionSource === 'system_generated') {
+      options.log.info(
+        'Conversion using Meta action_source system_generated; no browser user agent',
+        {
+          eventName: event.eventName,
+          eventId: event.eventId,
+        },
+      );
     }
     if (options.deps.trackConversion) {
       await options.deps.trackConversion(event);

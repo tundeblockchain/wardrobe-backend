@@ -628,9 +628,11 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
   const customersRetrieve = jest.fn();
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   const trackConversion = jest.fn().mockResolvedValue(undefined);
+  const originalBillingOrigin = process.env.BILLING_WEB_ORIGIN;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.BILLING_WEB_ORIGIN = 'https://app.example';
     mockPutItem.mockResolvedValue(undefined);
     mockPutItemIfNotExists.mockResolvedValue(true);
     mockGetItem.mockResolvedValue({
@@ -642,6 +644,14 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
     retrieve.mockResolvedValue(subscription());
     customersRetrieve.mockResolvedValue({ id: CUS_ID, metadata: { uid: UID } });
     trackConversion.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (originalBillingOrigin === undefined) {
+      delete process.env.BILLING_WEB_ORIGIN;
+    } else {
+      process.env.BILLING_WEB_ORIGIN = originalBillingOrigin;
+    }
   });
 
   function deps() {
@@ -690,6 +700,49 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
         actionSource: 'system_generated',
       }),
     );
+    expect(log.info).toHaveBeenCalledWith(
+      'Conversion using Meta action_source system_generated; no browser user agent',
+      expect.objectContaining({ eventId: 'stripe_cs_test_paid' }),
+    );
+  });
+
+  it('sends website Subscribe when checkout metadata includes a User-Agent', async () => {
+    const ua = 'Mozilla/5.0 WardrobeTest/1.0';
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_test_ua',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          customer: CUS_ID,
+          amount_total: 1500,
+          currency: 'gbp',
+          metadata: { ua },
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'stripe_cs_test_ua',
+        actionSource: 'website',
+        clientUserAgent: ua,
+        eventSourceUrl: 'https://app.example/app/billing/success',
+      }),
+    );
+    expect(log.info).not.toHaveBeenCalledWith(
+      'Conversion using Meta action_source system_generated; no browser user agent',
+      expect.anything(),
+    );
+    const serialized = JSON.stringify(log.info.mock.calls);
+    expect(serialized).not.toContain(ua);
   });
 
   it('sends StartTrial when the retrieved subscription is trialing', async () => {
@@ -794,6 +847,10 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
         eventId: 'stripe_in_trial_convert',
         actionSource: 'system_generated',
       }),
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      'Conversion using Meta action_source system_generated; no browser user agent',
+      expect.objectContaining({ eventId: 'stripe_in_trial_convert' }),
     );
   });
 
