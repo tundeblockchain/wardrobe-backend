@@ -3013,7 +3013,7 @@ Live mode (prod only, after `stripeMode=live`) uses `wardrobe/prod/stripe-live` 
 
 After Stripe and Superwall entitlement handling, the webhook Lambdas send conversion events to Meta Conversions API and TikTok Events API. Tracking never changes the webhook HTTP response: failures are caught, logged (no tokens, no PII), and retried a small bounded number of times with backoff. Duplicate deliveries reuse the same `event_id` so the platforms can dedupe. Restores, refunds, and cancellations send nothing.
 
-**Meta is Stripe/website only.** Superwall (app) events are **not** sent to Meta CAPI — the app SDK already sends those. Superwall still sends TikTok. Stripe/website events go to both platforms.
+**Meta is Stripe only (`action_source=system_generated`).** Superwall (app) events are **not** sent to Meta CAPI — the app SDK already sends those. Superwall still sends TikTok. Stripe events go to both platforms.
 
 ### Events
 
@@ -3035,7 +3035,9 @@ No email, phone, name, item text, or raw ids in plain text.
 
 **Trial vs subscribe.** Matches the app: `StartTrial` only for a free trial or intro offer with price 0. Stripe: `status=trialing` and no charge. Superwall: `periodType` `TRIAL` or `INTRO` with price 0. A paid intro (price > 0) is `Subscribe`. Trial conversion (user pays after a trial) is `Subscribe`, not `SubscriptionRenewed`. Only later paid cycles are `SubscriptionRenewed`.
 
-**Meta app events.** Superwall / app-sourced events skip Meta CAPI entirely (info log). The app SDK is the Meta path for app purchases the client can see. Server-side Meta is website/Stripe only (`action_source=website`).
+**Meta Stripe events.** Server-side Meta uses `action_source=system_generated` (not `website`). Webhooks have no `client_user_agent` or `event_source_url`, which Meta requires for website events. `system_generated` does not need those fields; pixel dedupe still matches on `event_name` + `event_id`.
+
+**Meta app events.** Superwall / app-sourced events skip Meta CAPI entirely (info log). The app SDK is the Meta path for app purchases the client can see.
 
 **Known gap.** App-store trial conversions and renewals (Superwall) are not sent to Meta. Meta CAPI `action_source=app` events need `app_data` (ATT status / `extinfo`) that the server does not have. TikTok still receives them. The app SDK cannot see these events — they arrive only on Superwall webhooks. A follow-up could have the app send ATT/device context to the backend at purchase so the server can send valid Meta app events.
 

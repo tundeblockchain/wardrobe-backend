@@ -687,7 +687,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
       expect.objectContaining({
         eventName: 'Subscribe',
         eventId: 'stripe_cs_test_paid',
-        actionSource: 'website',
+        actionSource: 'system_generated',
       }),
     );
   });
@@ -792,7 +792,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
       expect.objectContaining({
         eventName: 'Subscribe',
         eventId: 'stripe_in_trial_convert',
-        actionSource: 'website',
+        actionSource: 'system_generated',
       }),
     );
   });
@@ -828,7 +828,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
       expect.objectContaining({
         eventName: 'SubscriptionRenewed',
         eventId: 'stripe_in_cycle_1',
-        actionSource: 'website',
+        actionSource: 'system_generated',
       }),
     );
   });

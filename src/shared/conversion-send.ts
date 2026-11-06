@@ -70,7 +70,10 @@ export function buildMetaCapiPayload(
     event_name: event.eventName,
     event_time: event.eventTimeSeconds,
     event_id: event.eventId,
-    action_source: event.actionSource === 'app' ? 'app' : 'website',
+    // Webhooks have no client_user_agent / event_source_url, which Meta
+    // requires for action_source=website. system_generated does not.
+    action_source:
+      event.actionSource === 'app' ? 'app' : 'system_generated',
     user_data: {
       external_id: event.externalId,
     },

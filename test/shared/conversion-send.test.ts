@@ -24,7 +24,7 @@ const subscribeEvent: ConversionEvent = {
   eventName: CONVERSION_EVENT_SUBSCRIBE,
   eventId: 'stripe_cs_1',
   eventTimeSeconds: 1_717_000_000,
-  actionSource: 'website',
+  actionSource: 'system_generated',
   externalId: HASHED,
   value: 15,
   currency: 'GBP',
@@ -123,7 +123,7 @@ describe('platform payloads', () => {
       expect(metaBody.event_name).toBe(event.eventName);
       expect(metaBody.event_id).toBe(event.eventId);
       expect(metaBody.action_source).toBe(
-        event.actionSource === 'app' ? 'app' : 'website',
+        event.actionSource === 'app' ? 'app' : 'system_generated',
       );
       expect(meta.test_event_code).toBe('TEST12345');
 
@@ -137,6 +137,22 @@ describe('platform payloads', () => {
       expect(tiktok.test_event_code).toBe('TEST12345');
     },
   );
+
+  it('sends Stripe Meta events as system_generated without browser fields', () => {
+    const meta = buildMetaCapiPayload(subscribeEvent);
+    const metaBody = (meta.data as Array<Record<string, unknown>>)[0];
+    const serialized = JSON.stringify(meta);
+
+    expect(metaBody.action_source).toBe('system_generated');
+    expect(metaBody.event_name).toBe(CONVERSION_EVENT_SUBSCRIBE);
+    expect(metaBody.event_id).toBe('stripe_cs_1');
+    expect(metaBody.user_data).toEqual({ external_id: HASHED });
+    expect(metaBody).not.toHaveProperty('client_user_agent');
+    expect(metaBody).not.toHaveProperty('event_source_url');
+    expect(serialized).not.toContain('client_user_agent');
+    expect(serialized).not.toContain('event_source_url');
+    expect(serialized).not.toContain('"website"');
+  });
 });
 
 describe('sendConversionEvent', () => {

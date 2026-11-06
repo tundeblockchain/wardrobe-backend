@@ -11,7 +11,7 @@ export type ConversionEventName =
   | typeof CONVERSION_EVENT_START_TRIAL
   | typeof CONVERSION_EVENT_RENEWED;
 
-export type ConversionActionSource = 'website' | 'app';
+export type ConversionActionSource = 'system_generated' | 'app';
 
 export interface ConversionEvent {
   eventName: ConversionEventName;
@@ -175,7 +175,7 @@ export function mapStripeConversionEvent(options: {
       eventName: trial ? CONVERSION_EVENT_START_TRIAL : CONVERSION_EVENT_SUBSCRIBE,
       eventId: stripeCheckoutEventId(sessionId),
       eventTimeSeconds,
-      actionSource: 'website',
+      actionSource: 'system_generated',
       userId,
       value,
       currency: optionalString(object.currency)?.toUpperCase(),
@@ -199,7 +199,7 @@ export function mapStripeConversionEvent(options: {
       eventName: converted ? CONVERSION_EVENT_SUBSCRIBE : CONVERSION_EVENT_RENEWED,
       eventId: stripeInvoiceEventId(invoiceId),
       eventTimeSeconds,
-      actionSource: 'website',
+      actionSource: 'system_generated',
       userId,
       value: stripeMoney(object.amount_paid, object.currency),
       currency: optionalString(object.currency)?.toUpperCase(),
