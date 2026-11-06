@@ -128,6 +128,23 @@ describe('conversion event secrets (WARDROBE-249)', () => {
     ).filter((policy) => JSON.stringify(policy).includes('BillingFn'));
     expect(JSON.stringify(billingPolicies)).not.toContain('MetaCapiSecret');
     expect(JSON.stringify(billingPolicies)).not.toContain('TiktokEventsSecret');
+
+    const functions = Object.entries(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<
+      [
+        string,
+        { Properties: { Timeout?: number } },
+      ]
+    >;
+    const stripeTimeout = functions.find(([id]) =>
+      id.includes('StripeWebhookFn'),
+    )?.[1].Properties.Timeout;
+    const superwallTimeout = functions.find(([id]) =>
+      id.includes('EntitlementsWebhookFn'),
+    )?.[1].Properties.Timeout;
+    expect(stripeTimeout).toBe(20);
+    expect(superwallTimeout).toBe(20);
   });
 
   test('stage suffix is applied to conversion secret names', () => {

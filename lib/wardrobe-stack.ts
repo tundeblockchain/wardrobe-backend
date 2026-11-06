@@ -21,7 +21,11 @@ import {
 } from '../src/functions/ai-profiles/catalog';
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
-import { addConversionEventSecrets, grantConversionEventSecretRead } from './conversion-events';
+import {
+  addConversionEventSecrets,
+  CONVERSION_WEBHOOK_LAMBDA_TIMEOUT_SECONDS,
+  grantConversionEventSecretRead,
+} from './conversion-events';
 import { addEntitlements } from './entitlements';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
@@ -402,7 +406,7 @@ export class WardrobeStack extends cdk.Stack {
     // via grantStripeSecretRead only (below).
     const stripeWebhookFn = this.lambda('StripeWebhookFn', 'stripe-webhook', {
       ...commonLambdaProps,
-      timeout: cdk.Duration.seconds(15),
+      timeout: cdk.Duration.seconds(CONVERSION_WEBHOOK_LAMBDA_TIMEOUT_SECONDS),
     });
     // WARDROBE-114 job-done inbox + FCM device registration. Workers write
     // events; this Lambda only lists / acks / registers tokens.

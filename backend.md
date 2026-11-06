@@ -326,15 +326,16 @@ After deploy, create the Stripe test webhook endpoint at `{ApiUrl}/billing/strip
 
 ### Server-side conversion events (WARDROBE-249)
 
-After entitlement handling, `StripeWebhookFn` and `EntitlementsWebhookFn` send conversion events to Meta Conversions API and TikTok Events API. Failures are caught, retried with bounded backoff, and never change the webhook response.
+After entitlement handling, `StripeWebhookFn` and `EntitlementsWebhookFn` send conversion events. Failures are caught, retried with a 4s wall-clock cap (2 × 1.5s HTTP, 100ms backoff; Lambda timeout 20s), and never change the webhook response. Superwall/app events skip Meta CAPI (the app SDK sends those) and still send TikTok. Stripe/website events go to both.
 
-| Trigger | Event name (both platforms) | event_id |
+| Trigger | Event name | event_id |
 | --- | --- | --- |
 | New paid subscription | `Subscribe` | Stripe `stripe_<checkoutSessionId>`; Superwall `sw_<transactionId>` |
-| Trial start | `StartTrial` | same formats |
-| Renewal | `SubscriptionRenewed` | Stripe `stripe_<invoiceId>` from `invoice.paid` `billing_reason=subscription_cycle`; Superwall `sw_<transactionId>` |
+| Free trial / intro (price 0) | `StartTrial` | same formats |
+| Trial conversion (first paid period) | `Subscribe` | Stripe `stripe_<invoiceId>` (`invoice.paid` after a trial); Superwall `sw_<transactionId>` (`renewal` + `isTrialConversion`) |
+| Later paid renewal | `SubscriptionRenewed` | Stripe `stripe_<invoiceId>` from later `invoice.paid` `subscription_cycle`; Superwall `sw_<transactionId>` |
 
-`external_id` is SHA-256 hex of the Firebase uid only. `action_source` is `website` (Stripe) or `app` (Superwall). Secrets: `wardrobe/{stage}/meta-capi` `{pixelId, accessToken, testEventCode?}` and `wardrobe/{stage}/tiktok-events` `{pixelCode, accessToken, testEventCode?}`. Replace the CDK placeholders in AWS Secrets Manager per stage. Missing or placeholder secrets skip sending.
+`external_id` is SHA-256 hex of the Firebase uid only. Stripe `action_source` is `website`. Secrets: `wardrobe/{stage}/meta-capi` `{pixelId, accessToken, testEventCode?}` and `wardrobe/{stage}/tiktok-events` `{pixelCode, accessToken, testEventCode?}`. Replace the CDK placeholders in AWS Secrets Manager per stage. Missing or placeholder secrets skip sending.
 
 ---
 

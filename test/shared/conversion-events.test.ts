@@ -99,15 +99,61 @@ describe('mapStripeConversionEvent', () => {
     expect(event?.currency).toBe('USD');
   });
 
-  it('maps checkout.session.completed with a future trial_end to StartTrial', () => {
+  it('maps a trialing checkout with a charge to Subscribe, not StartTrial', () => {
     const event = mapStripeConversionEvent({
       type: 'checkout.session.completed',
-      object: { id: 'cs_trial_end' },
+      object: { id: 'cs_paid_trial', amount_total: 1500, currency: 'gbp' },
+      userId: UID,
+      subscription: { status: 'trialing', trial_end: EVENT_TIME + 86_400 },
+      eventTimeSeconds: EVENT_TIME,
+    });
+    expect(event?.eventName).toBe(CONVERSION_EVENT_SUBSCRIBE);
+  });
+
+  it('does not treat an active subscription with a future trial_end as StartTrial', () => {
+    const event = mapStripeConversionEvent({
+      type: 'checkout.session.completed',
+      object: { id: 'cs_trial_end', amount_total: 1500, currency: 'gbp' },
       userId: UID,
       subscription: { status: 'active', trial_end: EVENT_TIME + 10 },
       eventTimeSeconds: EVENT_TIME,
     });
-    expect(event?.eventName).toBe(CONVERSION_EVENT_START_TRIAL);
+    expect(event?.eventName).toBe(CONVERSION_EVENT_SUBSCRIBE);
+  });
+
+  it('maps the first paid invoice after a trial to Subscribe', () => {
+    const trialEnd = EVENT_TIME;
+    const event = mapStripeConversionEvent({
+      type: 'invoice.paid',
+      object: {
+        id: 'in_trial_convert',
+        billing_reason: 'subscription_cycle',
+        amount_paid: 1500,
+        currency: 'gbp',
+        customer: 'cus_1',
+        period_start: trialEnd,
+        subscription: 'sub_1',
+      },
+      userId: UID,
+      subscription: {
+        id: 'sub_1',
+        status: 'active',
+        trial_end: trialEnd,
+        current_period_start: trialEnd,
+      },
+      eventTimeSeconds: EVENT_TIME,
+    });
+
+    expect(event).toEqual({
+      eventName: CONVERSION_EVENT_SUBSCRIBE,
+      eventId: 'stripe_in_trial_convert',
+      eventTimeSeconds: EVENT_TIME,
+      actionSource: 'website',
+      externalId: HASHED,
+      value: 15,
+      currency: 'GBP',
+    });
+    assertNoPii(event);
   });
 
   it('maps invoice.paid subscription_cycle to SubscriptionRenewed', () => {
@@ -261,26 +307,45 @@ describe('mapSuperwallConversionEvent', () => {
     expect(superwallIsTrialStart({ periodType: 'TRIAL' })).toBe(true);
   });
 
-  it('maps an intro-offer periodType to StartTrial', () => {
+  it('maps a free intro offer (price 0) to StartTrial', () => {
+    expect(
+      mapSuperwallConversionEvent(
+        event('initial_purchase', {
+          periodType: 'INTRO',
+          price: 0,
+          priceInPurchasedCurrency: 0,
+        }),
+        UID,
+      )?.eventName,
+    ).toBe(CONVERSION_EVENT_START_TRIAL);
+    expect(
+      superwallIsTrialStart({ period_type: 'intro', price: 0 }),
+    ).toBe(true);
+  });
+
+  it('maps a paid intro offer (price > 0) to Subscribe', () => {
     expect(
       mapSuperwallConversionEvent(
         event('initial_purchase', { periodType: 'INTRO' }),
         UID,
       )?.eventName,
-    ).toBe(CONVERSION_EVENT_START_TRIAL);
-    expect(superwallIsTrialStart({ period_type: 'intro' })).toBe(true);
+    ).toBe(CONVERSION_EVENT_SUBSCRIBE);
+    expect(superwallIsTrialStart({ periodType: 'INTRO', price: 7.99 })).toBe(
+      false,
+    );
   });
 
-  it('maps a trial conversion on initial_purchase to Subscribe, not StartTrial', () => {
-    expect(
-      mapSuperwallConversionEvent(
-        event('initial_purchase', {
-          periodType: 'TRIAL',
-          isTrialConversion: true,
-        }),
-        UID,
-      )?.eventName,
-    ).toBe(CONVERSION_EVENT_SUBSCRIBE);
+  it('maps a Superwall trial conversion renewal to Subscribe', () => {
+    const mapped = mapSuperwallConversionEvent(
+      event('renewal', {
+        transactionId: '700008888001',
+        isTrialConversion: true,
+        periodType: 'NORMAL',
+      }),
+      UID,
+    );
+    expect(mapped?.eventName).toBe(CONVERSION_EVENT_SUBSCRIBE);
+    expect(mapped?.eventId).toBe('sw_700008888001');
   });
 
   it('maps renewal to SubscriptionRenewed using the new store transaction id', () => {

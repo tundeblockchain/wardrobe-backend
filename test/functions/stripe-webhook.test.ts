@@ -723,17 +723,57 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
     );
   });
 
-  it('sends SubscriptionRenewed for invoice.paid subscription_cycle and still returns unhandled_event', async () => {
+  it('sends Subscribe when a trialing checkout has a charge', async () => {
+    retrieve.mockResolvedValue(
+      subscription({ status: 'trialing', trial_end: PERIOD_END }),
+    );
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_test_paid_intro',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          customer: CUS_ID,
+          amount_total: 1500,
+          currency: 'gbp',
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'stripe_cs_test_paid_intro',
+      }),
+    );
+  });
+
+  it('sends Subscribe for the first paid invoice after a trial', async () => {
+    retrieve.mockResolvedValue(
+      subscription({
+        status: 'active',
+        trial_end: PERIOD_END,
+        current_period_start: PERIOD_END,
+      }),
+    );
     const { payload, signature } = signedPayload(
       stripeEventObject({
         type: 'invoice.paid',
         object: {
-          id: 'in_cycle_1',
+          id: 'in_trial_convert',
           object: 'invoice',
           billing_reason: 'subscription_cycle',
           amount_paid: 1500,
           currency: 'gbp',
           customer: CUS_ID,
+          subscription: SUB_ID,
+          period_start: PERIOD_END,
         },
       }),
     );
@@ -748,7 +788,42 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
       reason: 'unhandled_event',
       type: 'invoice.paid',
     });
-    expect(retrieve).not.toHaveBeenCalled();
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'stripe_in_trial_convert',
+        actionSource: 'website',
+      }),
+    );
+  });
+
+  it('sends SubscriptionRenewed for invoice.paid subscription_cycle and still returns unhandled_event', async () => {
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'invoice.paid',
+        object: {
+          id: 'in_cycle_1',
+          object: 'invoice',
+          billing_reason: 'subscription_cycle',
+          amount_paid: 1500,
+          currency: 'gbp',
+          customer: CUS_ID,
+          subscription: SUB_ID,
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'ignored',
+      reason: 'unhandled_event',
+      type: 'invoice.paid',
+    });
+    expect(retrieve).toHaveBeenCalled();
     expect(trackConversion).toHaveBeenCalledWith(
       expect.objectContaining({
         eventName: 'SubscriptionRenewed',

@@ -71,26 +71,60 @@ export function superwallConversionEventId(transactionId: string): string {
   return `sw_${transactionId.trim()}`;
 }
 
-export function isStripeTrialSubscription(
+/**
+ * Matches the app: StartTrial only for a free trial (status trialing and
+ * no charge). A trialing checkout with amount > 0 is Subscribe.
+ */
+export function isStripeFreeTrialCheckout(
   subscription: StripeSubscriptionLike | undefined,
-  eventTimeSeconds?: number,
+  amountMajor: number | undefined,
 ): boolean {
-  if (!subscription) {
+  const status = optionalString(subscription?.status)?.toLowerCase();
+  if (status !== 'trialing') {
     return false;
   }
-  const status = optionalString(subscription.status)?.toLowerCase();
-  if (status === 'trialing') {
-    return true;
+  return amountMajor === undefined || amountMajor === 0;
+}
+
+/**
+ * First paid invoice after a trial: `invoice.paid` `subscription_cycle`
+ * whose period start equals `subscription.trial_end`.
+ */
+export function isStripeTrialConversion(options: {
+  invoice: Record<string, unknown>;
+  subscription?: StripeSubscriptionLike;
+}): boolean {
+  const reason = optionalString(options.invoice.billing_reason)?.toLowerCase();
+  if (reason !== 'subscription_cycle') {
+    return false;
   }
-  const trialEnd = unixSeconds(subscription.trial_end);
+  const trialEnd = unixSeconds(options.subscription?.trial_end);
   if (trialEnd === undefined) {
     return false;
   }
-  const now =
-    typeof eventTimeSeconds === 'number' && Number.isFinite(eventTimeSeconds)
-      ? eventTimeSeconds
-      : Math.floor(Date.now() / 1000);
-  return trialEnd > now;
+  const periodStart =
+    invoicePeriodStart(options.invoice) ??
+    unixSeconds(options.subscription?.current_period_start) ??
+    unixSeconds(options.subscription?.items?.data?.[0]?.current_period_start);
+  if (periodStart === undefined) {
+    return false;
+  }
+  return periodStart === trialEnd;
+}
+
+export function stripeInvoiceSubscriptionId(
+  invoice: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!invoice) {
+    return undefined;
+  }
+  const fromSubscription = idOf(invoice.subscription);
+  if (fromSubscription) {
+    return fromSubscription;
+  }
+  const parent = asRecord(invoice.parent);
+  const details = asRecord(parent?.subscription_details);
+  return idOf(details?.subscription);
 }
 
 export function stripeMinorToMajor(
@@ -108,7 +142,9 @@ export function stripeMinorToMajor(
  * Map a verified Stripe webhook to a conversion event.
  *
  * Subscribe / StartTrial: `checkout.session.completed` (`stripe_<checkoutSessionId>`).
- * Renewal: `invoice.paid` with `billing_reason=subscription_cycle` (`stripe_<invoiceId>`).
+ * Trial conversion: `invoice.paid` `subscription_cycle` whose previous period
+ * was a trial → Subscribe (`stripe_<invoiceId>`).
+ * Later paid cycles: SubscriptionRenewed (`stripe_<invoiceId>`).
  * Other types, refunds, and missing ids return undefined.
  */
 export function mapStripeConversionEvent(options: {
@@ -133,17 +169,15 @@ export function mapStripeConversionEvent(options: {
     if (!sessionId) {
       return undefined;
     }
-    const trial = isStripeTrialSubscription(
-      options.subscription,
-      eventTimeSeconds,
-    );
+    const value = stripeMoney(object.amount_total, object.currency);
+    const trial = isStripeFreeTrialCheckout(options.subscription, value);
     return buildConversionEvent({
       eventName: trial ? CONVERSION_EVENT_START_TRIAL : CONVERSION_EVENT_SUBSCRIBE,
       eventId: stripeCheckoutEventId(sessionId),
       eventTimeSeconds,
       actionSource: 'website',
       userId,
-      value: stripeMoney(object.amount_total, object.currency),
+      value,
       currency: optionalString(object.currency)?.toUpperCase(),
     });
   }
@@ -157,8 +191,12 @@ export function mapStripeConversionEvent(options: {
     if (!invoiceId) {
       return undefined;
     }
+    const converted = isStripeTrialConversion({
+      invoice: object,
+      subscription: options.subscription,
+    });
     return buildConversionEvent({
-      eventName: CONVERSION_EVENT_RENEWED,
+      eventName: converted ? CONVERSION_EVENT_SUBSCRIBE : CONVERSION_EVENT_RENEWED,
       eventId: stripeInvoiceEventId(invoiceId),
       eventTimeSeconds,
       actionSource: 'website',
@@ -197,8 +235,10 @@ export function stripeObjectUid(
 /**
  * Map a verified Superwall webhook to a conversion event.
  *
- * initial_purchase → Subscribe or StartTrial (periodType TRIAL / INTRO).
- * renewal → SubscriptionRenewed.
+ * initial_purchase → StartTrial only for a free trial / intro (price 0);
+ * otherwise Subscribe.
+ * renewal with isTrialConversion (previous period TRIAL) → Subscribe.
+ * Later paid renewals → SubscriptionRenewed.
  * Restores, refunds, cancellations, and other events return undefined.
  * event_id is `sw_<transactionId>` (store transaction id; unique per purchase
  * and per renewal). Never generated randomly.
@@ -248,7 +288,9 @@ export function mapSuperwallConversionEvent(
   if (name === 'renewal') {
     return buildConversionEvent({
       ...base,
-      eventName: CONVERSION_EVENT_RENEWED,
+      eventName: superwallIsTrialConversion(data)
+        ? CONVERSION_EVENT_SUBSCRIBE
+        : CONVERSION_EVENT_RENEWED,
     });
   }
 
@@ -264,18 +306,57 @@ export function mapSuperwallConversionEvent(
   return undefined;
 }
 
+export function superwallIsTrialConversion(data: unknown): boolean {
+  const record = asRecord(data);
+  if (!record) {
+    return false;
+  }
+  return (
+    isTruthy(record.isTrialConversion) || isTruthy(record.is_trial_conversion)
+  );
+}
+
+/**
+ * Matches the app: StartTrial only for a free trial or intro offer with
+ * price 0. A paid intro (price > 0) is Subscribe.
+ */
 export function superwallIsTrialStart(data: unknown): boolean {
   const record = asRecord(data);
   if (!record) {
     return false;
   }
-  if (isTruthy(record.isTrialConversion) || isTruthy(record.is_trial_conversion)) {
+  if (superwallIsTrialConversion(record)) {
     return false;
   }
   const period = optionalString(record.periodType ?? record.period_type)
     ?.toUpperCase()
     .replace(/-/g, '_');
-  return period === 'TRIAL' || period === 'INTRO';
+  const price = firstFiniteNumber(
+    record.priceInPurchasedCurrency,
+    record.price_in_purchased_currency,
+    record.price,
+  );
+  const noCharge = price === undefined || price === 0;
+  if (period === 'TRIAL') {
+    return noCharge;
+  }
+  if (period === 'INTRO') {
+    return price === 0;
+  }
+  return false;
+}
+
+function invoicePeriodStart(
+  invoice: Record<string, unknown>,
+): number | undefined {
+  const fromInvoice = unixSeconds(invoice.period_start);
+  if (fromInvoice !== undefined) {
+    return fromInvoice;
+  }
+  const lines = asRecord(invoice.lines);
+  const first = Array.isArray(lines?.data) ? asRecord(lines.data[0]) : undefined;
+  const period = asRecord(first?.period);
+  return unixSeconds(period?.start);
 }
 
 function buildConversionEvent(options: {

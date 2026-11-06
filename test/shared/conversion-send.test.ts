@@ -218,8 +218,8 @@ describe('sendConversionEvent', () => {
     ).resolves.toBeUndefined();
 
     expect(fetchImpl).toHaveBeenCalledTimes(CONVERSION_MAX_ATTEMPTS * 2);
-    expect(sleep).toHaveBeenCalledWith(50);
-    expect(sleep).toHaveBeenCalledWith(150);
+    expect(sleep).toHaveBeenCalledWith(100);
+    expect(sleep).not.toHaveBeenCalledWith(150);
     expect(log.warn).toHaveBeenCalledWith(
       'Conversion platform request failed',
       expect.objectContaining({
@@ -258,10 +258,67 @@ describe('sendConversionEvent', () => {
     );
     expect(metaCalls).toHaveLength(1);
     expect(tiktokCalls).toHaveLength(1);
+    expect(log.error).toHaveBeenCalledWith(
+      'Conversion platform request failed',
+      expect.objectContaining({
+        platform: 'meta',
+        status: 400,
+        retryable: false,
+      }),
+    );
     expect(log.info).toHaveBeenCalledWith(
       'Conversion event sent',
       expect.objectContaining({ platform: 'tiktok', eventId: 'stripe_cs_1' }),
     );
+  });
+
+  it('skips Meta CAPI for app-sourced events and still sends TikTok', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(200, { code: 0 }));
+    await sendConversionEvent(
+      {
+        ...subscribeEvent,
+        actionSource: 'app',
+        eventId: 'sw_app_1',
+      },
+      deps(fetchImpl),
+    );
+
+    const metaCalls = fetchImpl.mock.calls.filter(([url]) =>
+      String(url).includes('graph.facebook.com'),
+    );
+    const tiktokCalls = fetchImpl.mock.calls.filter(([url]) =>
+      String(url).includes('tiktok.com'),
+    );
+    expect(metaCalls).toHaveLength(0);
+    expect(tiktokCalls).toHaveLength(1);
+    expect(log.info).toHaveBeenCalledWith(
+      'Skipping Meta CAPI for app-sourced event; app SDK sends Meta',
+      expect.objectContaining({ eventId: 'sw_app_1' }),
+    );
+  });
+
+  it('logs a 4xx platform error code and does not retry', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      jsonResponse(400, { error: { message: 'Invalid parameter', code: 100 } }),
+    );
+    await sendConversionEvent(subscribeEvent, deps(fetchImpl));
+
+    const metaCalls = fetchImpl.mock.calls.filter(([url]) =>
+      String(url).includes('graph.facebook.com'),
+    );
+    expect(metaCalls).toHaveLength(1);
+    expect(log.error).toHaveBeenCalledWith(
+      'Conversion platform request failed',
+      expect.objectContaining({
+        platform: 'meta',
+        status: 400,
+        platformErrorCode: 100,
+        retryable: false,
+      }),
+    );
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain(META_TOKEN);
+    expect(serialized).not.toContain(UID);
   });
 
   it('is a no-op when the mapped event is undefined', async () => {

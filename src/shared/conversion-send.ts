@@ -10,9 +10,12 @@ export const META_CAPI_GRAPH_VERSION = 'v21.0';
 export const TIKTOK_EVENTS_URL =
   'https://business-api.tiktok.com/open_api/v1.3/event/track/';
 
-export const CONVERSION_MAX_ATTEMPTS = 3;
-export const CONVERSION_BACKOFF_MS = [50, 150, 450] as const;
-export const CONVERSION_HTTP_TIMEOUT_MS = 3000;
+/** Bounded so tracking cannot consume the webhook Lambda timeout. */
+export const CONVERSION_MAX_ATTEMPTS = 2;
+export const CONVERSION_BACKOFF_MS = [100] as const;
+export const CONVERSION_HTTP_TIMEOUT_MS = 1500;
+/** Wall-clock cap for both platforms (parallel). Well under the 20s Lambda timeout. */
+export const CONVERSION_DEADLINE_MS = 4000;
 
 export interface ConversionPlatformSecret {
   id: string;
@@ -25,6 +28,7 @@ export interface ConversionSendDeps {
   getSecretString?: (secretId: string) => Promise<string>;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  nowMs?: () => number;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
@@ -123,10 +127,12 @@ export async function sendConversionEvent(
     return;
   }
   const log = deps.log ?? logger;
+  const nowMs = deps.nowMs ?? Date.now;
+  const deadlineMs = nowMs() + CONVERSION_DEADLINE_MS;
   try {
     await Promise.all([
-      sendMeta(event, deps, log),
-      sendTikTok(event, deps, log),
+      sendMeta(event, deps, log, deadlineMs),
+      sendTikTok(event, deps, log, deadlineMs),
     ]);
   } catch (error) {
     log.error('Conversion tracking failed', {
@@ -141,7 +147,15 @@ async function sendMeta(
   event: ConversionEvent,
   deps: ConversionSendDeps,
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
+  deadlineMs: number,
 ): Promise<void> {
+  if (event.actionSource === 'app') {
+    log.info('Skipping Meta CAPI for app-sourced event; app SDK sends Meta', {
+      eventName: event.eventName,
+      eventId: event.eventId,
+    });
+    return;
+  }
   const secret = await loadCachedSecret({
     envKey: META_CAPI_SECRET_ARN_ENV,
     cache: metaSecretCache,
@@ -174,6 +188,7 @@ async function sendMeta(
     isSuccess: (status, body) => status >= 200 && status < 300 && !metaError(body),
     deps,
     log,
+    deadlineMs,
   });
 }
 
@@ -181,6 +196,7 @@ async function sendTikTok(
   event: ConversionEvent,
   deps: ConversionSendDeps,
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
+  deadlineMs: number,
 ): Promise<void> {
   const secret = await loadCachedSecret({
     envKey: TIKTOK_EVENTS_SECRET_ARN_ENV,
@@ -218,6 +234,7 @@ async function sendTikTok(
       status >= 200 && status < 300 && tiktokCode(body) === 0,
     deps,
     log,
+    deadlineMs,
   });
 }
 
@@ -274,19 +291,29 @@ async function postWithRetries(options: {
   isSuccess: (status: number, body: string) => boolean;
   deps: ConversionSendDeps;
   log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+  deadlineMs: number;
 }): Promise<void> {
   const fetchImpl = options.deps.fetchImpl ?? fetch;
   const sleep = options.deps.sleep ?? defaultSleep;
+  const nowMs = options.deps.nowMs ?? Date.now;
   let lastError: string = 'unknown';
   let lastStatus: number | undefined;
 
   for (let attempt = 1; attempt <= CONVERSION_MAX_ATTEMPTS; attempt += 1) {
+    const remainingMs = options.deadlineMs - nowMs();
+    if (remainingMs <= 0) {
+      options.log.warn('Conversion tracking deadline reached', {
+        platform: options.platform,
+        eventName: options.event.eventName,
+        eventId: options.event.eventId,
+        attempt,
+      });
+      return;
+    }
     try {
       const controller = new AbortController();
-      const timer = setTimeout(
-        () => controller.abort(),
-        CONVERSION_HTTP_TIMEOUT_MS,
-      );
+      const timeoutMs = Math.min(CONVERSION_HTTP_TIMEOUT_MS, remainingMs);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       let response: Response;
       try {
         response = await fetchImpl(options.url, {
@@ -309,14 +336,21 @@ async function postWithRetries(options: {
       }
       lastError = `status ${response.status}`;
       const retryable = isRetryableStatus(response.status);
-      options.log.warn('Conversion platform request failed', {
+      const platformErrorCode = platformErrorCodeOf(options.platform, body);
+      const fields = {
         platform: options.platform,
         eventName: options.event.eventName,
         eventId: options.event.eventId,
         attempt,
         status: response.status,
         retryable,
-      });
+        ...(platformErrorCode !== undefined ? { platformErrorCode } : {}),
+      };
+      if (!retryable && response.status >= 400 && response.status < 500) {
+        options.log.error('Conversion platform request failed', fields);
+        return;
+      }
+      options.log.warn('Conversion platform request failed', fields);
       if (!retryable || attempt === CONVERSION_MAX_ATTEMPTS) {
         return;
       }
@@ -334,7 +368,11 @@ async function postWithRetries(options: {
         return;
       }
     }
-    await sleep(CONVERSION_BACKOFF_MS[attempt - 1] ?? 450);
+    const backoff = CONVERSION_BACKOFF_MS[attempt - 1] ?? 100;
+    if (nowMs() + backoff >= options.deadlineMs) {
+      return;
+    }
+    await sleep(backoff);
   }
 
   options.log.error('Conversion platform exhausted retries', {
@@ -421,6 +459,41 @@ function tiktokCode(body: string): number | undefined {
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+function platformErrorCodeOf(
+  platform: 'meta' | 'tiktok',
+  body: string,
+): string | number | undefined {
+  if (!body.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (platform === 'tiktok') {
+      return typeof parsed.code === 'number' ? parsed.code : undefined;
+    }
+    const error = asJsonRecord(parsed.error);
+    if (!error) {
+      return undefined;
+    }
+    if (typeof error.code === 'number' || typeof error.code === 'string') {
+      return error.code;
+    }
+    if (typeof error.type === 'string' && error.type.trim()) {
+      return error.type.trim();
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function asJsonRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }
 
 async function safeReadBody(response: Response): Promise<string> {

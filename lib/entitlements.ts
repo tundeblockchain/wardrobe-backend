@@ -7,6 +7,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import { CONVERSION_WEBHOOK_LAMBDA_TIMEOUT_SECONDS } from './conversion-events';
 
 /**
  * Isolated WARDROBE-91 wiring (Superwall webhook → Dynamo entitlements).
@@ -47,7 +48,7 @@ export function addEntitlements(
 
   const webhookFn = new NodejsFunction(scope, 'EntitlementsWebhookFn', {
     ...commonLambdaProps,
-    timeout: cdk.Duration.seconds(15),
+    timeout: cdk.Duration.seconds(CONVERSION_WEBHOOK_LAMBDA_TIMEOUT_SECONDS),
     environment: {
       ...commonLambdaProps.environment,
       SUPERWALL_SECRET_ARN: superwallSecret.secretArn,

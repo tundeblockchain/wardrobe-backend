@@ -8,7 +8,12 @@ import { Construct } from 'constructs';
  *
  * CDK creates placeholders only. Operators replace the JSON in Secrets
  * Manager per stage after deploy. Never commit real tokens.
+ *
+ * Webhook Lambdas are 20s. Conversion send is capped at 4s wall-clock
+ * (2 attempts × 1.5s HTTP timeout + 100ms backoff, platforms in parallel)
+ * so entitlement handling still has headroom.
  */
+export const CONVERSION_WEBHOOK_LAMBDA_TIMEOUT_SECONDS = 20;
 export interface ConversionEventSecretsProps {
   stage: string;
   removalPolicy: cdk.RemovalPolicy;

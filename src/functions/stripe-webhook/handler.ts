@@ -2,6 +2,7 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import {
   ConversionEvent,
   mapStripeConversionEvent,
+  stripeInvoiceSubscriptionId,
   stripeObjectCustomerId,
   stripeObjectUid,
 } from '../../shared/conversion-events';
@@ -116,9 +117,18 @@ export async function handleStripeWebhook(
       return json(200, { status: 'ignored', reason: 'missing_event_id' });
     }
     if (!isStripeWebhookEventType(eventType)) {
+      const object = asRecord(stripeEvent.data?.object);
+      const subscription = await loadSubscriptionForConversion(
+        eventType,
+        object,
+        deps,
+        configDeps,
+        log,
+      );
       await trackStripeConversion({
         type: eventType,
-        object: asRecord(stripeEvent.data?.object),
+        object,
+        subscription,
         eventTimeSeconds:
           typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
         deps,
@@ -250,6 +260,43 @@ async function trackStripeConversion(options: {
       error: error instanceof Error ? error.message : 'unknown',
     });
   }
+}
+
+async function loadSubscriptionForConversion(
+  eventType: string,
+  object: Record<string, unknown> | undefined,
+  deps: StripeWebhookHandlerDeps,
+  configDeps: StripeConfigDeps,
+  log: Pick<typeof logger, 'info' | 'warn' | 'error'>,
+): Promise<StripeSubscriptionLike | undefined> {
+  if (eventType !== 'invoice.paid') {
+    return undefined;
+  }
+  const billingReason = optionalString(object?.billing_reason)?.toLowerCase();
+  if (billingReason !== 'subscription_cycle') {
+    return undefined;
+  }
+  const subscriptionId = stripeInvoiceSubscriptionId(object);
+  if (!subscriptionId) {
+    return undefined;
+  }
+  try {
+    const loadClient =
+      deps.getStripeClient ??
+      (() => getStripeClient(configDeps) as Promise<StripeWebhookClient>);
+    const stripe = await loadClient();
+    const retrieve = deps.retrieveSubscription ?? retrieveStripeSubscription;
+    return await retrieve(stripe, subscriptionId);
+  } catch (error) {
+    log.warn('Conversion skipped subscription retrieve', {
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return undefined;
+  }
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 async function resolveConversionUid(

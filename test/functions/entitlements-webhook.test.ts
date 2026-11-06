@@ -608,7 +608,11 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
     const result = asResult(
       await handleSuperwallWebhook(
         webhookEvent({
-          payload: conversionPayload({ periodType: 'TRIAL', price: 0 }),
+          payload: conversionPayload({
+            periodType: 'TRIAL',
+            price: 0,
+            priceInPurchasedCurrency: 0,
+          }),
         }),
         deps(),
       ),
@@ -622,6 +626,52 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
       expect.objectContaining({
         eventName: 'StartTrial',
         eventId: 'sw_700002054157982',
+      }),
+    );
+  });
+
+  it('sends Subscribe for a paid Superwall intro offer', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: conversionPayload({ periodType: 'INTRO' }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'sw_700002054157982',
+      }),
+    );
+  });
+
+  it('sends Subscribe for a Superwall trial conversion renewal', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: conversionPayload({
+            name: 'renewal',
+            transactionId: '700008888001',
+            isTrialConversion: true,
+            periodType: 'NORMAL',
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventName: 'renewal' }),
+    );
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'sw_700008888001',
       }),
     );
   });
@@ -706,7 +756,12 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
       tier: 'PREMIUM',
     });
     expect(save).toHaveBeenCalled();
-    expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(fetchImpl.mock.calls).toHaveLength(2);
+    expect(
+      fetchImpl.mock.calls.every(
+        ([url]) => !String(url).includes('graph.facebook.com'),
+      ),
+    ).toBe(true);
     expect(log.warn).toHaveBeenCalledWith(
       'Conversion platform request failed',
       expect.objectContaining({ eventId: 'sw_700002054157982', status: 500 }),

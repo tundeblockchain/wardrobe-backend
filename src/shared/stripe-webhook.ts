@@ -48,12 +48,14 @@ export interface StripeSubscriptionLike {
   customer?: string | { id?: string; metadata?: Record<string, unknown> };
   metadata?: Record<string, unknown>;
   current_period_end?: number;
+  current_period_start?: number;
   trial_end?: number | null;
   ended_at?: number | null;
   deleted?: boolean;
   items?: {
     data?: Array<{
       current_period_end?: number;
+      current_period_start?: number;
       price?:
         | string
         | {

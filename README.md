@@ -3013,13 +3013,16 @@ Live mode (prod only, after `stripeMode=live`) uses `wardrobe/prod/stripe-live` 
 
 After Stripe and Superwall entitlement handling, the webhook Lambdas send conversion events to Meta Conversions API and TikTok Events API. Tracking never changes the webhook HTTP response: failures are caught, logged (no tokens, no PII), and retried a small bounded number of times with backoff. Duplicate deliveries reuse the same `event_id` so the platforms can dedupe. Restores, refunds, and cancellations send nothing.
 
+**Meta is Stripe/website only.** Superwall (app) events are **not** sent to Meta CAPI — the app SDK already sends those. Superwall still sends TikTok. Stripe/website events go to both platforms.
+
 ### Events
 
-| Trigger | Meta `event_name` | TikTok `event` | `action_source` / `event_source` |
+| Trigger | Meta | TikTok | Source |
 | --- | --- | --- | --- |
-| New paid subscription | `Subscribe` | `Subscribe` | Stripe: Meta `website` / TikTok `web`. Superwall: Meta `app` / TikTok `app` |
-| Trial start | `StartTrial` | `StartTrial` | same |
-| Renewal (server-only) | `SubscriptionRenewed` | `SubscriptionRenewed` | same |
+| New paid subscription | `Subscribe` (Stripe only) | `Subscribe` | Stripe checkout; Superwall `initial_purchase` (including paid intro) |
+| Free trial / intro (price 0) | `StartTrial` (Stripe only) | `StartTrial` | Stripe `trialing` with no charge; Superwall `periodType` `TRIAL` or `INTRO` with price 0 |
+| Trial conversion (first paid period) | `Subscribe` (Stripe only) | `Subscribe` | Stripe `invoice.paid` `subscription_cycle` after a trial (`stripe_<invoiceId>`); Superwall `renewal` with `isTrialConversion` (`sw_<transactionId>`) |
+| Later paid renewal | `SubscriptionRenewed` (Stripe only) | `SubscriptionRenewed` | Stripe later `invoice.paid` `subscription_cycle`; Superwall `renewal` without `isTrialConversion` |
 
 Parameters sent when available:
 
@@ -3030,11 +3033,13 @@ Parameters sent when available:
 
 No email, phone, name, item text, or raw ids in plain text.
 
-**Trial vs subscribe.** Stripe: subscription `status=trialing` or a future `trial_end`. Superwall: `periodType` `TRIAL` or `INTRO` on `initial_purchase` (`isTrialConversion` is treated as a paid Subscribe, not StartTrial). Superwall `renewal` is always `SubscriptionRenewed`. Stripe renewals are `invoice.paid` with `billing_reason=subscription_cycle` only.
+**Trial vs subscribe.** Matches the app: `StartTrial` only for a free trial or intro offer with price 0. Stripe: `status=trialing` and no charge. Superwall: `periodType` `TRIAL` or `INTRO` with price 0. A paid intro (price > 0) is `Subscribe`. Trial conversion (user pays after a trial) is `Subscribe`, not `SubscriptionRenewed`. Only later paid cycles are `SubscriptionRenewed`.
 
-**Meta app events.** Superwall sends Meta `action_source=app` with hashed `external_id` only. Superwall webhooks do not include advertising IDs, ATT flags, or `extinfo`, so `app_data` is omitted. Matching for app events is limited to `external_id`.
+**Meta app events.** Superwall / app-sourced events skip Meta CAPI entirely (info log). The app SDK is the Meta path for app purchases. Server-side Meta is website/Stripe only (`action_source=website`).
 
 **TikTok app events.** Superwall sends TikTok `event_source=app` with `event_source_id` set to the secret's `pixelCode`. TikTok app events typically expect a TikTok App ID as `event_source_id`; if the pixel code is not accepted for app events, put the App ID in `pixelCode` (the JSON field name stays `pixelCode`).
+
+**Timeouts.** Both webhook Lambdas are 20 seconds. Conversion send is capped at 4 seconds wall-clock (2 attempts × 1.5s HTTP timeout + 100ms backoff; Meta and TikTok in parallel). 4xx responses are not retried except 429; the platform error code is logged at error (no tokens, no PII).
 
 ### `event_id` formats (fixed; shared with the app and web)
 
