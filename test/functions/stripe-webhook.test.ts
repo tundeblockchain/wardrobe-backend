@@ -622,3 +622,252 @@ describe('POST /billing/stripe-webhook (WARDROBE-190)', () => {
     ]);
   });
 });
+
+describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => {
+  const retrieve = jest.fn();
+  const customersRetrieve = jest.fn();
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  const trackConversion = jest.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPutItem.mockResolvedValue(undefined);
+    mockPutItemIfNotExists.mockResolvedValue(true);
+    mockGetItem.mockResolvedValue({
+      entityType: 'STRIPE_CUSTOMER',
+      userId: UID,
+    });
+    mockQueryByPk.mockResolvedValue([]);
+    mockDeleteItem.mockResolvedValue(undefined);
+    retrieve.mockResolvedValue(subscription());
+    customersRetrieve.mockResolvedValue({ id: CUS_ID, metadata: { uid: UID } });
+    trackConversion.mockResolvedValue(undefined);
+  });
+
+  function deps() {
+    return {
+      loadConfig: async () => stripeConfig(),
+      getStripeClient: async () => ({
+        subscriptions: { retrieve },
+        customers: { retrieve: customersRetrieve },
+      }),
+      log,
+      trackConversion,
+    };
+  }
+
+  it('sends Subscribe after checkout.session.completed without changing the webhook body', async () => {
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_test_paid',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          customer: CUS_ID,
+          amount_total: 1500,
+          currency: 'gbp',
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({
+        status: 'applied',
+        tier: 'premium',
+        eventId: EVENT_ID,
+      }),
+    );
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'stripe_cs_test_paid',
+        actionSource: 'website',
+      }),
+    );
+  });
+
+  it('sends StartTrial when the retrieved subscription is trialing', async () => {
+    retrieve.mockResolvedValue(subscription({ status: 'trialing', trial_end: PERIOD_END }));
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_test_trial',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          amount_total: 0,
+          currency: 'gbp',
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+    );
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'StartTrial',
+        eventId: 'stripe_cs_test_trial',
+      }),
+    );
+  });
+
+  it('sends SubscriptionRenewed for invoice.paid subscription_cycle and still returns unhandled_event', async () => {
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'invoice.paid',
+        object: {
+          id: 'in_cycle_1',
+          object: 'invoice',
+          billing_reason: 'subscription_cycle',
+          amount_paid: 1500,
+          currency: 'gbp',
+          customer: CUS_ID,
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'ignored',
+      reason: 'unhandled_event',
+      type: 'invoice.paid',
+    });
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'SubscriptionRenewed',
+        eventId: 'stripe_in_cycle_1',
+        actionSource: 'website',
+      }),
+    );
+  });
+
+  it('sends nothing for invoice.paid that is not a subscription cycle', async () => {
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'invoice.paid',
+        object: {
+          id: 'in_create_1',
+          billing_reason: 'subscription_create',
+          amount_paid: 0,
+          currency: 'gbp',
+          customer: CUS_ID,
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(bodyOf(result)).toEqual({
+      status: 'ignored',
+      reason: 'unhandled_event',
+      type: 'invoice.paid',
+    });
+    expect(trackConversion).not.toHaveBeenCalled();
+  });
+
+  it('sends nothing for refunds and still returns 200', async () => {
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'charge.refunded',
+        object: { id: 'ch_1', customer: CUS_ID },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'ignored',
+      reason: 'unhandled_event',
+      type: 'charge.refunded',
+    });
+    expect(trackConversion).not.toHaveBeenCalled();
+  });
+
+  it('retries a platform HTTP failure, logs it, and does not change the webhook response', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: async () => '{"error":{"message":"unavailable"}}',
+      } as Response);
+    const sleep = jest.fn(async () => undefined);
+    retrieve.mockResolvedValue(subscription());
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_retry',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          amount_total: 1500,
+          currency: 'gbp',
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), {
+        loadConfig: async () => stripeConfig(),
+        getStripeClient: async () => ({
+          subscriptions: { retrieve },
+          customers: { retrieve: customersRetrieve },
+        }),
+        log,
+        conversionSendDeps: {
+          env: {
+            META_CAPI_SECRET_ARN: 'arn:secret:meta-capi',
+            TIKTOK_EVENTS_SECRET_ARN: 'arn:secret:tiktok-events',
+          },
+          getSecretString: async (arn: string) =>
+            arn.includes('meta')
+              ? JSON.stringify({ pixelId: '111', accessToken: 'meta-token' })
+              : JSON.stringify({ pixelCode: 'C1', accessToken: 'tt-token' }),
+          fetchImpl,
+          sleep,
+          log,
+        },
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+    );
+    expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(log.warn).toHaveBeenCalledWith(
+      'Conversion platform request failed',
+      expect.objectContaining({ eventId: 'stripe_cs_retry', status: 503 }),
+    );
+    const serialized = JSON.stringify({
+      info: log.info.mock.calls,
+      warn: log.warn.mock.calls,
+      error: log.error.mock.calls,
+    });
+    expect(serialized).not.toContain('meta-token');
+    expect(serialized).not.toContain('tt-token');
+    expect(serialized).not.toContain(UID);
+  });
+});

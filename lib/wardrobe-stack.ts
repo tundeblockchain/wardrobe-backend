@@ -21,6 +21,7 @@ import {
 } from '../src/functions/ai-profiles/catalog';
 import { tryOnSecretName } from '../src/functions/ai-profiles/hooks';
 import { ITEM_PROCESSING_MAX_RECEIVE_COUNT } from '../src/shared/types';
+import { addConversionEventSecrets, grantConversionEventSecretRead } from './conversion-events';
 import { addEntitlements } from './entitlements';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
@@ -1242,6 +1243,13 @@ export class WardrobeStack extends cdk.Stack {
       mode: stripe.mode,
       lookupKeys: stripe.lookupKeys,
     });
+
+    // WARDROBE-249: Meta CAPI + TikTok Events API. Placeholders until
+    // operators replace the JSON. Granted only to the Stripe and Superwall
+    // webhook Lambdas so conversion sends cannot fail checkout / GET /me.
+    const conversion = addConversionEventSecrets(this, { stage, removalPolicy });
+    grantConversionEventSecretRead(stripeWebhookFn, conversion);
+    grantConversionEventSecretRead(entitlements.webhookFn, conversion);
 
     new cdk.CfnOutput(this, 'StripeWebhookUrl', {
       value: `${httpApi.apiEndpoint}/billing/stripe-webhook`,

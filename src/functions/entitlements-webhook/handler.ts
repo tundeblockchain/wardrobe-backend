@@ -1,4 +1,9 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { ConversionEvent, mapSuperwallConversionEvent } from '../../shared/conversion-events';
+import {
+  ConversionSendDeps,
+  sendConversionEvent,
+} from '../../shared/conversion-send';
 import {
   applySuperwallEvent,
   bindTransactionOwner,
@@ -37,6 +42,8 @@ export interface SuperwallWebhookDeps {
     userId: string,
   ) => Promise<boolean>;
   nowSeconds?: number;
+  trackConversion?: (event: ConversionEvent | undefined) => Promise<void>;
+  conversionSendDeps?: ConversionSendDeps;
 }
 
 /**
@@ -191,6 +198,8 @@ export async function handleSuperwallWebhook(
       await (deps.save ?? persistEntitlement)(stored);
     }
 
+    await trackSuperwallConversion(inbound, userId, deps);
+
     return json(200, {
       status: skipped ? 'duplicate' : 'applied',
       eventName,
@@ -269,4 +278,26 @@ function stringOrUndefined(value: unknown): string | undefined {
 
 function numberOrUndefined(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+async function trackSuperwallConversion(
+  inbound: SuperwallWebhookEvent,
+  userId: string,
+  deps: SuperwallWebhookDeps,
+): Promise<void> {
+  try {
+    const event = mapSuperwallConversionEvent(inbound, userId, deps.nowSeconds);
+    if (!event) {
+      return;
+    }
+    if (deps.trackConversion) {
+      await deps.trackConversion(event);
+      return;
+    }
+    await sendConversionEvent(event, deps.conversionSendDeps);
+  } catch (error) {
+    logger.error('Conversion tracking failed', {
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+  }
 }

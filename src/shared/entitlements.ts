@@ -77,10 +77,15 @@ export interface SuperwallEventData {
   /** Not part of Superwall's documented webhook `data`. Read only if a uid. */
   appUserId?: unknown;
   originalTransactionId?: unknown;
+  transactionId?: unknown;
   store?: unknown;
   expirationAt?: unknown;
   purchasedAt?: unknown;
   price?: unknown;
+  priceInPurchasedCurrency?: unknown;
+  currencyCode?: unknown;
+  periodType?: unknown;
+  isTrialConversion?: unknown;
   userAttributes?: unknown;
 }
 

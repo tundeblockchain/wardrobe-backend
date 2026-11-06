@@ -1,4 +1,14 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import {
+  ConversionEvent,
+  mapStripeConversionEvent,
+  stripeObjectCustomerId,
+  stripeObjectUid,
+} from '../../shared/conversion-events';
+import {
+  ConversionSendDeps,
+  sendConversionEvent,
+} from '../../shared/conversion-send';
 import { Errors } from '../../shared/errors';
 import { errorResponse, json } from '../../shared/http';
 import { logger } from '../../shared/logger';
@@ -18,6 +28,7 @@ import {
   retrieveStripeSubscription,
   resolveStripeWebhookUid,
   stripeEventId,
+  StripeSubscriptionLike,
   stripeSignatureHeader,
   StripeWebhookApplyDeps,
   StripeWebhookClient,
@@ -40,6 +51,8 @@ export interface StripeWebhookHandlerDeps extends StripeWebhookApplyDeps {
     customerId: string,
   ) => Promise<string | undefined>;
   stripeConfigDeps?: StripeConfigDeps;
+  trackConversion?: (event: ConversionEvent | undefined) => Promise<void>;
+  conversionSendDeps?: ConversionSendDeps;
 }
 
 /**
@@ -103,6 +116,14 @@ export async function handleStripeWebhook(
       return json(200, { status: 'ignored', reason: 'missing_event_id' });
     }
     if (!isStripeWebhookEventType(eventType)) {
+      await trackStripeConversion({
+        type: eventType,
+        object: asRecord(stripeEvent.data?.object),
+        eventTimeSeconds:
+          typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
+        deps,
+        log,
+      });
       return json(200, { status: 'ignored', reason: 'unhandled_event', type: eventType });
     }
 
@@ -161,6 +182,17 @@ export async function handleStripeWebhook(
         nowMs: deps.nowMs,
       });
 
+      await trackStripeConversion({
+        type: eventType,
+        object: asRecord(stripeEvent.data?.object),
+        userId,
+        subscription,
+        eventTimeSeconds:
+          typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
+        deps,
+        log,
+      });
+
       return json(200, {
         status: result.status,
         reason: result.reason,
@@ -175,4 +207,66 @@ export async function handleStripeWebhook(
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+async function trackStripeConversion(options: {
+  type: string;
+  object: Record<string, unknown> | undefined;
+  userId?: string;
+  subscription?: StripeSubscriptionLike;
+  eventTimeSeconds?: number;
+  deps: StripeWebhookHandlerDeps;
+  log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+}): Promise<void> {
+  try {
+    if (
+      options.type !== 'checkout.session.completed' &&
+      options.type !== 'invoice.paid'
+    ) {
+      return;
+    }
+    const userId =
+      options.userId ??
+      stripeObjectUid(options.object) ??
+      (await resolveConversionUid(options.object, options.deps));
+    const event = mapStripeConversionEvent({
+      type: options.type,
+      object: options.object,
+      userId,
+      subscription: options.subscription,
+      eventTimeSeconds: options.eventTimeSeconds,
+    });
+    if (!event) {
+      return;
+    }
+    if (options.deps.trackConversion) {
+      await options.deps.trackConversion(event);
+      return;
+    }
+    await sendConversionEvent(event, options.deps.conversionSendDeps);
+  } catch (error) {
+    options.log.error('Conversion tracking failed', {
+      eventType: options.type,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+  }
+}
+
+async function resolveConversionUid(
+  object: Record<string, unknown> | undefined,
+  deps: StripeWebhookHandlerDeps,
+): Promise<string | undefined> {
+  const customerId = stripeObjectCustomerId(object);
+  if (!customerId) {
+    return undefined;
+  }
+  const load = deps.loadUidByStripeCustomerId ?? loadUidByStripeCustomerId;
+  return load(customerId);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }
