@@ -23,6 +23,10 @@ jest.mock('@aws-sdk/client-s3', () => ({
     _op: 'DeleteObject',
     input,
   })),
+  CopyObjectCommand: jest.fn().mockImplementation((input: unknown) => ({
+    _op: 'CopyObject',
+    input,
+  })),
 }));
 
 jest.mock('@aws-sdk/s3-request-presigner', () => ({
@@ -34,7 +38,11 @@ import {
   aiProfileReferencePrefix,
   assertUploadContentLength,
   bucketName,
+  copyObject,
   createPresignedGetUrl,
+  extensionFromObjectKey,
+  itemOriginalObjectKey,
+  wishlistMediaPrefix,
   createPresignedPutUrl,
   deleteObjectsUnderAiProfilePrefix,
   deleteObjectBestEffort,
@@ -88,6 +96,44 @@ describe('s3 helpers (WARDROBE-8)', () => {
         expect(appError.code).toBe('INTERNAL_ERROR');
         expect(appError.statusCode).toBe(500);
       }
+    });
+  });
+
+  describe('wishlist media keys (WARDROBE-244)', () => {
+    it('builds users/{uid}/wishlist/', () => {
+      expect(wishlistMediaPrefix('uid-1')).toBe('users/uid-1/wishlist/');
+    });
+
+    it('builds item original keys under users/{uid}/items/{itemId}/', () => {
+      expect(itemOriginalObjectKey('uid-1', 'item_abc', 'jpg')).toBe(
+        'users/uid-1/items/item_abc/original.jpg',
+      );
+    });
+
+    it('reads the extension from an object key', () => {
+      expect(extensionFromObjectKey('users/uid/wishlist/uploads/x.png')).toBe(
+        'png',
+      );
+      expect(extensionFromObjectKey('no-extension')).toBe('jpg');
+    });
+
+    it('copies within the media bucket', async () => {
+      mockSend.mockResolvedValue({});
+      await copyObject({
+        sourceKey: 'users/uid/wishlist/uploads/a.jpg',
+        destinationKey: 'users/uid/items/item_1/original.jpg',
+      });
+      expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _op: 'CopyObject',
+          input: expect.objectContaining({
+            Bucket: 'wardrobe-media-test',
+            CopySource:
+              'wardrobe-media-test/users/uid/wishlist/uploads/a.jpg',
+            Key: 'users/uid/items/item_1/original.jpg',
+          }),
+        }),
+      );
     });
   });
 

@@ -484,6 +484,28 @@ describe('outfits handler (WARDROBE-7)', () => {
       ).toBe(false);
     });
 
+    it('does not treat a wish id as an outfit item (WARDROBE-244)', async () => {
+      mockOwnedItemsThen(async () => {
+        throw new Error('DynamoDB should not be written for a wish id');
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            body: createBody({
+              items: [{ itemId: 'wish_abc123xyz0', slot: 'TOP' }],
+            }),
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'ITEM_NOT_FOUND');
+      expect(
+        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
+      ).toBe(false);
+    });
+
     it('returns 404 ITEM_NOT_FOUND when a referenced item belongs to another wardrobe', async () => {
       mockOwnedWardrobeThen(async (command) => {
         if (command._op === 'Get' && command.input.Key?.SK === `ITEM#${TOP_ITEM_ID}`) {

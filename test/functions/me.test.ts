@@ -522,6 +522,64 @@ describe('me handler (WARDROBE-36)', () => {
       expect(deletedKeys().some((key) => key.PK.includes(OTHER_ID))).toBe(false);
     });
 
+    it('deletes wish-list rows with the rest of the account (WARDROBE-244)', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Query') {
+          const pk = command.input.ExpressionAttributeValues?.[':pk'];
+          if (pk === `USER#${OWNER_ID}` && !command.input.ExpressionAttributeValues?.[':sk']) {
+            return {
+              Items: [
+                dynamoWardrobe(),
+                {
+                  PK: `USER#${OWNER_ID}`,
+                  SK: 'WISH#wish_abc123xyz0',
+                  entityType: 'WISH',
+                  userId: OWNER_ID,
+                  wishId: 'wish_abc123xyz0',
+                  name: 'Wanted coat',
+                  originalKey: `users/${OWNER_ID}/wishlist/uploads/coat.jpg`,
+                  createdAt: '2026-11-06T10:00:00.000Z',
+                  updatedAt: '2026-11-06T10:00:00.000Z',
+                },
+              ],
+            };
+          }
+          return { Items: [] };
+        }
+        if (command._op === 'Delete' || command._op === 'BatchWrite') {
+          return {};
+        }
+        return {};
+      });
+      mockS3Send.mockImplementation(async (command: S3Command) => {
+        if (command._op === 'ListObjectsV2') {
+          return {
+            Contents: [
+              { Key: `users/${OWNER_ID}/wishlist/uploads/coat.jpg` },
+            ],
+            IsTruncated: false,
+          };
+        }
+        if (command._op === 'DeleteObjects') {
+          return {
+            Deleted: [{ Key: `users/${OWNER_ID}/wishlist/uploads/coat.jpg` }],
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(await handler(event({ path: '/me/content' })));
+      expect(result.statusCode).toBe(200);
+      expect(deletedKeys()).toEqual(
+        expect.arrayContaining([
+          { PK: `USER#${OWNER_ID}`, SK: 'WISH#wish_abc123xyz0' },
+        ]),
+      );
+      expect((bodyOf(result) as { deletedS3Objects: number }).deletedS3Objects).toBe(
+        1,
+      );
+    });
+
     it('succeeds when the user already has no content', async () => {
       mockEmptyWipe();
 
@@ -1434,7 +1492,7 @@ describe('me handler (WARDROBE-36)', () => {
                 tier: 'PREMIUM',
                 status: 'ACTIVE',
                 productId: 'premium_monthly',
-                expiresAt: '2026-11-01T00:00:00.000Z',
+                expiresAt: '2099-11-01T00:00:00.000Z',
                 lastEventId: 'evt_resub',
                 createdAt: '2026-10-01T00:00:00.000Z',
                 updatedAt: '2026-10-01T00:00:00.000Z',
@@ -1458,7 +1516,7 @@ describe('me handler (WARDROBE-36)', () => {
           tier: 'PREMIUM',
           status: 'ACTIVE',
           limits: null,
-          expiresAt: '2026-11-01T00:00:00.000Z',
+          expiresAt: '2099-11-01T00:00:00.000Z',
           productId: 'premium_monthly',
         }),
       );
@@ -1483,7 +1541,7 @@ describe('me handler (WARDROBE-36)', () => {
                   status: 'ACTIVE',
                   originalTransactionId: 'txn_account_b',
                   lastEventId: 'evt_b',
-                  expiresAt: '2026-11-04T00:00:00.000Z',
+                  expiresAt: '2099-11-04T00:00:00.000Z',
                   createdAt: '2026-10-04T00:00:00.000Z',
                   updatedAt: '2026-10-04T00:00:00.000Z',
                 },
@@ -1502,7 +1560,7 @@ describe('me handler (WARDROBE-36)', () => {
                   status: 'ACTIVE',
                   originalTransactionId: 'txn_account_a',
                   lastEventId: 'evt_a',
-                  expiresAt: '2026-11-01T00:00:00.000Z',
+                  expiresAt: '2099-11-01T00:00:00.000Z',
                   createdAt: '2026-10-01T00:00:00.000Z',
                   updatedAt: '2026-10-01T00:00:00.000Z',
                 },
@@ -1575,7 +1633,7 @@ describe('me handler (WARDROBE-36)', () => {
                   productId: 'premium_monthly',
                   store: 'APP_STORE',
                   period: 'MONTHLY',
-                  expiresAt: '2026-11-01T00:00:00.000Z',
+                  expiresAt: '2099-11-01T00:00:00.000Z',
                   createdAt: '2026-09-16T00:00:00.000Z',
                   updatedAt: '2026-09-16T12:00:00.000Z',
                 },
@@ -1607,7 +1665,7 @@ describe('me handler (WARDROBE-36)', () => {
         productId: 'premium_monthly',
         store: 'APP_STORE',
         period: 'MONTHLY',
-        expiresAt: '2026-11-01T00:00:00.000Z',
+        expiresAt: '2099-11-01T00:00:00.000Z',
         updatedAt: '2026-09-16T12:00:00.000Z',
       });
       expect(body.tier).toBe('PREMIUM');
@@ -1616,7 +1674,7 @@ describe('me handler (WARDROBE-36)', () => {
       expect(body.paidTier).toEqual({
         tier: 'premium',
         source: 'ios',
-        expiresAt: '2026-11-01T00:00:00.000Z',
+        expiresAt: '2099-11-01T00:00:00.000Z',
       });
       expect(Object.keys(body)).toEqual(
         expect.arrayContaining([...GET_ME_EXISTING_REQUIRED_FIELDS]),

@@ -269,6 +269,41 @@ describe('recommendations handler (WARDROBE-23)', () => {
       ).toBe(false);
     });
 
+    it('does not suggest wish-list rows (WARDROBE-244)', async () => {
+      mockOwnedWardrobeThen(async (command) => {
+        if (command._op === 'Query') {
+          return {
+            Items: [
+              dynamoClothingItem(DRESS_ITEM_ID, { category: 'DRESS' }),
+              {
+                PK: `WARDROBE#${WARDROBE_ID}`,
+                SK: 'ITEM#wish_leak00001',
+                entityType: 'WISH',
+                userId: OWNER_ID,
+                wardrobeId: WARDROBE_ID,
+                wishId: 'wish_leak00001',
+                itemId: 'wish_leak00001',
+                name: 'Wanted coat',
+                category: 'TOP',
+                processingStatus: 'READY',
+                createdAt: '2026-11-06T10:00:00.000Z',
+                updatedAt: '2026-11-06T10:00:00.000Z',
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected op ${command._op}`);
+      });
+
+      const result = asResult(await handler(event()));
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as OutfitRecommendationsResponse;
+      const ids = body.recommendations.flatMap((row) =>
+        row.items.map((item) => item.itemId),
+      );
+      expect(ids).not.toContain('wish_leak00001');
+    });
+
     it('allows recommendations on Basic (WARDROBE-229)', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {

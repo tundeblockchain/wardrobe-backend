@@ -8,6 +8,10 @@ export function newItemId(): string {
   return `item_${nanoid(12)}`;
 }
 
+export function newWishId(): string {
+  return `wish_${nanoid(12)}`;
+}
+
 export function newOutfitId(): string {
   return `outfit_${nanoid(12)}`;
 }

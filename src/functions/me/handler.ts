@@ -49,9 +49,10 @@ export interface MeHandlerDeps {
  *                      Superwall appends history rows; this handler always
  *                      returns the latest record.
  * DELETE /me/content — wipe wardrobes, items, outfits, worn-on dates,
- *                      personal AI profiles, job-done events, device tokens,
- *                      share tokens, and S3 under users/{uid}/. Entitlement +
- *                      Firebase Auth stay. No subscription cancel (WARDROBE-103).
+ *                      wishes, personal AI profiles, job-done events, device
+ *                      tokens, share tokens, and S3 under users/{uid}/
+ *                      (including wishlist images). Entitlement + Firebase
+ *                      Auth stay. No subscription cancel (WARDROBE-103).
  * DELETE /me         — cancel Stripe subscriptions first (WARDROBE-192;
  *                      fail-closed), then best-effort store cancel for
  *                      App Store / Play, revoke ENTITLEMENT, wipe Dynamo

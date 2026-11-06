@@ -7,16 +7,10 @@ import {
   getOwnedWardrobe,
   isConditionalCheckFailed,
   keys,
-  putItem,
   queryByPk,
   updateAttributes,
 } from '../../shared/dynamodb';
-import {
-  assertCanCreateCatalog,
-  assertPremiumAi,
-  isPremium,
-  resolveEntitlement,
-} from '../../shared/entitlements';
+import { assertPremiumAi, isPremium, resolveEntitlement } from '../../shared/entitlements';
 import { isBackgroundRemovalEnabled } from '../../shared/flags';
 import { Errors } from '../../shared/errors';
 import {
@@ -28,15 +22,14 @@ import {
   parseJsonBody,
   routeKey,
 } from '../../shared/http';
-import { newItemId, newOutfitRenderId, nowIso } from '../../shared/ids';
+import { newOutfitRenderId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
-import { createPresignedGetUrl, deleteObjectBestEffort } from '../../shared/s3';
+import { deleteObjectBestEffort } from '../../shared/s3';
 import {
   enqueueProcessWardrobeItem,
   enqueueRenderItem,
 } from '../../shared/sqs';
 import {
-  ClothingCategory,
   ClothingItem,
   ClothingItemList,
   DynamoItem,
@@ -61,9 +54,10 @@ import {
   seedHistoryFromCurrentRender,
   toOutfitRender,
   toRenderHistory,
-  withSignedRenderHistory,
   withSignedRenderUrl,
 } from '../outfits/render';
+import { persistNewClothingItem } from './create';
+import { itemOriginalKey, toClothingItem } from './dto';
 import {
   ItemListFilters,
   itemMatchesFilters,
@@ -109,8 +103,6 @@ interface RequestItemRenderBody {
   aiProfileId?: unknown;
   userId?: unknown;
 }
-
-const CREATE_PROCESSING_STATUS: ProcessingStatus = 'PENDING';
 
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -343,14 +335,6 @@ async function requestItemRender(
   return toClothingItem(updated);
 }
 
-function storedRenderHistory(item: DynamoItem) {
-  return seedHistoryFromCurrentRender(
-    toRenderHistory(item.renderHistory),
-    toOutfitRender(item.render),
-    item.updatedAt,
-  );
-}
-
 /**
  * WARDROBE-123 — re-enqueue PROCESS_WARDROBE_ITEM for a FAILED item.
  *
@@ -466,14 +450,6 @@ async function reprocessAfterLostRace(
   throw Errors.itemNotRetriable();
 }
 
-function itemOriginalKey(item: DynamoItem): string | undefined {
-  if (typeof item.originalKey !== 'string') {
-    return undefined;
-  }
-  const trimmed = item.originalKey.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
 function itemTransferAction(
   event: APIGatewayProxyEventV2,
 ): 'move' | 'copy' | undefined {
@@ -521,10 +497,9 @@ async function createItem(
   wardrobeId: string,
   body: CreateItemBody,
 ): Promise<ClothingItem> {
+  // Wardrobe ownership before body validation so a foreign wardrobe is
+  // 404 WARDROBE_NOT_FOUND, not 400 on imageKey prefix.
   await getOwnedWardrobe(userId, wardrobeId);
-  const entitlement = await assertCanCreateCatalog(userId, 'item');
-  const enqueueAi = isPremium(entitlement);
-
   const name = requireNonEmptyString(body.name, 'name');
   const category = requireCategory(body.category);
   const imageKey = requireOwnedImageKey(body.imageKey, userId);
@@ -533,59 +508,17 @@ async function createItem(
   const brand = optionalNonEmptyString(body.brand, 'brand');
   const acquiredAt = optionalIsoDate(body.acquiredAt, 'acquiredAt');
 
-  const itemId = newItemId();
-  const timestamp = nowIso();
-
-  const item: DynamoItem = {
-    PK: keys.wardrobePk(wardrobeId),
-    SK: keys.itemSk(itemId),
-    entityType: 'ITEM',
+  return persistNewClothingItem({
     userId,
     wardrobeId,
-    itemId,
     name,
     category,
+    imageKey,
     subcategory,
     colours,
     brand,
     acquiredAt,
-    originalKey: imageKey,
-    processingStatus: enqueueAi ? CREATE_PROCESSING_STATUS : 'READY',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-
-  // Write first, then enqueue. If SendMessage fails, roll the item back so
-  // the client can retry create without an orphaned PENDING record.
-  // Free / Basic skip the AI pipeline (classify / colour / bg-removal).
-  await putItem(item);
-
-  if (enqueueAi) {
-    try {
-      await enqueueProcessWardrobeItem({
-        userId,
-        wardrobeId,
-        itemId,
-        originalImageKey: imageKey,
-      });
-    } catch (error) {
-      try {
-        await deleteItem(keys.wardrobePk(wardrobeId), keys.itemSk(itemId));
-      } catch (compensateError) {
-        logger.error('Failed to roll back item after enqueue failure', {
-          itemId,
-          wardrobeId,
-          error:
-            compensateError instanceof Error
-              ? compensateError.message
-              : 'unknown',
-        });
-      }
-      throw error;
-    }
-  }
-
-  return toClothingItem(item);
+  });
 }
 
 async function updateItem(
@@ -879,98 +812,4 @@ async function deleteItemRenderPhoto(
   }
 
   await deleteObjectBestEffort(imageKey);
-}
-
-async function toClothingItem(item: DynamoItem): Promise<ClothingItem> {
-  const dto: ClothingItem = {
-    itemId: String(item.itemId),
-    wardrobeId: String(item.wardrobeId),
-    name: String(item.name),
-    category: item.category as ClothingCategory,
-    processingStatus: (item.processingStatus as ProcessingStatus) ?? 'READY',
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-  };
-
-  if (typeof item.subcategory === 'string') {
-    dto.subcategory = item.subcategory;
-  }
-  if (Array.isArray(item.colours)) {
-    dto.colours = item.colours.map(String);
-  }
-  if (typeof item.brand === 'string') {
-    dto.brand = item.brand;
-  }
-  if (typeof item.acquiredAt === 'string' && item.acquiredAt.trim()) {
-    dto.acquiredAt = item.acquiredAt;
-  }
-  if (
-    dto.processingStatus === 'FAILED' &&
-    typeof item.processingError === 'string' &&
-    item.processingError.trim()
-  ) {
-    dto.processingError = item.processingError;
-  }
-
-  if (typeof item.originalKey === 'string') {
-    dto.image = {
-      originalKey: item.originalKey,
-      ...(typeof item.processedKey === 'string'
-        ? { processedKey: item.processedKey }
-        : {}),
-    };
-  }
-
-  // WARDROBE-54: Flutter reads top-level HTTPS URLs. Soft-fail so a
-  // presign error cannot 500 create / list / get.
-  const originalImageUrl = await signedItemImageUrl(
-    item.originalKey,
-    'original',
-  );
-  if (originalImageUrl) {
-    dto.originalImageUrl = originalImageUrl;
-  }
-
-  const processedImageUrl = await signedItemImageUrl(
-    item.processedKey,
-    'processed',
-  );
-  if (processedImageUrl) {
-    dto.processedImageUrl = processedImageUrl;
-  }
-
-  const render = toOutfitRender(item.render);
-  const signedHistory = await withSignedRenderHistory(storedRenderHistory(item));
-  if (render) {
-    dto.render = await withSignedRenderUrl(render);
-  }
-  if (signedHistory.renderHistory) {
-    dto.renderHistory = signedHistory.renderHistory;
-  }
-  if (signedHistory.renderImageUrls) {
-    dto.renderImageUrls = signedHistory.renderImageUrls;
-  }
-
-  return dto;
-}
-
-async function signedItemImageUrl(
-  objectKey: unknown,
-  kind: 'original' | 'processed',
-): Promise<string | undefined> {
-  if (typeof objectKey !== 'string' || !objectKey.trim()) {
-    return undefined;
-  }
-
-  try {
-    const { imageUrl } = await createPresignedGetUrl({ objectKey });
-    return imageUrl;
-  } catch (error) {
-    logger.warn('Failed to presign clothing-item image GET URL', {
-      kind,
-      objectKey,
-      error: error instanceof Error ? error.message : 'unknown',
-    });
-    return undefined;
-  }
 }

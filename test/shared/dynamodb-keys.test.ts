@@ -1,6 +1,7 @@
 import {
   GSI1_INDEX_NAME,
   isConditionalCheckFailed,
+  isTransactionCanceled,
   keys,
   transactWrite,
 } from '../../src/shared/dynamodb';
@@ -43,6 +44,8 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.stripeCustomerPk('cus_123')).toBe('STRIPE_CUSTOMER#cus_123');
     expect(keys.stripeCustomerSk).toBe('UID');
     expect(keys.wardrobeSk('wd_abc123')).toBe('WARDROBE#wd_abc123');
+    expect(keys.wishSk('wish_abc123xyz0')).toBe('WISH#wish_abc123xyz0');
+    expect(keys.wishSkPrefix).toBe('WISH#');
   });
 
   it('models item and outfit access under WARDROBE#', () => {
@@ -79,5 +82,15 @@ describe('isConditionalCheckFailed', () => {
     expect(isConditionalCheckFailed(error)).toBe(true);
     expect(isConditionalCheckFailed(new Error('boom'))).toBe(false);
     expect(isConditionalCheckFailed('nope')).toBe(false);
+  });
+});
+
+describe('isTransactionCanceled', () => {
+  it('detects DynamoDB transaction cancellations', () => {
+    const error = new Error('Transaction cancelled');
+    error.name = 'TransactionCanceledException';
+    expect(isTransactionCanceled(error)).toBe(true);
+    expect(isTransactionCanceled(new Error('boom'))).toBe(false);
+    expect(isTransactionCanceled('nope')).toBe(false);
   });
 });

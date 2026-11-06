@@ -101,6 +101,21 @@ describe('user-facing error copy (WARDROBE-146)', () => {
     expect(error.message).toContain('Stripe subscription');
   });
 
+  it('keeps WISH_NOT_FOUND as a 404', () => {
+    const error = Errors.wishNotFound();
+    expect(error.code).toBe('WISH_NOT_FOUND');
+    expect(error.statusCode).toBe(404);
+    expect(error.message).toBe('Wish not found.');
+  });
+
+  it('keeps WISHLIST_LIMIT as a 409 distinct from the item entitlement cap', () => {
+    const error = Errors.wishlistLimit();
+    expect(error.code).toBe('WISHLIST_LIMIT');
+    expect(error.statusCode).toBe(409);
+    expect(error.message).toBe('Wish list can hold 500 items.');
+    expect(error.code).not.toBe('ENTITLEMENT_ITEM_LIMIT');
+  });
+
   it('marks account and auth deletion failures as retryable', () => {
     expect(Errors.accountDeletionFailed().code).toBe('ACCOUNT_DELETION_FAILED');
     expect(Errors.accountDeletionFailed().statusCode).toBe(500);

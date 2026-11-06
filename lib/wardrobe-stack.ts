@@ -51,7 +51,7 @@ export class WardrobeStack extends cdk.Stack {
 
     // Single-table PK/SK matches backend.md §16–17 access patterns:
     // USER#{uid}                 / PROFILE (stripeCustomerId) | WARDROBE#{wardrobeId} | AIPROFILE#{id}
-    //                            / EVENT#{eventId} | DEVICE#{deviceId}
+    //                            / EVENT#{eventId} | DEVICE#{deviceId} | WISH#{wishId}
     // STRIPE_EVENT#{eventId}     / PROCESSED (ttl)
     // STRIPE_CUSTOMER#{cus_id}   / UID
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
@@ -449,6 +449,16 @@ export class WardrobeStack extends cdk.Stack {
       },
     });
     const uploadsFn = this.lambda('UploadsFn', 'uploads', commonLambdaProps);
+    // WARDROBE-244 per-user wish list. Acquire reuses the clothing-item
+    // create path (item cap + Premium enqueue), so this Lambda needs the
+    // processing queue URL. Wishes are not entitlement-gated.
+    const wishlistFn = this.lambda('WishlistFn', 'wishlist', {
+      ...commonLambdaProps,
+      environment: {
+        ...commonLambdaProps.environment,
+        PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+      },
+    });
     // WARDROBE-43 CRUD + WARDROBE-44 PERSONAL reference-image presign/attach
     // + WARDROBE-73 short-lived GET URLs on list/get
     // + WARDROBE-80 / WARDROBE-82 optional body/context fields (PATCH PERSONAL).
@@ -545,6 +555,7 @@ export class WardrobeStack extends cdk.Stack {
     table.grantReadWriteData(outfitsFn);
     table.grantReadWriteData(aiProfilesFn);
     table.grantReadWriteData(sharesFn);
+    table.grantReadWriteData(wishlistFn);
     // Recommendations are derived and never persisted — read wardrobe + items only.
     table.grantReadData(recommendationsFn);
     aiRecommenderSecret.grantRead(recommendationsFn);
@@ -566,6 +577,12 @@ export class WardrobeStack extends cdk.Stack {
     );
     firebaseFcmSecret.grantRead(processingFn);
     mediaBucket.grantPut(uploadsFn);
+    // Wish-list presign PUT/GET, CopyObject on acquire, DeleteObject on
+    // DELETE /wishlist/{wishId} and after a successful acquire.
+    mediaBucket.grantPut(wishlistFn);
+    mediaBucket.grantRead(wishlistFn);
+    mediaBucket.grantDelete(wishlistFn);
+    processingQueue.grantSendMessages(wishlistFn);
     // PERSONAL Virtual Profile reference-image presign PUT (WARDROBE-44),
     // short-lived GET for frontImageUrl / referenceImageUrls (WARDROBE-73),
     // and best-effort DeleteObject for set-main replace / delete-one /
@@ -792,6 +809,10 @@ export class WardrobeStack extends cdk.Stack {
       shoppingLinksFn,
     );
     const uploadsIntegration = new HttpLambdaIntegration('UploadsIntegration', uploadsFn);
+    const wishlistIntegration = new HttpLambdaIntegration(
+      'WishlistIntegration',
+      wishlistFn,
+    );
     const aiProfilesIntegration = new HttpLambdaIntegration(
       'AiProfilesIntegration',
       aiProfilesFn,
@@ -1094,6 +1115,39 @@ export class WardrobeStack extends cdk.Stack {
       path: '/uploads',
       methods: [apigwv2.HttpMethod.POST],
       integration: uploadsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    // WARDROBE-244 wish list. Available on every tier (Firebase auth only).
+    httpApi.addRoutes({
+      path: '/wishlist/uploads',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: wishlistIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wishlist',
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
+      integration: wishlistIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wishlist/{wishId}',
+      methods: [
+        apigwv2.HttpMethod.GET,
+        apigwv2.HttpMethod.PATCH,
+        apigwv2.HttpMethod.DELETE,
+      ],
+      integration: wishlistIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wishlist/{wishId}/acquire',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: wishlistIntegration,
       authorizer: firebaseAuthorizer,
     });
 

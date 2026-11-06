@@ -36,7 +36,9 @@ interface RowKey {
  * Account content wipe used by DELETE /me/content and DELETE /me
  * (WARDROBE-36 / WARDROBE-154). Collects every owned row, BatchWrite-deletes
  * them (25-item chunks + UnprocessedItems retry), then best-effort wipes
- * S3 under `users/{uid}/`.
+ * S3 under `users/{uid}/` (including wish-list images under
+ * `users/{uid}/wishlist/`). Wish rows (`USER#{uid} / WISH#{wishId}`) live
+ * in the user partition and are collected with other owned USER# rows.
  */
 export async function wipeUser(
   userId: string,

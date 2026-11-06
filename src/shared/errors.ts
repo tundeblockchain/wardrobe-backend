@@ -6,6 +6,8 @@ export type ErrorCode =
   | 'ORIGIN_NOT_ALLOWED'
   | 'WARDROBE_NOT_FOUND'
   | 'ITEM_NOT_FOUND'
+  | 'WISH_NOT_FOUND'
+  | 'WISHLIST_LIMIT'
   | 'OUTFIT_NOT_FOUND'
   | 'RENDER_NOT_FOUND'
   | 'AI_PROFILE_NOT_FOUND'
@@ -100,6 +102,17 @@ export const Errors = {
 
   itemNotFound: (message = 'Clothing item not found.') =>
     new AppError('ITEM_NOT_FOUND', message, 404),
+
+  wishNotFound: (message = 'Wish not found.') =>
+    new AppError('WISH_NOT_FOUND', message, 404),
+
+  /**
+   * Flat 500-wish abuse cap (WARDROBE-244). Same on every tier — not an
+   * entitlement / paywall. Distinct from `ENTITLEMENT_ITEM_LIMIT`.
+   */
+  wishlistLimit: (
+    message = 'Wish list can hold 500 items.',
+  ) => new AppError('WISHLIST_LIMIT', message, 409),
 
   outfitNotFound: (message = 'Outfit not found.') =>
     new AppError('OUTFIT_NOT_FOUND', message, 404),

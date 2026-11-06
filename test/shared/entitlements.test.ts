@@ -18,6 +18,7 @@ import {
   applySuperwallEvent,
   assertCanCreateCatalog,
   assertPaidOutfitSuggestions,
+  countUsage,
   defaultGrantExpiresAt,
   ensureFreeEntitlement,
   featuresForTier,
@@ -537,6 +538,75 @@ describe('entitlement history (WARDROBE-159)', () => {
     );
     expect(mockQueryByPk).toHaveBeenCalledWith('USER#uid', 'ENTITLEMENT');
     expect(mockQueryByPk).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('countUsage ignores wishes (WARDROBE-244)', () => {
+  beforeEach(() => {
+    mockQueryByPk.mockReset();
+  });
+
+  it('does not count WISH rows toward item or wardrobe usage', async () => {
+    mockQueryByPk.mockImplementation(async (pk: string, skPrefix?: string) => {
+      if (pk === 'USER#uid' && skPrefix === 'WARDROBE#') {
+        return [
+          {
+            PK: 'USER#uid',
+            SK: 'WARDROBE#wd_1',
+            entityType: 'WARDROBE',
+            userId: 'uid',
+            wardrobeId: 'wd_1',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            updatedAt: '2026-09-03T00:00:00.000Z',
+          },
+        ];
+      }
+      if (pk === 'USER#uid' && skPrefix === 'WISH#') {
+        return [
+          {
+            PK: 'USER#uid',
+            SK: 'WISH#wish_1',
+            entityType: 'WISH',
+            userId: 'uid',
+            wishId: 'wish_1',
+            name: 'Wanted coat',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            updatedAt: '2026-09-03T00:00:00.000Z',
+          },
+        ];
+      }
+      if (pk === 'WARDROBE#wd_1') {
+        return [
+          {
+            PK: 'WARDROBE#wd_1',
+            SK: 'ITEM#item_1',
+            entityType: 'ITEM',
+            userId: 'uid',
+            wardrobeId: 'wd_1',
+            itemId: 'item_1',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            updatedAt: '2026-09-03T00:00:00.000Z',
+          },
+          {
+            PK: 'WARDROBE#wd_1',
+            SK: 'WISH#wish_leak',
+            entityType: 'WISH',
+            userId: 'uid',
+            wishId: 'wish_leak',
+            name: 'should not count',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            updatedAt: '2026-09-03T00:00:00.000Z',
+          },
+        ];
+      }
+      return [];
+    });
+
+    await expect(countUsage('uid')).resolves.toEqual({
+      wardrobes: 1,
+      items: 1,
+      outfits: 0,
+    });
   });
 });
 

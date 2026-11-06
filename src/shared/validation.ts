@@ -18,6 +18,8 @@ import {
   ClothingSubcategory,
   OutfitItem,
   OutfitSlot,
+  WishPrice,
+  WISH_LINK_MAX,
 } from './types';
 
 export function requireNonEmptyString(
@@ -53,6 +55,106 @@ export function optionalNonEmptyString(
 
 export function requireCategory(value: unknown): ClothingCategory {
   return requireControlledSlot(value, 'category');
+}
+
+/** Missing / null / blank omitted; present values must be a controlled category. */
+export function optionalCategory(value: unknown): ClothingCategory | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  return requireCategory(value);
+}
+
+/** Missing / null / blank omitted; present values must be a controlled subcategory. */
+export function optionalSubcategory(
+  value: unknown,
+): ClothingSubcategory | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  return requireSubcategory(value);
+}
+
+/**
+ * https:// only. Rejects http, javascript:, data:, protocol-relative, and
+ * unparseable strings. Credentials in the URL are rejected.
+ */
+export function requireHttpsUrl(
+  value: unknown,
+  field: string,
+  maxLength = WISH_LINK_MAX,
+): string {
+  const raw = requireNonEmptyString(value, field, maxLength);
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw Errors.validation(`${field} must be an https URL.`);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw Errors.validation(`${field} must be an https URL.`);
+  }
+  if (parsed.username || parsed.password) {
+    throw Errors.validation(`${field} must be an https URL.`);
+  }
+  if (!parsed.hostname) {
+    throw Errors.validation(`${field} must be an https URL.`);
+  }
+  return raw;
+}
+
+export function optionalHttpsUrl(
+  value: unknown,
+  field: string,
+  maxLength = WISH_LINK_MAX,
+): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  return requireHttpsUrl(value, field, maxLength);
+}
+
+const ISO_CURRENCY = /^[A-Za-z]{3}$/;
+const WISH_PRICE_MAX = 1_000_000_000;
+
+/**
+ * Display-only `{ amount, currency }`. Amount is a finite number ≥ 0.
+ * Currency is a 3-letter ISO code (stored uppercase). No conversion.
+ */
+export function requireWishPrice(value: unknown, field = 'price'): WishPrice {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw Errors.validation(`${field} must be an object.`);
+  }
+  const raw = value as { amount?: unknown; currency?: unknown };
+  if (!('amount' in raw) || raw.amount === undefined || raw.amount === null) {
+    throw Errors.validation(`${field}.amount is required.`);
+  }
+  const amount = optionalFiniteNumber(
+    raw.amount,
+    `${field}.amount`,
+    0,
+    WISH_PRICE_MAX,
+  );
+  if (amount === undefined) {
+    throw Errors.validation(`${field}.amount is required.`);
+  }
+  const currency = requireNonEmptyString(raw.currency, `${field}.currency`, 3);
+  if (!ISO_CURRENCY.test(currency)) {
+    throw Errors.validation(
+      `${field}.currency must be a 3-letter ISO currency code.`,
+    );
+  }
+  return { amount, currency: currency.toUpperCase() };
+}
+
+export function optionalWishPrice(
+  value: unknown,
+  field = 'price',
+): WishPrice | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  return requireWishPrice(value, field);
 }
 
 export function requireColour(value: unknown): ClothingColour {
