@@ -1301,7 +1301,7 @@ POST /billing/stripe-webhook
 
 ### Wish list (WARDROBE-244)
 
-Own entity under `USER#{uid} / WISH#{wishId}`. Not a clothing item. All tiers including Free. Cap 500 per user (`409 WISHLIST_LIMIT`). See README.
+Own entity under `USER#{uid} / WISH#{wishId}`. Not a clothing item. All tiers including Free. Cap 500 per user (`409 WISHLIST_LIMIT`). Acquire copies the image first, then one `TransactWriteItems` (put ITEM + delete WISH with `attribute_exists`); copied image is deleted if the transaction fails. See README.
 
 ```http
 GET    /wishlist

@@ -100,6 +100,18 @@ const SIGNED_GET = 'https://signed.example/wish.jpg';
 const SIGNED_PUT =
   'https://wardrobe-media-test.s3.amazonaws.com/users/firebase-uid-owner/wishlist/uploads/abc.jpg?X-Amz-Signature=test';
 
+interface TransactPut {
+  TableName?: string;
+  Item?: DynamoItem;
+  ConditionExpression?: string;
+}
+
+interface TransactDelete {
+  TableName?: string;
+  Key?: { PK: string; SK: string };
+  ConditionExpression?: string;
+}
+
 interface Command {
   _op: 'Put' | 'Get' | 'Query' | 'Update' | 'Delete' | 'TransactWrite';
   input: {
@@ -108,7 +120,7 @@ interface Command {
     Key?: { PK: string; SK: string };
     KeyConditionExpression?: string;
     ExpressionAttributeValues?: Record<string, unknown>;
-    TransactItems?: unknown[];
+    TransactItems?: Array<{ Put?: TransactPut; Delete?: TransactDelete }>;
     UpdateExpression?: string;
     ExpressionAttributeNames?: Record<string, string>;
   };
@@ -131,13 +143,49 @@ function expectEnvelope(
   result: APIGatewayProxyStructuredResultV2,
   statusCode: number,
   code: string,
+  message?: string,
 ): void {
   expect(result.statusCode).toBe(statusCode);
   expect(bodyOf(result)).toEqual({
     error: {
       code,
-      message: expect.any(String),
+      message: message ?? expect.any(String),
     },
+  });
+}
+
+function mutatingCommands(): Command[] {
+  return mockSend.mock.calls
+    .map((call) => call[0] as Command)
+    .filter((command) =>
+      ['Put', 'Update', 'Delete', 'TransactWrite'].includes(command._op),
+    );
+}
+
+function transactCommands(): Command[] {
+  return mutatingCommands().filter((command) => command._op === 'TransactWrite');
+}
+
+function transactionCanceled(message = 'ConditionalCheckFailed'): Error {
+  const error = new Error(message);
+  error.name = 'TransactionCanceledException';
+  return error;
+}
+
+function acquireEvent(
+  overrides: {
+    wishId?: string;
+    body?: unknown;
+    sub?: string | null;
+  } = {},
+): APIGatewayProxyEventV2 {
+  const wishId = overrides.wishId ?? WISH_ID;
+  return event({
+    method: 'POST',
+    path: `/wishlist/${wishId}/acquire`,
+    wishId,
+    body: overrides.body ?? { wardrobeId: WARDROBE_ID },
+    sub: overrides.sub,
   });
 }
 
@@ -304,7 +352,7 @@ describe('wishlist handler (WARDROBE-244)', () => {
       ).toBe(false);
     });
 
-    it('rejects a 501st wish with 409 WISHLIST_LIMIT', async () => {
+    it('returns 409 WISHLIST_LIMIT on the 501st wish', async () => {
       mockSend.mockImplementation(async (command: Command) => {
         if (command._op === 'Query') {
           return {
@@ -323,10 +371,13 @@ describe('wishlist handler (WARDROBE-244)', () => {
         await handler(event({ method: 'POST', body: { name: 'One more' } })),
       );
 
-      expectEnvelope(result, 409, 'WISHLIST_LIMIT');
-      expect(
-        mockSend.mock.calls.some((call) => (call[0] as Command)._op === 'Put'),
-      ).toBe(false);
+      expectEnvelope(
+        result,
+        409,
+        'WISHLIST_LIMIT',
+        'Wish list can hold 500 items.',
+      );
+      expect(mutatingCommands()).toEqual([]);
     });
 
     it('rejects http links and unknown categories', async () => {
@@ -565,6 +616,81 @@ describe('wishlist handler (WARDROBE-244)', () => {
     });
   });
 
+  describe('per-user isolation', () => {
+    it('does not let user A read user B wish (404 WISH_NOT_FOUND)', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({ method: 'GET', wishId: WISH_ID, sub: OTHER_ID }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'WISH_NOT_FOUND');
+      expect((mockSend.mock.calls[0][0] as Command).input.Key).toEqual({
+        PK: `USER#${OTHER_ID}`,
+        SK: `WISH#${WISH_ID}`,
+      });
+      expect(mutatingCommands()).toEqual([]);
+    });
+
+    it('does not let user A update user B wish (404 WISH_NOT_FOUND)', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'PATCH',
+            wishId: WISH_ID,
+            body: { name: 'Stolen' },
+            sub: OTHER_ID,
+          }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'WISH_NOT_FOUND');
+      expect((mockSend.mock.calls[0][0] as Command).input.Key).toEqual({
+        PK: `USER#${OTHER_ID}`,
+        SK: `WISH#${WISH_ID}`,
+      });
+      expect(mutatingCommands()).toEqual([]);
+    });
+
+    it('does not let user A delete user B wish (404 WISH_NOT_FOUND)', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(
+          event({ method: 'DELETE', wishId: WISH_ID, sub: OTHER_ID }),
+        ),
+      );
+
+      expectEnvelope(result, 404, 'WISH_NOT_FOUND');
+      expect((mockSend.mock.calls[0][0] as Command).input.Key).toEqual({
+        PK: `USER#${OTHER_ID}`,
+        SK: `WISH#${WISH_ID}`,
+      });
+      expect(mutatingCommands()).toEqual([]);
+      expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('does not let user A acquire user B wish (404 WISH_NOT_FOUND)', async () => {
+      mockSend.mockResolvedValue({});
+
+      const result = asResult(
+        await handler(acquireEvent({ sub: OTHER_ID })),
+      );
+
+      expectEnvelope(result, 404, 'WISH_NOT_FOUND');
+      expect((mockSend.mock.calls[0][0] as Command).input.Key).toEqual({
+        PK: `USER#${OTHER_ID}`,
+        SK: `WISH#${WISH_ID}`,
+      });
+      expect(mutatingCommands()).toEqual([]);
+      expect(mockCopyObject).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /wishlist/uploads', () => {
     it('returns the same content-type and size limits as clothing item images', async () => {
       mockGetSignedUrl.mockResolvedValue(SIGNED_PUT);
@@ -607,7 +733,9 @@ describe('wishlist handler (WARDROBE-244)', () => {
   });
 
   describe('POST /wishlist/{wishId}/acquire', () => {
-    it('moves the wish into a wardrobe via the item-create path', async () => {
+    function mockAcquireLookups(options?: {
+      onTransact?: (command: Command) => Promise<unknown> | unknown;
+    }): void {
       mockSend.mockImplementation(async (command: Command) => {
         if (isEntitlementGet(command)) {
           return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
@@ -621,21 +749,28 @@ describe('wishlist handler (WARDROBE-244)', () => {
           }
         }
         if (command._op === 'TransactWrite') {
+          if (options?.onTransact) {
+            return options.onTransact(command);
+          }
           return {};
         }
         return {};
       });
+    }
 
-      const result = asResult(
-        await handler(
-          event({
-            method: 'POST',
-            path: `/wishlist/${WISH_ID}/acquire`,
-            wishId: WISH_ID,
-            body: { wardrobeId: WARDROBE_ID },
-          }),
-        ),
-      );
+    it('moves the wish into a wardrobe in one TransactWriteItems', async () => {
+      const order: string[] = [];
+      mockCopyObject.mockImplementation(async () => {
+        order.push('copy');
+      });
+      mockAcquireLookups({
+        onTransact: () => {
+          order.push('transact');
+          return {};
+        },
+      });
+
+      const result = asResult(await handler(acquireEvent()));
 
       expect(result.statusCode).toBe(201);
       const body = bodyOf(result) as {
@@ -650,21 +785,48 @@ describe('wishlist handler (WARDROBE-244)', () => {
       expect(body.category).toBe('OUTERWEAR');
       expect(body.itemId).toMatch(/^item_/);
       expect(body.processingStatus).toBe('PENDING');
-      expect(mockCopyObject).toHaveBeenCalledWith(
+      expect(order).toEqual(['copy', 'transact']);
+
+      const destinationKey = (
+        mockCopyObject.mock.calls[0][0] as { destinationKey: string }
+      ).destinationKey;
+      expect(destinationKey).toMatch(
+        new RegExp(`^users/${OWNER_ID}/items/item_.+/original\\.jpg$`),
+      );
+      expect(mockCopyObject).toHaveBeenCalledWith({
+        sourceKey: OWNER_IMAGE_KEY,
+        destinationKey,
+      });
+
+      const transacts = transactCommands();
+      expect(transacts).toHaveLength(1);
+      expect(transacts[0].input.TransactItems).toHaveLength(2);
+      expect(transacts[0].input.TransactItems?.[0].Put).toEqual(
         expect.objectContaining({
-          sourceKey: OWNER_IMAGE_KEY,
-          destinationKey: expect.stringMatching(
-            new RegExp(`^users/${OWNER_ID}/items/item_.+/original\\.jpg$`),
-          ),
+          ConditionExpression: 'attribute_not_exists(PK)',
+          Item: expect.objectContaining({
+            PK: `WARDROBE#${WARDROBE_ID}`,
+            SK: `ITEM#${body.itemId}`,
+            entityType: 'ITEM',
+            userId: OWNER_ID,
+            wardrobeId: WARDROBE_ID,
+            itemId: body.itemId,
+            originalKey: destinationKey,
+            name: 'Wanted coat',
+            category: 'OUTERWEAR',
+          }),
         }),
       );
+      expect(transacts[0].input.TransactItems?.[1].Delete).toEqual({
+        TableName: 'wardrobe-app-test',
+        Key: { PK: `USER#${OWNER_ID}`, SK: `WISH#${WISH_ID}` },
+        ConditionExpression: 'attribute_exists(PK)',
+      });
       expect(mockSqsSend).toHaveBeenCalled();
       expect(mockDeleteObjectBestEffort).toHaveBeenCalledWith(OWNER_IMAGE_KEY);
-
-      const transact = mockSend.mock.calls
-        .map((call) => call[0] as Command)
-        .find((command) => command._op === 'TransactWrite');
-      expect(transact).toBeDefined();
+      expect(mockDeleteObjectBestEffort).not.toHaveBeenCalledWith(
+        destinationKey,
+      );
     });
 
     it('returns the same ENTITLEMENT_ITEM_LIMIT as a normal create and keeps the wish', async () => {
@@ -701,25 +863,114 @@ describe('wishlist handler (WARDROBE-244)', () => {
         throw new Error(`unexpected op ${command._op}`);
       });
 
-      const result = asResult(
-        await handler(
-          event({
-            method: 'POST',
-            path: `/wishlist/${WISH_ID}/acquire`,
-            wishId: WISH_ID,
-            body: { wardrobeId: WARDROBE_ID },
-          }),
-        ),
-      );
+      const result = asResult(await handler(acquireEvent()));
 
-      expectEnvelope(result, 403, 'ENTITLEMENT_ITEM_LIMIT');
+      expectEnvelope(
+        result,
+        403,
+        'ENTITLEMENT_ITEM_LIMIT',
+        'Free plan allows 5 items. Upgrade to Basic or Premium.',
+      );
       expect(mockCopyObject).not.toHaveBeenCalled();
+      expect(mutatingCommands()).toEqual([]);
+      expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
       expect(
         mockSend.mock.calls.some(
-          (call) => (call[0] as Command)._op === 'TransactWrite',
+          (call) =>
+            (call[0] as Command)._op === 'Get' &&
+            (call[0] as Command).input.Key?.SK === `WISH#${WISH_ID}`,
         ),
-      ).toBe(false);
+      ).toBe(true);
+    });
+
+    it('copies the image first and deletes the copy when TransactWriteItems fails (wish remains; not both, not neither)', async () => {
+      const order: string[] = [];
+      mockCopyObject.mockImplementation(async () => {
+        order.push('copy');
+      });
+      mockDeleteObjectBestEffort.mockImplementation(async () => {
+        order.push('cleanup-copy');
+      });
+      mockAcquireLookups({
+        onTransact: () => {
+          order.push('transact');
+          throw transactionCanceled();
+        },
+      });
+
+      const result = asResult(await handler(acquireEvent()));
+
+      expectEnvelope(result, 404, 'WISH_NOT_FOUND');
+      expect(order).toEqual(['copy', 'transact', 'cleanup-copy']);
+      const destinationKey = (
+        mockCopyObject.mock.calls[0][0] as { destinationKey: string }
+      ).destinationKey;
+      expect(mockDeleteObjectBestEffort).toHaveBeenCalledWith(destinationKey);
+      expect(mockDeleteObjectBestEffort).not.toHaveBeenCalledWith(
+        OWNER_IMAGE_KEY,
+      );
+      expect(transactCommands()).toHaveLength(1);
+      expect(transactCommands()[0].input.TransactItems).toHaveLength(2);
+      expect(mutatingCommands().filter((command) => command._op !== 'TransactWrite')).toEqual(
+        [],
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('does not write Dynamo when the image copy fails (wish remains)', async () => {
+      mockAcquireLookups();
+      mockCopyObject.mockRejectedValue(new Error('S3 copy failed'));
+
+      const result = asResult(await handler(acquireEvent()));
+
+      expectEnvelope(result, 500, 'INTERNAL_ERROR');
+      expect(transactCommands()).toEqual([]);
+      expect(mutatingCommands()).toEqual([]);
       expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('reverses acquire in one TransactWriteItems when Premium enqueue fails (wish restored, item gone)', async () => {
+      mockAcquireLookups();
+      mockSqsSend.mockRejectedValue(new Error('sqs unavailable'));
+
+      const result = asResult(await handler(acquireEvent()));
+
+      expectEnvelope(result, 500, 'INTERNAL_ERROR');
+      const transacts = transactCommands();
+      expect(transacts).toHaveLength(2);
+      expect(transacts[0].input.TransactItems?.[0].Put?.Item?.entityType).toBe(
+        'ITEM',
+      );
+      expect(transacts[0].input.TransactItems?.[1].Delete?.Key).toEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: `WISH#${WISH_ID}`,
+      });
+      expect(transacts[1].input.TransactItems).toHaveLength(2);
+      expect(transacts[1].input.TransactItems?.[0].Delete?.Key?.PK).toBe(
+        `WARDROBE#${WARDROBE_ID}`,
+      );
+      expect(
+        transacts[1].input.TransactItems?.[0].Delete?.ConditionExpression,
+      ).toBe('attribute_exists(PK)');
+      expect(transacts[1].input.TransactItems?.[1].Put).toEqual(
+        expect.objectContaining({
+          ConditionExpression: 'attribute_not_exists(PK)',
+          Item: expect.objectContaining({
+            PK: `USER#${OWNER_ID}`,
+            SK: `WISH#${WISH_ID}`,
+            entityType: 'WISH',
+            wishId: WISH_ID,
+          }),
+        }),
+      );
+      const destinationKey = (
+        mockCopyObject.mock.calls[0][0] as { destinationKey: string }
+      ).destinationKey;
+      expect(mockDeleteObjectBestEffort).toHaveBeenCalledWith(destinationKey);
+      expect(mockDeleteObjectBestEffort).not.toHaveBeenCalledWith(
+        OWNER_IMAGE_KEY,
+      );
     });
 
     it('validates the wardrobe belongs to the caller', async () => {
@@ -733,18 +984,10 @@ describe('wishlist handler (WARDROBE-244)', () => {
         return {};
       });
 
-      const result = asResult(
-        await handler(
-          event({
-            method: 'POST',
-            path: `/wishlist/${WISH_ID}/acquire`,
-            wishId: WISH_ID,
-            body: { wardrobeId: WARDROBE_ID },
-          }),
-        ),
-      );
+      const result = asResult(await handler(acquireEvent()));
       expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
       expect(mockCopyObject).not.toHaveBeenCalled();
+      expect(mutatingCommands()).toEqual([]);
     });
   });
 });

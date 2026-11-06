@@ -800,7 +800,7 @@ Then `PUT` the bytes to `uploadUrl` and pass `objectKey` as `imageKey` on create
 
 #### `POST /wishlist/{wishId}/acquire`
 
-Moves the wish into an owned wardrobe as a **real clothing item** through the same server-side item-create path (wardrobe ownership, `assertCanCreateCatalog('item')`, Premium AI enqueue). Copies the wish image to `users/{uid}/items/{itemId}/original.{ext}`, then transacts put-ITEM + delete-WISH. The wish image is deleted after success.
+Moves the wish into an owned wardrobe as a **real clothing item** through the same server-side item-create path (wardrobe ownership, `assertCanCreateCatalog('item')`, Premium AI enqueue). Copies the wish image to `users/{uid}/items/{itemId}/original.{ext}` **before** Dynamo, then one `TransactWriteItems`: put ITEM (`attribute_not_exists(PK)`) + delete WISH (`attribute_exists(PK)` — the wish must still exist). Item create has no stored usage counter (the Free cap is a pre-read of ITEM rows), so the transaction is those two ops. If the transaction fails, the copied image is deleted and Dynamo writes nothing — the wish stays, the item does not. The original wish image is deleted only after success.
 
 Request:
 

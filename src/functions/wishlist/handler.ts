@@ -57,7 +57,6 @@ import {
 } from '../../shared/validation';
 import {
   buildNewClothingItem,
-  deleteCreatedItem,
   enqueueCreateItemProcessing,
   prepareNewClothingItem,
 } from '../items/create';
@@ -355,13 +354,18 @@ async function removeWish(userId: string, wishId: string): Promise<void> {
 /**
  * Move a wish into a wardrobe as a real clothing item.
  *
+ * Item create has no stored usage counter (Free cap is a pre-read of ITEM
+ * rows via `assertCanCreateCatalog`) — there is nothing extra to include
+ * in the transaction.
+ *
  * Order chosen so a failure never leaves both copies or neither:
  * 1. Cap / ownership checks (nothing written).
  * 2. Copy the wish image to the item original key.
- * 3. Transact put ITEM + delete WISH.
- * 4. Enqueue Premium processing; on failure restore the wish, delete the
- *    item, and drop the copied object.
- * 5. Best-effort delete the wish image (item copy remains).
+ * 3. One TransactWriteItems: put ITEM + delete WISH (wish must still exist).
+ * 4. On transact failure, delete the copied image; Dynamo writes nothing.
+ * 5. Enqueue Premium processing; on failure reverse with one transact
+ *    (delete ITEM + put WISH) and drop the copied object.
+ * 6. Best-effort delete the wish image (item copy remains).
  */
 async function acquireWish(
   userId: string,
@@ -423,21 +427,7 @@ async function acquireWish(
   );
 
   try {
-    await transactWrite([
-      {
-        put: {
-          item,
-          conditionExpression: 'attribute_not_exists(PK)',
-        },
-      },
-      {
-        delete: {
-          pk: keys.userPk(userId),
-          sk: keys.wishSk(wishId),
-          conditionExpression: 'attribute_exists(PK)',
-        },
-      },
-    ]);
+    await transactWrite(acquireItemAndDeleteWishOps(item, userId, wishId));
   } catch (error) {
     await deleteObjectBestEffort(destinationKey);
     if (isTransactionCanceled(error)) {
@@ -451,8 +441,7 @@ async function acquireWish(
       await enqueueCreateItemProcessing(item);
     } catch (error) {
       try {
-        await deleteCreatedItem(item);
-        await putItem(wish);
+        await transactWrite(restoreWishAndDeleteItemOps(item, wish));
       } catch (compensateError) {
         logger.error('Failed to restore wish after acquire enqueue failure', {
           wishId,
@@ -473,6 +462,46 @@ async function acquireWish(
   }
 
   return toClothingItem(item);
+}
+
+function acquireItemAndDeleteWishOps(
+  item: DynamoItem,
+  userId: string,
+  wishId: string,
+) {
+  return [
+    {
+      put: {
+        item,
+        conditionExpression: 'attribute_not_exists(PK)',
+      },
+    },
+    {
+      delete: {
+        pk: keys.userPk(userId),
+        sk: keys.wishSk(wishId),
+        conditionExpression: 'attribute_exists(PK)',
+      },
+    },
+  ];
+}
+
+function restoreWishAndDeleteItemOps(item: DynamoItem, wish: DynamoItem) {
+  return [
+    {
+      delete: {
+        pk: keys.wardrobePk(String(item.wardrobeId)),
+        sk: keys.itemSk(String(item.itemId)),
+        conditionExpression: 'attribute_exists(PK)',
+      },
+    },
+    {
+      put: {
+        item: wish,
+        conditionExpression: 'attribute_not_exists(PK)',
+      },
+    },
+  ];
 }
 
 interface ParsedWishFields {

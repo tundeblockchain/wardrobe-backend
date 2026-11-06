@@ -1,6 +1,7 @@
 import {
   GSI1_INDEX_NAME,
   isConditionalCheckFailed,
+  isTransactionCanceled,
   keys,
   transactWrite,
 } from '../../src/shared/dynamodb';
@@ -81,5 +82,15 @@ describe('isConditionalCheckFailed', () => {
     expect(isConditionalCheckFailed(error)).toBe(true);
     expect(isConditionalCheckFailed(new Error('boom'))).toBe(false);
     expect(isConditionalCheckFailed('nope')).toBe(false);
+  });
+});
+
+describe('isTransactionCanceled', () => {
+  it('detects DynamoDB transaction cancellations', () => {
+    const error = new Error('Transaction cancelled');
+    error.name = 'TransactionCanceledException';
+    expect(isTransactionCanceled(error)).toBe(true);
+    expect(isTransactionCanceled(new Error('boom'))).toBe(false);
+    expect(isTransactionCanceled('nope')).toBe(false);
   });
 });
