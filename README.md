@@ -437,7 +437,7 @@ Authorization: Bearer <firebase-id-token>
 | `tier` | `FREE` \| `BASIC` \| `PREMIUM` | First `GET /me` stores `FREE` when no row exists. Unknown product or past `expiresAt` also resolve to `FREE` |
 | `status` | `NONE` \| `ACTIVE` \| `CANCELED` \| `BILLING_ISSUE` \| `PAUSED` \| `EXPIRED` | `CANCELED` still has access until `expiresAt` |
 | `features.unlimitedCatalog` | boolean | `true` on Basic and Premium |
-| `features.aiTryOn` | boolean | Premium only — POST outfit or item `/render` |
+| `features.aiTryOn` | boolean | Premium only — POST outfit, item, or wish `/render` (and `POST /try-on`) |
 | `features.otherAi` | boolean | Premium only — item-processing enqueue / retry (classify / colour / bg-removal), and PERSONAL Virtual Profile create / list / get / mutate. Outfit suggestions are paid-tier (Basic + Premium) and are not this flag. |
 | `limits` | object or `null` | Free caps. `null` = unlimited |
 | `usage` | object | Current owned counts (all wardrobes) |
@@ -690,7 +690,7 @@ The client then `PUT`s the image directly to `uploadUrl` with the same `Content-
 
 ### Wish list (WARDROBE-244)
 
-A wish is its own Dynamo entity (`USER#{uid} / WISH#{wishId}`, `entityType: WISH`). It is **not** a clothing item with an owned flag. Wishes never appear in item lists, wardrobe item counts, outfits, AI outfit suggestions, Virtual Try On, or plan/item-limit counting.
+A wish is its own Dynamo entity (`USER#{uid} / WISH#{wishId}`, `entityType: WISH`). It is **not** a clothing item with an owned flag. Wishes never appear in item lists, wardrobe item counts, outfits, AI outfit suggestions, or plan/item-limit counting. Virtual Try On can use a wish as the garment source (`wishId`, WARDROBE-253) — that counts as a normal Try On use and does **not** count toward item or wardrobe limits.
 
 Available on **every tier including Free**. Firebase auth only — no entitlement or paywall check. A flat **500** wishes per user (same on every tier) is abuse protection only.
 
@@ -702,6 +702,10 @@ PATCH  /wishlist/{wishId}
 DELETE /wishlist/{wishId}
 POST   /wishlist/uploads
 POST   /wishlist/{wishId}/acquire
+POST   /wishlist/{wishId}/render
+GET    /wishlist/{wishId}/render
+DELETE /wishlist/{wishId}/renders
+POST   /try-on
 ```
 
 All routes are Firebase-authorized. Identity comes from the token. Body / query `userId` is ignored. Another user's `wishId` is `404` `WISH_NOT_FOUND` (lookup is only under the caller's `USER#` partition).
@@ -780,7 +784,7 @@ At least one field required. `null` / `""` clears optional fields (`category`, `
 
 #### `DELETE /wishlist/{wishId}`
 
-**204** empty body. Deletes the wish row and best-effort deletes its image. **404** `WISH_NOT_FOUND`.
+**204** empty body. Deletes the wish row and best-effort deletes its image **and** try-on render prefix (`users/{uid}/wishlist/{wishId}/renders/`). **404** `WISH_NOT_FOUND`.
 
 #### `POST /wishlist/uploads`
 
@@ -810,7 +814,9 @@ Request:
 
 The wish must already have `category` and an image (`400` `VALIDATION_ERROR` otherwise).
 
-**201** — ClothingItem DTO (same shape as `POST /wardrobes/{wardrobeId}/items`).
+READY Virtual Try On photos on the wish are copied onto the new item (`users/{uid}/items/{itemId}/renders/{renderId}.png`) and stored on the item as `render` / `renderHistory` with remapped keys. PENDING / PROCESSING / FAILED current status is **not** copied — an in-flight `RENDER_WISH` job is dropped when the wish row is deleted.
+
+**201** — ClothingItem DTO (same shape as `POST /wardrobes/{wardrobeId}/items`), including moved try-on fields when they existed.
 
 **403** `ENTITLEMENT_ITEM_LIMIT` — exact same status and code as a normal item create at the Free 5-item cap. The wish is unchanged (no copy, no delete).
 
@@ -838,6 +844,7 @@ DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders
 POST   /wardrobes/{wardrobeId}/items/{itemId}/move
 POST   /wardrobes/{wardrobeId}/items/{itemId}/copy
 POST   /wardrobes/{wardrobeId}/items/{itemId}/share
+POST   /try-on
 ```
 
 List supports optional smart filters (WARDROBE-21 / WARDROBE-92):
@@ -1196,6 +1203,7 @@ This is **not** a new AI feature. Only the existing SQS jobs emit events:
 | `PROCESS_WARDROBE_ITEM` | `ProcessingFn` | `wardrobeId`, `itemId` | `READY` / `FAILED` |
 | `RENDER_OUTFIT` | `OutfitRenderFn` | `wardrobeId`, `outfitId`, `renderId?`, `aiProfileId` | `READY` / `FAILED` |
 | `RENDER_ITEM` | `OutfitRenderFn` | `wardrobeId`, `itemId`, `renderId?`, `aiProfileId` | `READY` / `FAILED` |
+| `RENDER_WISH` | `OutfitRenderFn` | `wishId`, `renderId?`, `aiProfileId` (no `wardrobeId`) | `READY` / `FAILED` |
 
 `PROCESS_AI_PROFILE` is not enqueued today and does **not** emit events. Free / Basic item create writes `READY` in-request (no SQS) and does **not** write an inbox event.
 
@@ -1250,11 +1258,12 @@ Query:
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `eventId` | string | Yes | Deterministic. Item: `evt_item_{itemId}_{READY\|FAILED}`. Try-on: `evt_render_{renderId}_{READY\|FAILED}` (legacy jobs without `renderId` use `evt_render_{outfitId}_{aiProfileId}_{status}`). |
-| `jobType` | `PROCESS_WARDROBE_ITEM` \| `RENDER_OUTFIT` \| `RENDER_ITEM` | Yes | Same values as SQS `jobType`. |
+| `jobType` | `PROCESS_WARDROBE_ITEM` \| `RENDER_OUTFIT` \| `RENDER_ITEM` \| `RENDER_WISH` | Yes | Same values as SQS `jobType`. |
 | `status` | `READY` \| `FAILED` | Yes | Terminal only. Never `PENDING` / `PROCESSING`. |
-| `wardrobeId` | string | Yes | Always present for deep-link. |
-| `itemId` | string | Item processing and item try-on | Soft-omitted on outfit try-on events. |
-| `outfitId` | string | Outfit try-on | Soft-omitted on item events. |
+| `wardrobeId` | string | Item / outfit jobs | Soft-omitted on `RENDER_WISH`. |
+| `itemId` | string | Item processing and item try-on | Soft-omitted on outfit / wish try-on events. |
+| `outfitId` | string | Outfit try-on | Soft-omitted on item / wish events. |
+| `wishId` | string | Wish try-on | Soft-omitted on item / outfit events. |
 | `renderId` | string | Try-on when known | Soft-omitted on legacy jobs and processing events. |
 | `aiProfileId` | string | Try-on | Soft-omitted on processing events. |
 | `error` | string | `FAILED` when the worker had a reason | Soft-omitted on `READY`. Same short reason as `processingError` / `render.error`. |
@@ -1335,6 +1344,8 @@ Notification copy (also sent):
 | `RENDER_OUTFIT` | `FAILED` | Try-on failed | We could not finish this try-on. |
 | `RENDER_ITEM` | `READY` | Try-on ready | Your Virtual Try On is ready to view. |
 | `RENDER_ITEM` | `FAILED` | Try-on failed | We could not finish this try-on. |
+| `RENDER_WISH` | `READY` | Try-on ready | Your Virtual Try On is ready to view. |
+| `RENDER_WISH` | `FAILED` | Try-on failed | We could not finish this try-on. |
 
 Missing tokens, missing / placeholder `firebase-fcm`, Google OAuth failures, and `UNREGISTERED` tokens are **soft-fail**: the inbox row still exists, the worker does not 5xx, and stale tokens are deleted. Flutter must not require push to mark a job done.
 
@@ -1357,7 +1368,7 @@ Inbox rows set `ttl` (unix seconds, 30 days). The table already has TTL on `ttl`
 
 1. After `POST` item (Premium) or `POST .../render`, keep a local PENDING row if you want an immediate tray.
 2. `GET /me/events?unreadOnly=true` (or handle FCM data) instead of tight-loop polling GET item / GET render.
-3. Deep-link: item → `GET /wardrobes/{wardrobeId}/items/{itemId}`; outfit try-on → `GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render` (or the outfit); item try-on → `GET /wardrobes/{wardrobeId}/items/{itemId}/render` (or the item).
+3. Deep-link: item → `GET /wardrobes/{wardrobeId}/items/{itemId}`; outfit try-on → `GET /wardrobes/{wardrobeId}/outfits/{outfitId}/render` (or the outfit); item try-on → `GET /wardrobes/{wardrobeId}/items/{itemId}/render` (or the item); wish try-on → `GET /wishlist/{wishId}/render` (or the wish).
 4. `POST .../ack` when the user opens or dismisses the row.
 5. Polling GET item / GET render remains the fallback if the inbox is empty (event write is best-effort relative to the status field).
 6. After `POST .../items/{itemId}/reprocess` (WARDROBE-123), wait for the next terminal event. `READY` is a new `eventId`. A second `FAILED` reuses `evt_item_{itemId}_FAILED` (idempotent — if that row was already acked, poll GET item).
@@ -1710,13 +1721,14 @@ Flutter WARDROBE-84 should:
 
 ### Delete a Virtual Try On photo (WARDROBE-149) — Flutter contract
 
-Remove **one** successful try-on photo from an **outfit or clothing item** the caller owns. Does **not** delete the outfit, item, wardrobe, or Virtual Profile / reference images. Not Premium-gated (generate still is). Identity is the Firebase UID only — body `userId` is ignored.
+Remove **one** successful try-on photo from an **outfit, clothing item, or wish** the caller owns. Does **not** delete the outfit, item, wish, wardrobe, or Virtual Profile / reference images. Not Premium-gated (generate still is). Identity is the Firebase UID only — body `userId` is ignored.
 
-Item **generate** is `POST/GET .../items/{itemId}/render` (WARDROBE-150) — see **Item Virtual Try On / render**. Delete is not Premium-gated.
+Item **generate** is `POST/GET .../items/{itemId}/render` (WARDROBE-150) — see **Item Virtual Try On / render**. Wish generate is WARDROBE-253. Delete is not Premium-gated.
 
 ```http
 DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders
 DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders
+DELETE /wishlist/{wishId}/renders
 ```
 
 Request body (`imageKey` required). Use the `imageKey` from that resource’s `renderHistory[]` (or `render.imageKey`). Keys contain slashes — they must stay in the JSON body, not the path.
@@ -1727,7 +1739,7 @@ Request body (`imageKey` required). Use the `imageKey` from that resource’s `r
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `imageKey` | string | yes | S3 object key for that try-on. Outfit: `users/{uid}/outfits/{outfitId}/` (`…/render.png` or `…/renders/{renderId}.png`). Item: `users/{uid}/items/{itemId}/renders/{renderId}.png` (legacy `…/items/{itemId}/render.png` also accepted). Clothing-item `processed.png`, uploads, Virtual Profile photos, and other users’ keys are rejected. |
+| `imageKey` | string | yes | S3 object key for that try-on. Outfit: `users/{uid}/outfits/{outfitId}/` (`…/render.png` or `…/renders/{renderId}.png`). Item: `users/{uid}/items/{itemId}/renders/{renderId}.png` (legacy `…/items/{itemId}/render.png` also accepted). Wish: `users/{uid}/wishlist/{wishId}/renders/{renderId}.png`. Clothing-item `processed.png`, uploads, Virtual Profile photos, and other users’ keys are rejected. |
 
 Success: **`204` No Content**. After this, GET outfit / GET item / list omit that history entry. Outfit GET `/render` no longer returns that image.
 
@@ -1819,6 +1831,54 @@ Validation (POST):
 The item must have an image (`originalKey` preferred, else `processedKey`). The Virtual Profile must be `READY` with at least one reference image (same helper as outfits). Copy to another wardrobe does **not** copy `render` / `renderHistory` (those S3 keys include the source `itemId`). Move keeps the same `itemId` and therefore the same render keys.
 
 **Worker:** same `OutfitRenderFn` + `wardrobe-outfit-render-{stage}` queue. `RENDER_ITEM` reloads the item, the READY Virtual Profile (frontal reference + optional body context), and the single garment, then writes a new `renders/{renderId}.png` and appends `renderHistory`. Job-done inbox uses `jobType: RENDER_ITEM` with `itemId` + `renderId`.
+
+### Wish Virtual Try On / render (WARDROBE-253)
+
+Same Premium gate, usage (none beyond Premium), worker, and result shape as item Try On. The garment is the wish's stored `originalKey` — never a client-sent URL. Nested item `POST .../items/{itemId}/render` is unchanged.
+
+```http
+POST /try-on
+POST /wishlist/{wishId}/render
+GET  /wishlist/{wishId}/render
+DELETE /wishlist/{wishId}/renders
+```
+
+`POST /try-on` body — exactly one of `itemId` or `wishId`:
+
+```json
+{
+  "aiProfileId": "profile_generic_01",
+  "wishId": "wish_abc123xyz0"
+}
+```
+
+or `{ "aiProfileId": "...", "itemId": "item_..." }` (same behaviour as nested item POST `/render`, including `202` ClothingItem).
+
+`POST /wishlist/{wishId}/render` body is `{ "aiProfileId" }` only (wish id is in the path).
+
+**202** Wish DTO with pending `render` (and history when earlier try-ons exist). GET `/render` returns the current `OutfitRender` poll record. GET wish and list include `render`, `renderHistory`, and `renderImageUrls` — same field names and soft-omit rules as item try-on.
+
+S3 keys: `users/{uid}/wishlist/{wishId}/renders/{renderId}.png`. `DELETE /wishlist/{wishId}/renders` with `{ "imageKey" }` removes one owned photo (same WARDROBE-149 rules; not Premium-gated). Deleting the wish deletes its try-on prefix.
+
+Premium is enforced on **POST generate only** (`assertPremiumAi` → `403 ENTITLEMENT_AI_REQUIRED`, same message as item Try On). There is no application-level try-on 429 / usage counter for items or wishes. GET `/render`, GET wish, list, and delete are not gated. A wish Try On does **not** count toward item or wardrobe catalog limits.
+
+Validation (POST generate):
+
+| Case | Response |
+| --- | --- |
+| Both `itemId` and `wishId`, or neither (`POST /try-on`) | `400 TRYON_SOURCE_INVALID` |
+| Missing token | `401 UNAUTHENTICATED` |
+| Other-user / missing wish | `404 WISH_NOT_FOUND` |
+| Wish has no stored image | `400 WISH_IMAGE_REQUIRED` |
+| Wish has no category | `400 WISH_CATEGORY_REQUIRED` |
+| Free / Basic | `403 ENTITLEMENT_AI_REQUIRED` |
+| Unknown / other-user PERSONAL profile | `404 AI_PROFILE_NOT_FOUND` |
+| Profile not `READY` / no reference images | `400 VALIDATION_ERROR` |
+| GET `/render` before any POST | `404 RENDER_NOT_FOUND` |
+
+**Acquire:** READY try-on photos are copied onto the new item (new S3 keys under `users/{uid}/items/{itemId}/renders/`, remapped `render` / `renderHistory` on the ITEM row). PENDING / PROCESSING / FAILED current status is not copied.
+
+**Worker:** `RENDER_WISH` on the same try-on queue. Reloads the owned wish, READY Virtual Profile, and the wish's stored image. Job-done inbox uses `jobType: RENDER_WISH` with `wishId` + `renderId` (no `wardrobeId`).
 
 ### Outfit recommendations
 
@@ -2604,6 +2664,7 @@ Repeat for `02`–`04`. `referenceImages` is a Dynamo string set or list of stri
 | --- | --- |
 | WARDROBE-47 | Secret `wardrobe/{stage}/gemini-try-on` (`tryOnSecretName`). Job type `RENDER_OUTFIT` on the dedicated outfit-render queue. See **Outfit try-on / render** above. |
 | WARDROBE-150 | Same try-on queue / worker. Job type `RENDER_ITEM`. See **Item Virtual Try On / render**. |
+| WARDROBE-253 | Same try-on queue / worker. Job type `RENDER_WISH`. `POST /try-on` (`itemId` XOR `wishId`). See **Wish Virtual Try On / render**. |
 | WARDROBE-114 | Inbox `USER#{uid}` / `EVENT#{eventId}` + optional secret `wardrobe/{stage}/firebase-fcm`. See **AI job-done events**. |
 
 ## DynamoDB keys
@@ -2670,15 +2731,16 @@ src/functions/
   events/              job-done inbox + FCM device registration (WARDROBE-114)
   entitlements-webhook/ public Superwall Svix webhook (WARDROBE-91)
   wardrobes/
-  items/               CRUD + POST/GET render (WARDROBE-150) + append-only history
+  items/               CRUD + POST/GET render (WARDROBE-150) + POST /try-on (WARDROBE-253) + append-only history
   outfits/             CRUD + POST/GET render (WARDROBE-47) + append-only history (WARDROBE-85)
+  wishlist/            CRUD + acquire (WARDROBE-244) + POST/GET render (WARDROBE-253)
   shares/              item/outfit share tokens + public preview (WARDROBE-126)
   recommendations/     owner-only derived outfits; OpenAI (default) + rule-based fallback
   shopping-links/      owner-only related shopping (WARDROBE-96); OpenAI keywords + Bright Data SERP
   uploads/
   ai-profiles/         CRUD + PERSONAL refs (43/44); generic catalog seed (45); body context (80); label/notes (158)
   processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline
-  outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47) + RENDER_ITEM (WARDROBE-150)
+  outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47) + RENDER_ITEM (WARDROBE-150) + RENDER_WISH (WARDROBE-253)
   support/             WARDROBE-38 outbound contact/bug + WARDROBE-143 public website contact + Resend client + Svix verify
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
 src/shared/

@@ -72,7 +72,7 @@ export function jobDoneNotificationCopy(input: JobDoneInput): {
       ? { title: 'Item ready', body: 'Your clothing item has finished processing.' }
       : { title: 'Item processing failed', body: 'We could not finish processing this item.' };
   }
-  if (input.jobType === 'RENDER_ITEM') {
+  if (input.jobType === 'RENDER_ITEM' || input.jobType === 'RENDER_WISH') {
     return input.status === 'READY'
       ? { title: 'Try-on ready', body: 'Your Virtual Try On is ready to view.' }
       : { title: 'Try-on failed', body: 'We could not finish this try-on.' };
@@ -87,13 +87,18 @@ export function jobDonePushData(input: JobDoneInput, eventId: string): Record<st
     eventId,
     jobType: input.jobType,
     status: input.status,
-    wardrobeId: input.wardrobeId,
   };
+  if (input.wardrobeId) {
+    data.wardrobeId = input.wardrobeId;
+  }
   if (input.itemId) {
     data.itemId = input.itemId;
   }
   if (input.outfitId) {
     data.outfitId = input.outfitId;
+  }
+  if (input.wishId) {
+    data.wishId = input.wishId;
   }
   if (input.renderId) {
     data.renderId = input.renderId;

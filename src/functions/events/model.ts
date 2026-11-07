@@ -19,9 +19,10 @@ export interface JobDoneInput {
   userId: string;
   jobType: JobEventJobType;
   status: JobEventStatus;
-  wardrobeId: string;
+  wardrobeId?: string;
   itemId?: string;
   outfitId?: string;
+  wishId?: string;
   renderId?: string;
   aiProfileId?: string;
   error?: string;
@@ -62,16 +63,21 @@ export function toJobEventItem(input: JobDoneInput, createdAt = nowIso()): Dynam
     eventId,
     jobType: input.jobType,
     status: input.status,
-    wardrobeId: input.wardrobeId,
     createdAt,
     updatedAt: createdAt,
     ttl: jobEventTtl(),
   };
+  if (input.wardrobeId) {
+    item.wardrobeId = input.wardrobeId;
+  }
   if (input.itemId) {
     item.itemId = input.itemId;
   }
   if (input.outfitId) {
     item.outfitId = input.outfitId;
+  }
+  if (input.wishId) {
+    item.wishId = input.wishId;
   }
   if (input.renderId) {
     item.renderId = input.renderId;
@@ -90,14 +96,19 @@ export function toJobEventDto(item: DynamoItem): JobEvent {
     eventId: String(item.eventId ?? ''),
     jobType: item.jobType as JobEventJobType,
     status: item.status as JobEventStatus,
-    wardrobeId: String(item.wardrobeId ?? ''),
     createdAt: String(item.createdAt ?? ''),
   };
+  if (typeof item.wardrobeId === 'string' && item.wardrobeId) {
+    dto.wardrobeId = item.wardrobeId;
+  }
   if (typeof item.itemId === 'string' && item.itemId) {
     dto.itemId = item.itemId;
   }
   if (typeof item.outfitId === 'string' && item.outfitId) {
     dto.outfitId = item.outfitId;
+  }
+  if (typeof item.wishId === 'string' && item.wishId) {
+    dto.wishId = item.wishId;
   }
   if (typeof item.renderId === 'string' && item.renderId) {
     dto.renderId = item.renderId;

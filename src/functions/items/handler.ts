@@ -36,11 +36,13 @@ import {
   OutfitRender,
   PROCESS_WARDROBE_ITEM_BACKGROUND_REMOVAL_ONLY,
   ProcessingStatus,
+  Wish,
 } from '../../shared/types';
 import {
   optionalIsoDate,
   optionalNonEmptyString,
   optionalStringArray,
+  parseTryOnSource,
   requireCategory,
   requireNonEmptyString,
   requireOwnedImageKey,
@@ -69,6 +71,7 @@ import {
   requireTargetWardrobeId,
   TransferItemBody,
 } from './transfer';
+import { requestWishRender } from '../wishlist/render';
 
 interface CreateItemBody {
   name?: unknown;
@@ -112,6 +115,13 @@ export async function handler(
     const method = event.requestContext.http.method;
     const wardrobeId = event.pathParameters?.wardrobeId?.trim();
     const itemId = event.pathParameters?.itemId?.trim();
+
+    if (isTryOnRoute(event)) {
+      if (method !== 'POST') {
+        throw Errors.validation(`Unsupported method: ${method}`);
+      }
+      return accepted(await requestTryOn(userId, parseJsonBody(event)));
+    }
 
     if (!wardrobeId) {
       // WARDROBE-173: web `/app/items/:id` has no wardrobeId.
@@ -222,6 +232,29 @@ export async function handler(
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+function isTryOnRoute(event: APIGatewayProxyEventV2): boolean {
+  const key = routeKey(event);
+  const path = event.rawPath ?? '';
+  return key.includes(' /try-on') || /\/try-on\/?$/.test(path);
+}
+
+async function requestTryOn(
+  userId: string,
+  body: RequestItemRenderBody & { itemId?: unknown; wishId?: unknown },
+): Promise<ClothingItem | Wish> {
+  const source = parseTryOnSource(body);
+  if ('itemId' in source) {
+    const item = await getOwnedItemById(userId, source.itemId);
+    return requestItemRender(
+      userId,
+      String(item.wardrobeId),
+      source.itemId,
+      body,
+    );
+  }
+  return requestWishRender(userId, source.wishId, body);
 }
 
 function isItemRendersRoute(event: APIGatewayProxyEventV2): boolean {

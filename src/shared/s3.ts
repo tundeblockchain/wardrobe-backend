@@ -123,6 +123,42 @@ export function wishlistMediaPrefix(userId: string): string {
   return `users/${uid}/wishlist/`;
 }
 
+/**
+ * Unique Virtual Try On photos for a wish (WARDROBE-253).
+ * `users/{uid}/wishlist/{wishId}/renders/` — not the wish upload.
+ */
+export function wishRenderPrefix(userId: string, wishId: string): string {
+  const uid = userId.trim();
+  const id = wishId.trim();
+  if (!isSafeObjectKeySegment(uid) || !isSafeObjectKeySegment(id)) {
+    throw Errors.validation('wishId is not a valid object-key segment.');
+  }
+  return `${wishlistMediaPrefix(uid)}${id}/renders/`;
+}
+
+/**
+ * Wish try-on object key: `users/{uid}/wishlist/{wishId}/renders/{renderId}.png`.
+ */
+export function wishRenderObjectKey(
+  userId: string,
+  wishId: string,
+  renderId: string,
+): string {
+  const uid = userId.trim();
+  const id = wishId.trim();
+  const entryId = renderId.trim();
+  if (
+    !isSafeObjectKeySegment(uid) ||
+    !isSafeObjectKeySegment(id) ||
+    !isSafeObjectKeySegment(entryId)
+  ) {
+    throw Errors.internal(
+      'Refusing to build a wish render key for an invalid id.',
+    );
+  }
+  return `users/${uid}/wishlist/${id}/renders/${entryId}.png`;
+}
+
 export function extensionFromObjectKey(objectKey: string): string {
   const trimmed = objectKey.trim();
   const slash = trimmed.lastIndexOf('/');

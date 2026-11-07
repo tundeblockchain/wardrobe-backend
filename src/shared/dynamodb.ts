@@ -36,7 +36,8 @@ export const keys = {
   itemSk: (itemId: string) => `ITEM#${itemId}`,
   /**
    * Per-user wish (WARDROBE-244). Lives under `USER#{uid}` so item lists,
-   * wardrobe counts, outfits, and try-on never see it.
+   * wardrobe counts, outfits, and plan/item-limit counting never see it.
+   * Virtual Try On addresses a wish only when the caller sends `wishId`.
    */
   wishSk: (wishId: string) => `WISH#${wishId}`,
   wishSkPrefix: 'WISH#',

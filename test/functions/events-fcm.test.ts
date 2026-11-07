@@ -104,6 +104,17 @@ describe('FCM job-done push (WARDROBE-114)', () => {
       title: 'Try-on ready',
       body: 'Your Virtual Try On is ready to view.',
     });
+    expect(
+      jobDoneNotificationCopy({
+        userId: OWNER_ID,
+        jobType: 'RENDER_WISH',
+        status: 'READY',
+        wishId: 'wish_1',
+      }),
+    ).toEqual({
+      title: 'Try-on ready',
+      body: 'Your Virtual Try On is ready to view.',
+    });
   });
 
   it('builds a string-only deep-link data payload', () => {

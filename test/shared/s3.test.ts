@@ -43,6 +43,8 @@ import {
   extensionFromObjectKey,
   itemOriginalObjectKey,
   wishlistMediaPrefix,
+  wishRenderObjectKey,
+  wishRenderPrefix,
   createPresignedPutUrl,
   deleteObjectsUnderAiProfilePrefix,
   deleteObjectBestEffort,
@@ -115,6 +117,15 @@ describe('s3 helpers (WARDROBE-8)', () => {
         'png',
       );
       expect(extensionFromObjectKey('no-extension')).toBe('jpg');
+    });
+
+    it('builds wish try-on keys under users/{uid}/wishlist/{wishId}/renders/', () => {
+      expect(wishRenderPrefix('uid-1', 'wish_abc')).toBe(
+        'users/uid-1/wishlist/wish_abc/renders/',
+      );
+      expect(wishRenderObjectKey('uid-1', 'wish_abc', 'rend_new1abcd')).toBe(
+        'users/uid-1/wishlist/wish_abc/renders/rend_new1abcd.png',
+      );
     });
 
     it('copies within the media bucket', async () => {

@@ -10,6 +10,13 @@ import {
   Wish,
   WishPrice,
 } from '../../shared/types';
+import {
+  seedHistoryFromCurrentRender,
+  toOutfitRender,
+  toRenderHistory,
+  withSignedRenderHistory,
+  withSignedRenderUrl,
+} from '../outfits/render';
 
 export function isOwnedWish(
   item: DynamoItem | undefined,
@@ -57,6 +64,24 @@ export async function toWishDto(item: DynamoItem): Promise<Wish> {
   }
   if (typeof item.notes === 'string' && item.notes.trim()) {
     dto.notes = item.notes;
+  }
+
+  const render = toOutfitRender(item.render);
+  const signedHistory = await withSignedRenderHistory(
+    seedHistoryFromCurrentRender(
+      toRenderHistory(item.renderHistory),
+      render,
+      item.updatedAt,
+    ),
+  );
+  if (render) {
+    dto.render = await withSignedRenderUrl(render);
+  }
+  if (signedHistory.renderHistory) {
+    dto.renderHistory = signedHistory.renderHistory;
+  }
+  if (signedHistory.renderImageUrls) {
+    dto.renderImageUrls = signedHistory.renderImageUrls;
   }
 
   return dto;

@@ -468,6 +468,7 @@ export class WardrobeStack extends cdk.Stack {
       environment: {
         ...commonLambdaProps.environment,
         PROCESSING_QUEUE_URL: processingQueue.queueUrl,
+        TRY_ON_QUEUE_URL: tryOnQueue.queueUrl,
       },
     });
     // WARDROBE-43 CRUD + WARDROBE-44 PERSONAL reference-image presign/attach
@@ -594,6 +595,7 @@ export class WardrobeStack extends cdk.Stack {
     mediaBucket.grantRead(wishlistFn);
     mediaBucket.grantDelete(wishlistFn);
     processingQueue.grantSendMessages(wishlistFn);
+    tryOnQueue.grantSendMessages(wishlistFn);
     // PERSONAL Virtual Profile reference-image presign PUT (WARDROBE-44),
     // short-lived GET for frontImageUrl / referenceImageUrls (WARDROBE-73),
     // and best-effort DeleteObject for set-main replace / delete-one /
@@ -618,7 +620,8 @@ export class WardrobeStack extends cdk.Stack {
     processingQueue.grantSendMessages(itemsFn);
     processingQueue.grantConsumeMessages(processingFn);
     // Try-on: outfits enqueue RENDER_OUTFIT; items enqueue RENDER_ITEM
-    // (WARDROBE-150). Worker consumes both + reads Gemini secret.
+    // (WARDROBE-150); wishlist enqueue RENDER_WISH (WARDROBE-253).
+    // Worker consumes all three + reads Gemini secret.
     tryOnQueue.grantSendMessages(itemsFn);
     tryOnQueue.grantSendMessages(outfitsFn);
     tryOnQueue.grantConsumeMessages(outfitRenderFn);
@@ -1014,6 +1017,15 @@ export class WardrobeStack extends cdk.Stack {
       authorizer: firebaseAuthorizer,
     });
 
+    // WARDROBE-253: unified Virtual Try On generate. Exactly one of
+    // itemId or wishId. Nested item POST /render is unchanged.
+    httpApi.addRoutes({
+      path: '/try-on',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: itemsIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
     httpApi.addRoutes({
       path: '/wardrobes/{wardrobeId}/items/{itemId}/share',
       methods: [apigwv2.HttpMethod.POST],
@@ -1162,6 +1174,20 @@ export class WardrobeStack extends cdk.Stack {
     httpApi.addRoutes({
       path: '/wishlist/{wishId}/acquire',
       methods: [apigwv2.HttpMethod.POST],
+      integration: wishlistIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wishlist/{wishId}/renders',
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: wishlistIntegration,
+      authorizer: firebaseAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/wishlist/{wishId}/render',
+      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.POST],
       integration: wishlistIntegration,
       authorizer: firebaseAuthorizer,
     });

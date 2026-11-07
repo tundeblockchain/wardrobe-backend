@@ -33,6 +33,8 @@ import {
   requireOwnedImageKey,
   requireOwnedItemRenderKey,
   requireOwnedOutfitRenderKey,
+  requireOwnedWishRenderKey,
+  parseTryOnSource,
   requireSlot,
   requireSubcategory,
 } from '../../src/shared/validation';
@@ -524,6 +526,53 @@ describe('validation', () => {
           itemId,
         ),
       ).toThrow(AppError);
+    });
+  });
+
+  describe('requireOwnedWishRenderKey (WARDROBE-253)', () => {
+    const userId = 'firebase-uid-owner';
+    const wishId = 'wish_abc123xyz0';
+    const renderKey = `users/${userId}/wishlist/${wishId}/renders/rend_new1abcd.png`;
+
+    it('accepts a unique renders/{renderId}.png key', () => {
+      expect(requireOwnedWishRenderKey(renderKey, userId, wishId)).toBe(
+        renderKey,
+      );
+    });
+
+    it('rejects the wish upload key', () => {
+      expect(() =>
+        requireOwnedWishRenderKey(
+          `users/${userId}/wishlist/uploads/photo.jpg`,
+          userId,
+          wishId,
+        ),
+      ).toThrow(AppError);
+    });
+  });
+
+  describe('parseTryOnSource (WARDROBE-253)', () => {
+    it('accepts exactly one of itemId or wishId', () => {
+      expect(parseTryOnSource({ itemId: 'item_abc' })).toEqual({
+        itemId: 'item_abc',
+      });
+      expect(parseTryOnSource({ wishId: 'wish_abc' })).toEqual({
+        wishId: 'wish_abc',
+      });
+    });
+
+    it('rejects both or neither with TRYON_SOURCE_INVALID', () => {
+      expect(() => parseTryOnSource({})).toThrow(AppError);
+      expect(() =>
+        parseTryOnSource({ itemId: 'item_abc', wishId: 'wish_abc' }),
+      ).toThrow(AppError);
+      try {
+        parseTryOnSource({});
+      } catch (error) {
+        const appError = error as AppError;
+        expect(appError.code).toBe('TRYON_SOURCE_INVALID');
+        expect(appError.statusCode).toBe(400);
+      }
     });
   });
 

@@ -7,6 +7,7 @@ import {
   parseTryOnSecret,
   runItemTryOn,
   runOutfitTryOn,
+  runWishTryOn,
   selectTryOnProfileImageKeys,
 } from '../../src/functions/processing/try-on';
 
@@ -181,6 +182,44 @@ describe('runOutfitTryOn', () => {
     expect(imageKey).toBe(uniqueKey);
     expect(puts).toEqual([uniqueKey]);
     expect(imageKey).not.toBe(RENDER_KEY);
+  });
+});
+
+describe('runWishTryOn', () => {
+  const WISH_ID = 'wish_abc123xyz0';
+
+  it('writes users/{uid}/wishlist/{wishId}/renders/{renderId}.png', async () => {
+    const puts: string[] = [];
+    const renderId = 'rend_wish01abcd';
+    const uniqueKey = `users/${USER_ID}/wishlist/${WISH_ID}/renders/${renderId}.png`;
+
+    const imageKey = await runWishTryOn(
+      {
+        userId: USER_ID,
+        wishId: WISH_ID,
+        profileImageKeys: [PROFILE_KEY],
+        garmentImages: [{ slot: 'OUTERWEAR', objectKey: GARMENT_KEY }],
+        renderId,
+      },
+      {
+        store: {
+          async getObject() {
+            return { bytes: JPEG, contentType: 'image/jpeg' };
+          },
+          async putObject(objectKey) {
+            puts.push(objectKey);
+          },
+        },
+        client: {
+          async render() {
+            return PNG;
+          },
+        },
+      },
+    );
+
+    expect(imageKey).toBe(uniqueKey);
+    expect(puts).toEqual([uniqueKey]);
   });
 });
 

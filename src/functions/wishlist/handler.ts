@@ -12,6 +12,7 @@ import {
 } from '../../shared/dynamodb';
 import { Errors } from '../../shared/errors';
 import {
+  accepted,
   created,
   errorResponse,
   noContent,
@@ -54,6 +55,7 @@ import {
   requireCategory,
   requireNonEmptyString,
   requireOwnedImageKey,
+  requireOwnedWishRenderKey,
 } from '../../shared/validation';
 import {
   buildNewClothingItem,
@@ -70,6 +72,14 @@ import {
   toWishDto,
   wishOriginalKey,
 } from './model';
+import {
+  copyWishRenderObjects,
+  deleteWishRenderMedia,
+  deleteWishRenderPhoto,
+  getWishRender,
+  requestWishRender,
+  wishRendersForItemAcquire,
+} from './render';
 
 interface CreateWishBody {
   name?: unknown;
@@ -122,6 +132,33 @@ export async function handler(
       );
     }
 
+    if (isWishRendersRoute(key, path)) {
+      if (method !== 'DELETE') {
+        throw Errors.validation(`Unsupported method: ${method}`);
+      }
+      const wishId = requirePathParam(event, 'wishId');
+      const body = parseJsonBody<{ imageKey?: unknown }>(event);
+      await deleteWishRenderPhoto(
+        userId,
+        wishId,
+        requireOwnedWishRenderKey(body.imageKey, userId, wishId),
+      );
+      return noContent();
+    }
+
+    if (isWishRenderRoute(key, path)) {
+      const wishId = requirePathParam(event, 'wishId');
+      if (method === 'GET') {
+        return ok(await getWishRender(userId, wishId));
+      }
+      if (method === 'POST') {
+        return accepted(
+          await requestWishRender(userId, wishId, parseJsonBody(event)),
+        );
+      }
+      throw Errors.validation(`Unsupported method: ${method}`);
+    }
+
     const wishId = event.pathParameters?.wishId?.trim();
 
     if (!wishId) {
@@ -161,6 +198,25 @@ function isAcquireRoute(key: string, path: string): boolean {
   return (
     key.includes('/wishlist/{wishId}/acquire') ||
     /\/wishlist\/[^/]+\/acquire\/?$/.test(path)
+  );
+}
+
+function isWishRendersRoute(key: string, path: string): boolean {
+  return (
+    key.includes('/wishlist/{wishId}/renders') ||
+    /\/wishlist\/[^/]+\/renders\/?$/.test(path)
+  );
+}
+
+/**
+ * Current poll + generate. Do not match WARDROBE-253
+ * `DELETE .../wishlist/{wishId}/renders` (plural).
+ */
+function isWishRenderRoute(key: string, path: string): boolean {
+  return (
+    (key.includes('/wishlist/{wishId}/render') &&
+      !key.includes('/wishlist/{wishId}/renders')) ||
+    /\/wishlist\/[^/]+\/render\/?$/.test(path)
   );
 }
 
@@ -349,6 +405,7 @@ async function removeWish(userId: string, wishId: string): Promise<void> {
   if (originalKey) {
     await deleteObjectBestEffort(originalKey);
   }
+  await deleteWishRenderMedia(userId, wishId);
 }
 
 /**
@@ -361,11 +418,18 @@ async function removeWish(userId: string, wishId: string): Promise<void> {
  * Order chosen so a failure never leaves both copies or neither:
  * 1. Cap / ownership checks (nothing written).
  * 2. Copy the wish image to the item original key.
- * 3. One TransactWriteItems: put ITEM + delete WISH (wish must still exist).
- * 4. On transact failure, delete the copied image; Dynamo writes nothing.
- * 5. Enqueue Premium processing; on failure reverse with one transact
- *    (delete ITEM + put WISH) and drop the copied object.
- * 6. Best-effort delete the wish image (item copy remains).
+ * 3. Copy READY try-on S3 objects onto the item render prefix (WARDROBE-253).
+ * 4. One TransactWriteItems: put ITEM (including remapped render fields)
+ *    + delete WISH (wish must still exist).
+ * 5. On transact failure, delete copied original + render objects;
+ *    Dynamo writes nothing.
+ * 6. Enqueue Premium processing; on failure reverse with one transact
+ *    (delete ITEM + put WISH) and drop the copied objects.
+ * 7. Best-effort delete the wish image and wish try-on prefix (item copy
+ *    remains).
+ *
+ * PENDING / PROCESSING / FAILED current try-on status is not copied.
+ * An in-flight RENDER_WISH job is dropped when the wish row is deleted.
  */
 async function acquireWish(
   userId: string,
@@ -396,6 +460,8 @@ async function acquireWish(
     itemId,
     extensionFromObjectKey(originalKey),
   );
+  const wishRenders = wishRendersForItemAcquire(userId, wishId, itemId, wish);
+  const copiedKeys: string[] = [destinationKey];
 
   try {
     await copyObject({ sourceKey: originalKey, destinationKey });
@@ -406,6 +472,19 @@ async function acquireWish(
       error: error instanceof Error ? error.message : 'unknown',
     });
     throw Errors.internal('Wish image could not be copied.');
+  }
+
+  try {
+    const copiedRenders = await copyWishRenderObjects(wishRenders.copies);
+    copiedKeys.push(...copiedRenders);
+  } catch (error) {
+    await deleteObjectBestEffort(destinationKey);
+    logger.error('Failed to copy wish try-on photos for acquire', {
+      wishId,
+      itemId,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    throw Errors.internal('Wish try-on photos could not be copied.');
   }
 
   const subcategory =
@@ -425,11 +504,17 @@ async function acquireWish(
     },
     enqueueAi,
   );
+  if (wishRenders.render) {
+    item.render = wishRenders.render;
+  }
+  if (wishRenders.renderHistory) {
+    item.renderHistory = wishRenders.renderHistory;
+  }
 
   try {
     await transactWrite(acquireItemAndDeleteWishOps(item, userId, wishId));
   } catch (error) {
-    await deleteObjectBestEffort(destinationKey);
+    await Promise.all(copiedKeys.map((key) => deleteObjectBestEffort(key)));
     if (isTransactionCanceled(error)) {
       throw Errors.wishNotFound();
     }
@@ -452,7 +537,7 @@ async function acquireWish(
               : 'unknown',
         });
       }
-      await deleteObjectBestEffort(destinationKey);
+      await Promise.all(copiedKeys.map((key) => deleteObjectBestEffort(key)));
       throw error;
     }
   }
@@ -460,6 +545,7 @@ async function acquireWish(
   if (originalKey !== destinationKey) {
     await deleteObjectBestEffort(originalKey);
   }
+  await deleteWishRenderMedia(userId, wishId);
 
   return toClothingItem(item);
 }

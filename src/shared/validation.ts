@@ -4,6 +4,7 @@ import {
   itemRenderObjectKey,
   itemRenderPrefix,
   outfitRenderPrefix,
+  wishRenderPrefix,
 } from './s3';
 import {
   AI_PROFILE_TYPES,
@@ -467,6 +468,62 @@ export function requireOwnedItemRenderKey(
   throw Errors.validation(
     `${field} must be under users/{userId}/items/{itemId}/renders/.`,
   );
+}
+
+/**
+ * Wish Virtual Try On keys (WARDROBE-253). Allows
+ * `users/{uid}/wishlist/{wishId}/renders/…`. Refuses the wish upload.
+ */
+export function requireOwnedWishRenderKey(
+  value: unknown,
+  userId: string,
+  wishId: string,
+  field = 'imageKey',
+): string {
+  const imageKey = requireOwnedImageKey(value, userId, field);
+  const rendersPrefix = wishRenderPrefix(userId, wishId);
+  const remainder = imageKey.slice(rendersPrefix.length);
+
+  if (
+    imageKey.startsWith(rendersPrefix) &&
+    remainder &&
+    !remainder.endsWith('/')
+  ) {
+    return imageKey;
+  }
+
+  throw Errors.validation(
+    `${field} must be under users/{userId}/wishlist/{wishId}/renders/.`,
+  );
+}
+
+export type TryOnSource = { itemId: string } | { wishId: string };
+
+/**
+ * POST /try-on (WARDROBE-253): exactly one of `itemId` or `wishId`.
+ * Blank / null counts as omitted.
+ */
+export function parseTryOnSource(body: {
+  itemId?: unknown;
+  wishId?: unknown;
+}): TryOnSource {
+  const itemId = optionalSourceId(body.itemId, 'itemId');
+  const wishId = optionalSourceId(body.wishId, 'wishId');
+  if ((itemId && wishId) || (!itemId && !wishId)) {
+    throw Errors.tryOnSourceInvalid();
+  }
+  return itemId ? { itemId } : { wishId: wishId! };
+}
+
+function optionalSourceId(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw Errors.validation(`${field} must be a string.`);
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export function requireAiProfileType(
