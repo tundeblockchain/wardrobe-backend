@@ -2849,7 +2849,7 @@ Checkout looks up `stripeCustomerId` on `USER#{uid} / PROFILE`. If it is missing
 
 ### `POST /billing/checkout-session`
 
-Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }`. `interval` defaults to `"monthly"` when omitted. Return URLs are **server-built** from cdk.json context `billingWebOrigin` (`BILLING_WEB_ORIGIN`). Body `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` fields are ignored. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` (or the configured base) exactly on scheme + host + port. Otherwise the configured base is used. If `billingWebOrigin` is unset, the TEMPORARY WARDROBE-198 fallback (`https://wende-wardrobe.netlify.app`) is used and a WARN is logged once per cold start. Response remains `{ "url" }` only.
+Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }`. `interval` defaults to `"monthly"` when omitted. Return URLs are **server-built** from cdk.json context `billingWebOrigin` (`BILLING_WEB_ORIGIN`). Body `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` fields are ignored. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` (or the configured base) exactly on scheme + host + port. Otherwise the configured base is used. If `billingWebOrigin` is unset, the TEMPORARY WARDROBE-198 fallback (`https://wende-wardrobe.netlify.app`) is used and a WARN is logged once per cold start. The request `User-Agent` is stored on the Checkout Session as metadata `ua` (truncated to 400 characters) for Meta CAPI website events. Response remains `{ "url" }` only.
 
 ```http
 POST /billing/checkout-session
@@ -3035,13 +3035,13 @@ No email, phone, name, item text, or raw ids in plain text.
 
 **Trial vs subscribe.** Matches the app: `StartTrial` only for a free trial or intro offer with price 0. Stripe: `status=trialing` and no charge. Superwall: `periodType` `TRIAL` or `INTRO` with price 0. A paid intro (price > 0) is `Subscribe`. Trial conversion (user pays after a trial) is `Subscribe`, not `SubscriptionRenewed`. Only later paid cycles are `SubscriptionRenewed`.
 
-**Meta Stripe events.** Server-side Meta uses `action_source=system_generated` (not `website`). Webhooks have no `client_user_agent` or `event_source_url`, which Meta requires for website events. `system_generated` does not need those fields. Dedupe still matches on `event_name` + `event_id` (`stripe_<checkoutSessionId>` / `stripe_<invoiceId>`). `user_data` is hashed `external_id` only — no IP or other personal data.
+**Meta Stripe events.** Checkout with a stored User-Agent uses `action_source=website` so the event can dedupe against the website pixel. `POST /billing/checkout-session` copies the request `User-Agent` (truncated to 400 characters) into Checkout Session metadata `ua`. On `checkout.session.completed`, Meta gets `user_data.client_user_agent` from that field and `event_source_url` = `{billingWebOrigin}/app/billing/success` (cdk.json context `billingWebOrigin` / `BILLING_WEB_ORIGIN`; no hardcoded domain). `user_data` is hashed `external_id` plus that UA only — no IP or other personal data. If `ua` is missing (older sessions) or the event is `invoice.paid` (renewals / trial conversions have no browser), Meta uses `action_source=system_generated` and an info log; those payloads omit the browser fields.
 
 **Meta app events.** Superwall / app-sourced events skip Meta CAPI entirely (info log). The app SDK is the Meta path for app purchases the client can see.
 
 **Known gap.** App-store trial conversions and renewals (Superwall) are not sent to Meta. Meta CAPI `action_source=app` events need `app_data` (ATT status / `extinfo`) that the server does not have. TikTok still receives them. The app SDK cannot see these events — they arrive only on Superwall webhooks. Follow-up WARDROBE-250 (app sending ATT/device context at purchase so the server can emit valid Meta app events) is on hold.
 
-**TikTok Stripe / web events.** TikTok `event_source=web` requires `page.url`; Stripe events send `{billingWebOrigin}/app/billing/success`. IP and user agent are not sent.
+**TikTok Stripe / web events.** TikTok `event_source=web` requires `page.url`; Stripe events send `{billingWebOrigin}/app/billing/success` and, when present, `user.user_agent`. IP is not sent.
 
 **TikTok app events.** Superwall sends TikTok `event_source=app` with `event_source_id` set to the secret's `pixelCode`. TikTok app events typically expect a TikTok App ID as `event_source_id`; if the pixel code is not accepted for app events, put the App ID in `pixelCode` (the JSON field name stays `pixelCode`).
 

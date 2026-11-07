@@ -6,6 +6,7 @@ import { Errors } from '../../shared/errors';
 import { errorResponse, ok, parseJsonBody, parseOptionalJsonBody, routeKey } from '../../shared/http';
 import { logger } from '../../shared/logger';
 import { parseAllowedOrigins, requestOrigin } from '../support/origins';
+import { checkoutUserAgentFromHeaders } from '../../shared/conversion-events';
 import { toPaidTierStatus } from '../../shared/paid-tier';
 import {
   createSubscriptionCheckoutSession,
@@ -171,6 +172,10 @@ async function createCheckoutSession(
     stripe,
     config,
     origin,
+    userAgent: checkoutUserAgentFromHeaders(
+      event.headers,
+      event.requestContext.http.userAgent,
+    ),
     log,
   });
 }

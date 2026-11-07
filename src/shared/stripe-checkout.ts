@@ -3,6 +3,10 @@ import {
   checkoutSuccessUrl,
   resolveBillingWebOrigin,
 } from './billing-urls';
+import {
+  STRIPE_CHECKOUT_UA_METADATA_KEY,
+  truncateCheckoutUserAgent,
+} from './conversion-events';
 import { Errors } from './errors';
 import { logger } from './logger';
 import { isPaidTier } from './paid-tier';
@@ -36,6 +40,7 @@ export interface StripeCheckoutClient {
         line_items: Array<{ price: string; quantity: number }>;
         success_url: string;
         cancel_url: string;
+        metadata?: { [STRIPE_CHECKOUT_UA_METADATA_KEY]: string };
         subscription_data: { metadata: { uid: string; tier: string } };
       }) => Promise<{ url?: string | null }>;
     };
@@ -103,6 +108,7 @@ export async function createSubscriptionCheckoutSession(options: {
   stripe: StripeCheckoutClient;
   config: StripeRuntimeConfig;
   origin?: string;
+  userAgent?: string;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<CheckoutSessionResult> {
   const interval = options.interval ?? 'monthly';
@@ -118,6 +124,7 @@ export async function createSubscriptionCheckoutSession(options: {
     interval,
   );
 
+  const userAgent = truncateCheckoutUserAgent(options.userAgent);
   const session = await options.stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: options.customerId,
@@ -125,6 +132,9 @@ export async function createSubscriptionCheckoutSession(options: {
     line_items: [{ price: priceId, quantity: 1 }],
     success_url: successUrl,
     cancel_url: cancelUrl,
+    ...(userAgent
+      ? { metadata: { [STRIPE_CHECKOUT_UA_METADATA_KEY]: userAgent } }
+      : {}),
     subscription_data: {
       metadata: { uid: options.userId, tier: options.tier },
     },

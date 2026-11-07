@@ -20,6 +20,7 @@ const HASHED = createHash('sha256').update(UID, 'utf8').digest('hex');
 const META_TOKEN = 'EAA_this_must_not_appear_in_logs';
 const TIKTOK_TOKEN = 'tiktok_access_token_secret_value';
 const SOURCE_URL = 'https://app.example/app/billing/success';
+const USER_AGENT = 'Mozilla/5.0 WardrobeTest/1.0';
 
 const subscribeEvent: ConversionEvent = {
   eventName: CONVERSION_EVENT_SUBSCRIBE,
@@ -30,6 +31,33 @@ const subscribeEvent: ConversionEvent = {
   eventSourceUrl: SOURCE_URL,
   value: 15,
   currency: 'GBP',
+};
+
+const checkoutWebsiteEvent: ConversionEvent = {
+  ...subscribeEvent,
+  actionSource: 'website',
+  clientUserAgent: USER_AGENT,
+  eventSourceUrl: SOURCE_URL,
+};
+
+const checkoutNoUaEvent: ConversionEvent = {
+  eventName: CONVERSION_EVENT_SUBSCRIBE,
+  eventId: 'stripe_cs_1',
+  eventTimeSeconds: 1_717_000_000,
+  actionSource: 'system_generated',
+  externalId: HASHED,
+  value: 15,
+  currency: 'GBP',
+};
+
+const invoicePaidEvent: ConversionEvent = {
+  eventName: CONVERSION_EVENT_RENEWED,
+  eventId: 'stripe_in_1',
+  eventTimeSeconds: 1_717_000_000,
+  actionSource: 'system_generated',
+  externalId: HASHED,
+  value: 9.99,
+  currency: 'USD',
 };
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -144,8 +172,39 @@ describe('platform payloads', () => {
     },
   );
 
-  it('sends the exact Meta body for a Stripe event as system_generated', () => {
-    const meta = buildMetaCapiPayload(subscribeEvent);
+  it('sends the exact Meta body for a checkout with User-Agent as website', () => {
+    const meta = buildMetaCapiPayload(checkoutWebsiteEvent);
+    expect(meta).toEqual({
+      data: [
+        {
+          event_name: CONVERSION_EVENT_SUBSCRIBE,
+          event_time: 1_717_000_000,
+          event_id: 'stripe_cs_1',
+          action_source: 'website',
+          event_source_url: SOURCE_URL,
+          user_data: {
+            external_id: HASHED,
+            client_user_agent: USER_AGENT,
+          },
+          custom_data: { value: 15, currency: 'GBP' },
+        },
+      ],
+    });
+    const userData = (
+      (meta.data as Array<Record<string, unknown>>)[0].user_data as Record<
+        string,
+        unknown
+      >
+    );
+    expect(Object.keys(userData).sort()).toEqual([
+      'client_user_agent',
+      'external_id',
+    ]);
+    expect(JSON.stringify(meta)).not.toContain(UID);
+  });
+
+  it('sends the exact Meta body for a checkout without User-Agent as system_generated', () => {
+    const meta = buildMetaCapiPayload(checkoutNoUaEvent);
     const metaBody = (meta.data as Array<Record<string, unknown>>)[0];
     const serialized = JSON.stringify(meta);
 
@@ -161,7 +220,6 @@ describe('platform payloads', () => {
         },
       ],
     });
-    expect(metaBody.user_data).toEqual({ external_id: HASHED });
     expect(Object.keys(metaBody.user_data as object)).toEqual(['external_id']);
     expect(metaBody).not.toHaveProperty('client_user_agent');
     expect(metaBody).not.toHaveProperty('event_source_url');
@@ -171,8 +229,35 @@ describe('platform payloads', () => {
     expect(serialized).not.toContain(UID);
   });
 
+  it('sends the exact Meta body for invoice.paid as system_generated', () => {
+    const meta = buildMetaCapiPayload(invoicePaidEvent);
+    const metaBody = (meta.data as Array<Record<string, unknown>>)[0];
+    const serialized = JSON.stringify(meta);
+
+    expect(meta).toEqual({
+      data: [
+        {
+          event_name: CONVERSION_EVENT_RENEWED,
+          event_time: 1_717_000_000,
+          event_id: 'stripe_in_1',
+          action_source: 'system_generated',
+          user_data: { external_id: HASHED },
+          custom_data: { value: 9.99, currency: 'USD' },
+        },
+      ],
+    });
+    expect(Object.keys(metaBody.user_data as object)).toEqual(['external_id']);
+    expect(metaBody).not.toHaveProperty('client_user_agent');
+    expect(metaBody).not.toHaveProperty('event_source_url');
+    expect(serialized).not.toContain('client_user_agent');
+    expect(serialized).not.toContain('event_source_url');
+    expect(serialized).not.toContain('"website"');
+    expect(serialized).not.toContain(USER_AGENT);
+    expect(serialized).not.toContain(UID);
+  });
+
   it('sends TikTok web events with required page.url and no IP', () => {
-    const tiktok = buildTikTokEventsPayload(subscribeEvent, 'C1PIXEL');
+    const tiktok = buildTikTokEventsPayload(checkoutWebsiteEvent, 'C1PIXEL');
     expect(tiktok).toEqual({
       event_source: 'web',
       event_source_id: 'C1PIXEL',
@@ -183,6 +268,7 @@ describe('platform payloads', () => {
           event_id: 'stripe_cs_1',
           user: {
             external_id: HASHED,
+            user_agent: USER_AGENT,
           },
           page: { url: SOURCE_URL },
           properties: { value: 15, currency: 'GBP' },
@@ -190,7 +276,6 @@ describe('platform payloads', () => {
       ],
     });
     expect(JSON.stringify(tiktok)).not.toContain('"ip"');
-    expect(JSON.stringify(tiktok)).not.toContain('"user_agent"');
     expect(JSON.stringify(tiktok)).not.toContain(UID);
   });
 });
@@ -262,6 +347,46 @@ describe('sendConversionEvent', () => {
       'Skipping conversion; secret is a placeholder or incomplete',
       expect.objectContaining({ platform: 'meta' }),
     );
+  });
+
+  it('posts the exact Meta body for a checkout with User-Agent as website', async () => {
+    const fetchImpl = jest.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('graph.facebook.com')) {
+        return jsonResponse(200, {});
+      }
+      return jsonResponse(200, { code: 0 });
+    });
+
+    await sendConversionEvent(checkoutWebsiteEvent, deps(fetchImpl));
+
+    const metaCall = fetchImpl.mock.calls.find(([url]) =>
+      String(url).includes('graph.facebook.com'),
+    );
+    expect(metaCall).toBeDefined();
+    const posted = JSON.parse(
+      String((metaCall?.[1] as { body?: string } | undefined)?.body),
+    ) as {
+      access_token?: string;
+      data: unknown;
+    };
+    const { access_token: _websiteToken, ...metaBody } = posted;
+    expect(metaBody).toEqual({
+      data: [
+        {
+          event_name: CONVERSION_EVENT_SUBSCRIBE,
+          event_time: 1_717_000_000,
+          event_id: 'stripe_cs_1',
+          action_source: 'website',
+          event_source_url: SOURCE_URL,
+          user_data: {
+            external_id: HASHED,
+            client_user_agent: USER_AGENT,
+          },
+          custom_data: { value: 15, currency: 'GBP' },
+        },
+      ],
+    });
+    expect(JSON.stringify(metaBody)).not.toContain(UID);
   });
 
   it('posts the exact Stripe Meta request body as system_generated', async () => {

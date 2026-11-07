@@ -326,7 +326,7 @@ After deploy, create the Stripe test webhook endpoint at `{ApiUrl}/billing/strip
 
 ### Server-side conversion events (WARDROBE-249)
 
-After entitlement handling, `StripeWebhookFn` and `EntitlementsWebhookFn` send conversion events. Failures are caught, retried with a 4s wall-clock cap (2 × 1.5s HTTP, 100ms backoff; Lambda timeout 20s), and never change the webhook response. Superwall/app events skip Meta CAPI (the app SDK sends those) and still send TikTok. Stripe Meta events use `action_source=system_generated` (event_id `stripe_…` for dedupe; no website-only fields). TikTok web events include required `page.url` (no IP).
+After entitlement handling, `StripeWebhookFn` and `EntitlementsWebhookFn` send conversion events. Failures are caught, retried with a 4s wall-clock cap (2 × 1.5s HTTP, 100ms backoff; Lambda timeout 20s), and never change the webhook response. Superwall/app events skip Meta CAPI (the app SDK sends those) and still send TikTok. Stripe checkout with a stored User-Agent uses Meta `action_source=website` plus `client_user_agent` and `event_source_url` `{billingWebOrigin}/app/billing/success`. Missing UA / `invoice.paid` uses `system_generated`. TikTok web events include required `page.url` (no IP).
 
 | Trigger | Event name | event_id |
 | --- | --- | --- |
@@ -335,7 +335,7 @@ After entitlement handling, `StripeWebhookFn` and `EntitlementsWebhookFn` send c
 | Trial conversion (first paid period) | `Subscribe` | Stripe `stripe_<invoiceId>` (`invoice.paid` after a trial); Superwall `sw_<transactionId>` (`renewal` + `isTrialConversion`) |
 | Later paid renewal | `SubscriptionRenewed` | Stripe `stripe_<invoiceId>` from later `invoice.paid` `subscription_cycle`; Superwall `sw_<transactionId>` |
 
-`external_id` is SHA-256 hex of the Firebase uid only. Stripe Meta `action_source` is `system_generated`. Known gap: Superwall trial conversions and renewals are not sent to Meta (need ATT/`extinfo`; WARDROBE-250 is on hold); TikTok still receives them. Secrets: `wardrobe/{stage}/meta-capi` `{pixelId, accessToken, testEventCode?}` and `wardrobe/{stage}/tiktok-events` `{pixelCode, accessToken, testEventCode?}`. Replace the CDK placeholders in AWS Secrets Manager per stage. Missing or placeholder secrets skip sending.
+`external_id` is SHA-256 hex of the Firebase uid only. Checkout Session metadata `ua` holds the truncated request User-Agent. Known gap: Superwall trial conversions and renewals are not sent to Meta (need ATT/`extinfo`; WARDROBE-250 is on hold); TikTok still receives them. Secrets: `wardrobe/{stage}/meta-capi` `{pixelId, accessToken, testEventCode?}` and `wardrobe/{stage}/tiktok-events` `{pixelCode, accessToken, testEventCode?}`. Replace the CDK placeholders in AWS Secrets Manager per stage. Missing or placeholder secrets skip sending.
 
 ---
 
