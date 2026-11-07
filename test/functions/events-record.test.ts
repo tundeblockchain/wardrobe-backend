@@ -123,6 +123,43 @@ describe('recordJobDone (WARDROBE-114)', () => {
     });
   });
 
+  it('writes a RENDER_WISH event keyed by renderId without wardrobeId', async () => {
+    mockDynamoSend.mockResolvedValue({});
+
+    const created = await recordJobDone({
+      userId: 'uid-1',
+      jobType: 'RENDER_WISH',
+      status: 'READY',
+      wishId: 'wish_1',
+      renderId: 'rend_wish1',
+      aiProfileId: 'profile_1',
+    });
+
+    expect(created).toBe(true);
+    const put = mockDynamoSend.mock.calls[0][0] as {
+      input: { Item: DynamoItem };
+    };
+    expect(put.input.Item).toMatchObject({
+      eventId: 'evt_render_rend_wish1_READY',
+      jobType: 'RENDER_WISH',
+      wishId: 'wish_1',
+      renderId: 'rend_wish1',
+    });
+    expect(put.input.Item.wardrobeId).toBeUndefined();
+  });
+
+  it('skips RENDER_WISH when wishId is missing', async () => {
+    const created = await recordJobDone({
+      userId: 'uid-1',
+      jobType: 'RENDER_WISH',
+      status: 'READY',
+      renderId: 'rend_wish1',
+    });
+
+    expect(created).toBe(false);
+    expect(mockDynamoSend).not.toHaveBeenCalled();
+  });
+
   it('skips RENDER_ITEM when itemId is missing', async () => {
     const created = await recordJobDone({
       userId: 'uid-1',

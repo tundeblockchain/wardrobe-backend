@@ -15,7 +15,14 @@ export type { JobDoneInput } from './model';
  */
 export async function recordJobDone(input: JobDoneInput): Promise<boolean> {
   const eventId = jobEventId(input);
-  if (!input.userId || !input.wardrobeId || !eventId.startsWith('evt_')) {
+  if (!input.userId || !eventId.startsWith('evt_')) {
+    logger.warn('Skipping job-done event: missing identity fields', {
+      jobType: input.jobType,
+      status: input.status,
+    });
+    return false;
+  }
+  if (input.jobType !== 'RENDER_WISH' && !input.wardrobeId) {
     logger.warn('Skipping job-done event: missing identity fields', {
       jobType: input.jobType,
       status: input.status,
@@ -32,6 +39,10 @@ export async function recordJobDone(input: JobDoneInput): Promise<boolean> {
   }
   if (input.jobType === 'RENDER_ITEM' && !input.itemId) {
     logger.warn('Skipping item try-on job-done event: missing itemId');
+    return false;
+  }
+  if (input.jobType === 'RENDER_WISH' && !input.wishId) {
+    logger.warn('Skipping wish try-on job-done event: missing wishId');
     return false;
   }
 

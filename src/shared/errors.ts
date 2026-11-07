@@ -8,6 +8,9 @@ export type ErrorCode =
   | 'ITEM_NOT_FOUND'
   | 'WISH_NOT_FOUND'
   | 'WISHLIST_LIMIT'
+  | 'TRYON_SOURCE_INVALID'
+  | 'WISH_IMAGE_REQUIRED'
+  | 'WISH_CATEGORY_REQUIRED'
   | 'OUTFIT_NOT_FOUND'
   | 'RENDER_NOT_FOUND'
   | 'AI_PROFILE_NOT_FOUND'
@@ -113,6 +116,22 @@ export const Errors = {
   wishlistLimit: (
     message = 'Wish list can hold 500 items.',
   ) => new AppError('WISHLIST_LIMIT', message, 409),
+
+  /**
+   * POST /try-on must send exactly one of `itemId` or `wishId`
+   * (WARDROBE-253).
+   */
+  tryOnSourceInvalid: (
+    message = 'Provide exactly one of itemId or wishId.',
+  ) => new AppError('TRYON_SOURCE_INVALID', message, 400),
+
+  wishImageRequired: (
+    message = 'Wish must have an image before Virtual Try On.',
+  ) => new AppError('WISH_IMAGE_REQUIRED', message, 400),
+
+  wishCategoryRequired: (
+    message = 'Wish must have a category before Virtual Try On.',
+  ) => new AppError('WISH_CATEGORY_REQUIRED', message, 400),
 
   outfitNotFound: (message = 'Outfit not found.') =>
     new AppError('OUTFIT_NOT_FOUND', message, 404),

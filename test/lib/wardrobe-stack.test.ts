@@ -787,6 +787,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
         (fn) =>
           fn.Properties.Environment?.Variables?.PROCESSING_QUEUE_URL &&
           fn.Properties.Environment?.Variables?.TRY_ON_QUEUE_URL &&
+          fn.Properties.Environment?.Variables?.BACKGROUND_REMOVAL_ENABLED &&
           !fn.Properties.Environment?.Variables?.BACKGROUND_REMOVAL_SECRET_ARN,
       )?.Properties.Environment?.Variables;
     };
@@ -1588,6 +1589,10 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'PATCH /wishlist/{wishId}',
       'DELETE /wishlist/{wishId}',
       'POST /wishlist/{wishId}/acquire',
+      'GET /wishlist/{wishId}/render',
+      'POST /wishlist/{wishId}/render',
+      'DELETE /wishlist/{wishId}/renders',
+      'POST /try-on',
       'GET /wardrobes/{wardrobeId}/items',
       'POST /wardrobes/{wardrobeId}/items',
       'GET /wardrobes/{wardrobeId}/items/{itemId}',

@@ -1172,7 +1172,7 @@ WARDROBE-45 writes four `READY` catalog rows at deploy (`profile_generic_01`–`
 
 ## 24. Outfit Render Data
 
-An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47). WARDROBE-85 appends each successful try-on to `renderHistory` (S3 key `users/{uid}/outfits/{outfitId}/renders/{renderId}.png`) and list/get add newest-first presigned `renderImageUrls`. Existing `render` fields stay the current / latest try-on. `DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders` and `DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders` with `{ "imageKey" }` remove one owned Virtual Try On photo (S3 + that history entry) without deleting the outfit or item (WARDROBE-149). Item generate is WARDROBE-150; item keys are `users/{uid}/items/{itemId}/renders/{renderId}.png`. See README “Delete a Virtual Try On photo (WARDROBE-149)” for the Flutter contract.
+An outfit includes an AI-rendering section after a try-on is requested (WARDROBE-47). WARDROBE-85 appends each successful try-on to `renderHistory` (S3 key `users/{uid}/outfits/{outfitId}/renders/{renderId}.png`) and list/get add newest-first presigned `renderImageUrls`. Existing `render` fields stay the current / latest try-on. `DELETE /wardrobes/{wardrobeId}/outfits/{outfitId}/renders`, `DELETE /wardrobes/{wardrobeId}/items/{itemId}/renders`, and `DELETE /wishlist/{wishId}/renders` with `{ "imageKey" }` remove one owned Virtual Try On photo (S3 + that history entry) without deleting the outfit, item, or wish (WARDROBE-149 / WARDROBE-253). Item generate is WARDROBE-150; item keys are `users/{uid}/items/{itemId}/renders/{renderId}.png`. Wish generate is WARDROBE-253; wish keys are `users/{uid}/wishlist/{wishId}/renders/{renderId}.png`. See README “Delete a Virtual Try On photo (WARDROBE-149)” and “Wish Virtual Try On / render (WARDROBE-253)” for the Flutter contract.
 
 WARDROBE-150 adds the same `render` / `renderHistory` / `renderImageUrls` fields on the clothing **item** (`users/{uid}/items/{itemId}/renders/{renderId}.png`). POST generate is Premium-only; GET is not gated. Delete of a stored `imageKey` is WARDROBE-149.
 
@@ -1314,7 +1314,7 @@ POST /billing/stripe-webhook
 
 ### Wish list (WARDROBE-244)
 
-Own entity under `USER#{uid} / WISH#{wishId}`. Not a clothing item. All tiers including Free. Cap 500 per user (`409 WISHLIST_LIMIT`). Acquire copies the image first, then one `TransactWriteItems` (put ITEM + delete WISH with `attribute_exists`); copied image is deleted if the transaction fails. See README.
+Own entity under `USER#{uid} / WISH#{wishId}`. Not a clothing item. All tiers including Free. Cap 500 per user (`409 WISHLIST_LIMIT`). Acquire copies the image first, then one `TransactWriteItems` (put ITEM + delete WISH with `attribute_exists`); copied image is deleted if the transaction fails. Virtual Try On from a wish (WARDROBE-253) uses `POST /try-on` (`itemId` XOR `wishId`) or `POST /wishlist/{wishId}/render`; results live on the wish row and move onto the item on acquire. See README.
 
 ```http
 GET    /wishlist
@@ -1324,6 +1324,10 @@ PATCH  /wishlist/{wishId}
 DELETE /wishlist/{wishId}
 POST   /wishlist/uploads
 POST   /wishlist/{wishId}/acquire
+POST   /wishlist/{wishId}/render
+GET    /wishlist/{wishId}/render
+DELETE /wishlist/{wishId}/renders
+POST   /try-on
 ```
 
 ### Uploads
@@ -1385,6 +1389,9 @@ WARDROBE_NOT_FOUND
 ITEM_NOT_FOUND
 WISH_NOT_FOUND
 WISHLIST_LIMIT
+TRYON_SOURCE_INVALID
+WISH_IMAGE_REQUIRED
+WISH_CATEGORY_REQUIRED
 OUTFIT_NOT_FOUND
 AI_PROFILE_NOT_FOUND
 UPLOAD_INVALID

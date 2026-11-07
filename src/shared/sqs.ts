@@ -9,8 +9,10 @@ import {
   ProcessWardrobeItemMode,
   RENDER_ITEM_JOB,
   RENDER_OUTFIT_JOB,
+  RENDER_WISH_JOB,
   RenderItemJob,
   RenderOutfitJob,
+  RenderWishJob,
 } from './types';
 
 function requiredJobField(value: unknown): string | undefined {
@@ -284,5 +286,78 @@ export async function enqueueRenderItem(job: {
       aiProfileId: job.aiProfileId,
     });
     throw Errors.internal('Failed to enqueue item render job.');
+  }
+}
+
+/**
+ * Parse an SQS body as RENDER_WISH. Returns undefined for poison
+ * payloads (invalid JSON, wrong job type, missing fields).
+ */
+export function parseRenderWishJob(body: string): RenderWishJob | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const raw = parsed as Record<string, unknown>;
+  if (raw.jobType !== RENDER_WISH_JOB) {
+    return undefined;
+  }
+
+  const userId = requiredJobField(raw.userId);
+  const wishId = requiredJobField(raw.wishId);
+  const aiProfileId = requiredJobField(raw.aiProfileId);
+  const renderId = requiredJobField(raw.renderId);
+
+  if (!userId || !wishId || !aiProfileId) {
+    return undefined;
+  }
+
+  return {
+    jobType: RENDER_WISH_JOB,
+    userId,
+    wishId,
+    aiProfileId,
+    ...(renderId ? { renderId } : {}),
+  };
+}
+
+export async function enqueueRenderWish(job: {
+  userId: string;
+  wishId: string;
+  aiProfileId: string;
+  renderId?: string;
+}): Promise<void> {
+  const message: RenderWishJob = {
+    jobType: RENDER_WISH_JOB,
+    userId: job.userId,
+    wishId: job.wishId,
+    aiProfileId: job.aiProfileId,
+    ...(job.renderId ? { renderId: job.renderId } : {}),
+  };
+
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: tryOnQueueUrl(),
+        MessageBody: JSON.stringify(message),
+      }),
+    );
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    logger.error('Failed to enqueue wish render job', {
+      wishId: job.wishId,
+      aiProfileId: job.aiProfileId,
+    });
+    throw Errors.internal('Failed to enqueue wish render job.');
   }
 }

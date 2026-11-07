@@ -8,7 +8,11 @@ import {
 import { AppError } from '../../shared/errors';
 import { newOutfitRenderId, nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
-import { parseRenderItemJob, parseRenderOutfitJob } from '../../shared/sqs';
+import {
+  parseRenderItemJob,
+  parseRenderOutfitJob,
+  parseRenderWishJob,
+} from '../../shared/sqs';
 import {
   AiProfileBodyContext,
   DynamoItem,
@@ -18,6 +22,7 @@ import {
   RenderItemJob,
   RenderOutfitJob,
   RenderStatus,
+  RenderWishJob,
 } from '../../shared/types';
 import {
   isEmptyAiProfileBodyContext,
@@ -42,10 +47,11 @@ import {
   garmentFromClothingItem,
   type OutfitTryOnGarment,
 } from '../processing/outfit-context';
-import { runItemTryOn, runOutfitTryOn } from '../processing/try-on';
+import { runItemTryOn, runOutfitTryOn, runWishTryOn } from '../processing/try-on';
 
 /**
- * SQS worker for RENDER_OUTFIT (WARDROBE-47) and RENDER_ITEM (WARDROBE-150).
+ * SQS worker for RENDER_OUTFIT (WARDROBE-47), RENDER_ITEM (WARDROBE-150),
+ * and RENDER_WISH (WARDROBE-253).
  *
  * Dedicated try-on queue — the clothing-item worker still only accepts
  * PROCESS_WARDROBE_ITEM and would treat this job as poison.
@@ -97,6 +103,12 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const itemJob = parseRenderItemJob(record.body);
   if (itemJob) {
     await processItemJob(itemJob, record);
+    return;
+  }
+
+  const wishJob = parseRenderWishJob(record.body);
+  if (wishJob) {
+    await processWishJob(wishJob, record);
     return;
   }
 
@@ -461,6 +473,246 @@ async function notifyItemRenderJobDone(
     status,
     wardrobeId: job.wardrobeId,
     itemId: job.itemId,
+    aiProfileId: job.aiProfileId,
+    ...(renderId ? { renderId } : {}),
+    ...(status === 'FAILED' && error ? { error } : {}),
+  });
+}
+
+async function processWishJob(
+  job: RenderWishJob,
+  record: SQSRecord,
+): Promise<void> {
+  logger.info('Processing wish render job', {
+    messageId: record.messageId,
+    jobType: job.jobType,
+    wishId: job.wishId,
+    aiProfileId: job.aiProfileId,
+    receiveCount: record.attributes.ApproximateReceiveCount,
+  });
+
+  const wish = await loadWishForJob(job);
+  if (!wish) {
+    return;
+  }
+
+  const current = outfitRender(wish);
+  const currentRenderId = renderRequestId(wish.render);
+  if (shouldSkipCompletedWishRender(current, currentRenderId, job)) {
+    logger.info('Wish render already READY; skipping try-on', {
+      wishId: job.wishId,
+      renderId: job.renderId,
+    });
+    await notifyWishRenderJobDone(job, 'READY', job.renderId ?? currentRenderId);
+    return;
+  }
+
+  const renderId = job.renderId ?? newOutfitRenderId();
+  const baselineHistory = seedHistoryFromCurrentRender(
+    toRenderHistory(wish.renderHistory),
+    current,
+    wish.updatedAt,
+  );
+
+  const marked = await setWishRender(job, {
+    status: 'PROCESSING',
+    aiProfileId: job.aiProfileId,
+    renderId,
+  });
+  if (!marked) {
+    return;
+  }
+
+  try {
+    const profile = await loadReadyProfile(job.userId, job.aiProfileId);
+    const garments = await loadWishGarmentImages(job, wish);
+    const imageKey = await runWishTryOn({
+      userId: job.userId,
+      wishId: job.wishId,
+      profileImageKeys: profile.referenceImages,
+      garmentImages: garments,
+      renderId,
+      ...(profile.mainImageKey ? { mainImageKey: profile.mainImageKey } : {}),
+      ...(isEmptyAiProfileBodyContext(profile.body)
+        ? {}
+        : { profileBody: profile.body }),
+    });
+    const renderHistory = appendSuccessfulRender(baselineHistory, {
+      imageKey,
+      createdAt: nowIso(),
+      aiProfileId: job.aiProfileId,
+    });
+    await setWishRender(
+      job,
+      {
+        status: 'READY',
+        aiProfileId: job.aiProfileId,
+        imageKey,
+        renderId,
+      },
+      renderHistory,
+    );
+    await notifyWishRenderJobDone(job, 'READY', renderId);
+    logger.info('Wish render completed', {
+      wishId: job.wishId,
+      status: 'READY',
+      imageKey,
+      renderId,
+      historyCount: renderHistory.length,
+    });
+  } catch (error) {
+    if (error instanceof PermanentProcessingError) {
+      logger.error('Permanent wish render failure', {
+        wishId: job.wishId,
+        error: error.message,
+      });
+      const written = await setWishRender(job, {
+        status: 'FAILED',
+        aiProfileId: job.aiProfileId,
+        error: error.message,
+        renderId,
+      });
+      if (written) {
+        await notifyWishRenderJobDone(job, 'FAILED', renderId, error.message);
+      }
+      return;
+    }
+    throw error instanceof RetryableProcessingError
+      ? error
+      : new RetryableProcessingError(
+          error instanceof Error ? error.message : 'Wish try-on failed',
+          error,
+        );
+  }
+}
+
+async function loadWishForJob(
+  job: RenderWishJob,
+): Promise<DynamoItem | undefined> {
+  let item: DynamoItem | undefined;
+  try {
+    item = await getItem(keys.userPk(job.userId), keys.wishSk(job.wishId));
+  } catch (error) {
+    if (!isRetryableProcessingFailure(error)) {
+      logger.warn('Dropping job after non-retryable wish load failure', {
+        wishId: job.wishId,
+        error: error instanceof Error ? error.message : 'unknown',
+      });
+      return undefined;
+    }
+    throw error instanceof RetryableProcessingError
+      ? error
+      : new RetryableProcessingError(
+          error instanceof Error ? error.message : 'Failed to load wish',
+          error,
+        );
+  }
+
+  if (!item) {
+    logger.warn('Dropping job for missing wish', {
+      wishId: job.wishId,
+    });
+    return undefined;
+  }
+
+  if (
+    item.entityType !== 'WISH' ||
+    item.userId !== job.userId ||
+    item.wishId !== job.wishId
+  ) {
+    logger.warn('Dropping job that failed DynamoDB wish ownership validation', {
+      wishId: job.wishId,
+    });
+    return undefined;
+  }
+
+  return item;
+}
+
+async function loadWishGarmentImages(
+  job: RenderWishJob,
+  wish: DynamoItem,
+): Promise<OutfitTryOnGarment[]> {
+  const objectKey =
+    typeof wish.originalKey === 'string' && wish.originalKey.trim()
+      ? wish.originalKey.trim()
+      : '';
+  if (!objectKey) {
+    throw new PermanentProcessingError(
+      `Wish ${job.wishId} has no image to render.`,
+    );
+  }
+
+  const slot = typeof wish.category === 'string' ? wish.category : 'TOP';
+  return [garmentFromClothingItem(wish, slot, objectKey)];
+}
+
+function shouldSkipCompletedWishRender(
+  current: OutfitRender | undefined,
+  currentRenderId: string | undefined,
+  job: RenderWishJob,
+): boolean {
+  if (current?.status !== 'READY') {
+    return false;
+  }
+  if (job.renderId) {
+    return currentRenderId === job.renderId;
+  }
+  return current.aiProfileId === job.aiProfileId;
+}
+
+async function setWishRender(
+  job: RenderWishJob,
+  render: {
+    status: RenderStatus;
+    aiProfileId: string;
+    imageKey?: string;
+    error?: string;
+    renderId?: string;
+  },
+  renderHistory?: OutfitRenderHistoryEntry[],
+): Promise<boolean> {
+  try {
+    await updateAttributes(
+      keys.userPk(job.userId),
+      keys.wishSk(job.wishId),
+      {
+        render,
+        updatedAt: nowIso(),
+        ...(renderHistory ? { renderHistory } : {}),
+      },
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.name === 'ConditionalCheckFailedException') {
+      logger.warn('Wish disappeared while updating render status', {
+        wishId: job.wishId,
+        status: render.status,
+      });
+      return false;
+    }
+    throw error instanceof RetryableProcessingError
+      ? error
+      : new RetryableProcessingError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to update wish render status',
+          error,
+        );
+  }
+}
+
+async function notifyWishRenderJobDone(
+  job: RenderWishJob,
+  status: 'READY' | 'FAILED',
+  renderId?: string,
+  error?: string,
+): Promise<void> {
+  await recordJobDone({
+    userId: job.userId,
+    jobType: job.jobType,
+    status,
+    wishId: job.wishId,
     aiProfileId: job.aiProfileId,
     ...(renderId ? { renderId } : {}),
     ...(status === 'FAILED' && error ? { error } : {}),

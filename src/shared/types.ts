@@ -283,6 +283,17 @@ export interface RenderItemJob {
   renderId?: string;
 }
 
+/** WARDROBE-253 — async wish Virtual Try On / render job. */
+export const RENDER_WISH_JOB = 'RENDER_WISH' as const;
+
+export interface RenderWishJob {
+  jobType: typeof RENDER_WISH_JOB;
+  userId: string;
+  wishId: string;
+  aiProfileId: string;
+  renderId?: string;
+}
+
 /**
  * Terminal statuses written to the in-app job-done inbox (WARDROBE-114).
  * PENDING / PROCESSING never create events — Flutter still polls those.
@@ -299,6 +310,7 @@ export const JOB_EVENT_JOB_TYPES = [
   PROCESS_WARDROBE_ITEM_JOB,
   RENDER_OUTFIT_JOB,
   RENDER_ITEM_JOB,
+  RENDER_WISH_JOB,
 ] as const;
 export type JobEventJobType = (typeof JOB_EVENT_JOB_TYPES)[number];
 
@@ -314,15 +326,17 @@ export type DevicePlatform = (typeof DEVICE_PLATFORMS)[number];
  * Flutter `JobEvent` (WARDROBE-114 / Flutter WARDROBE-115).
  * Deep-link with `wardrobeId` + `itemId` or `outfitId` / `renderId`
  * plus `jobType` + `status`. Item try-on uses `RENDER_ITEM` + `itemId`.
- * Never expose Dynamo `PK` / `SK` or FCM tokens.
+ * Wish try-on (WARDROBE-253) uses `RENDER_WISH` + `wishId` and omits
+ * `wardrobeId`. Never expose Dynamo `PK` / `SK` or FCM tokens.
  */
 export interface JobEvent {
   eventId: string;
   jobType: JobEventJobType;
   status: JobEventStatus;
-  wardrobeId: string;
+  wardrobeId?: string;
   itemId?: string;
   outfitId?: string;
+  wishId?: string;
   renderId?: string;
   aiProfileId?: string;
   /** Present on `FAILED`. Soft-omitted on `READY`. */
@@ -806,6 +820,21 @@ export interface Wish {
   link?: string;
   price?: WishPrice;
   notes?: string;
+  /**
+   * Current Virtual Try On (WARDROBE-253). Same fields as item `render`.
+   * Soft-omitted when no try-on has been requested.
+   */
+  render?: OutfitRender;
+  /**
+   * Successful wish try-ons, newest first. Soft-omitted when empty.
+   * Same entry shape as item / outfit history.
+   */
+  renderHistory?: OutfitRenderHistoryEntry[];
+  /**
+   * Presigned GET URLs for successful wish try-ons, newest first.
+   * Soft-omitted when empty.
+   */
+  renderImageUrls?: string[];
   createdAt: string;
   updatedAt: string;
 }

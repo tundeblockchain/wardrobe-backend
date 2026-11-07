@@ -21,6 +21,7 @@ export function jobEventId(input: {
   status: JobEventStatus;
   itemId?: string;
   outfitId?: string;
+  wishId?: string;
   renderId?: string;
   aiProfileId?: string;
 }): string {
@@ -34,6 +35,7 @@ export function jobEventId(input: {
   const subjectId =
     String(input.outfitId ?? '').trim() ||
     String(input.itemId ?? '').trim() ||
+    String(input.wishId ?? '').trim() ||
     'unknown';
   const profileId = String(input.aiProfileId ?? '').trim() || 'unknown';
   return renderJobEventId(`${subjectId}_${profileId}`, input.status);

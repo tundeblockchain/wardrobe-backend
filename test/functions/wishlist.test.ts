@@ -7,6 +7,7 @@ const mockSqsSend = jest.fn();
 const mockGetSignedUrl = jest.fn();
 const mockDeleteObjectBestEffort = jest.fn();
 const mockCopyObject = jest.fn();
+const mockDeleteObjectsUnderPrefix = jest.fn();
 
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({})),
@@ -61,6 +62,8 @@ jest.mock('../../src/shared/s3', () => {
     deleteObjectBestEffort: (...args: unknown[]) =>
       mockDeleteObjectBestEffort(...args),
     copyObject: (...args: unknown[]) => mockCopyObject(...args),
+    deleteObjectsUnderPrefix: (...args: unknown[]) =>
+      mockDeleteObjectsUnderPrefix(...args),
   };
 });
 
@@ -83,6 +86,7 @@ jest.mock('@aws-sdk/client-s3', () => ({
   DeleteObjectCommand: jest.fn(),
 }));
 
+import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { handler } from '../../src/functions/wishlist/handler';
 import {
   dynamoEntitlement,
@@ -287,9 +291,11 @@ describe('wishlist handler (WARDROBE-244)', () => {
     process.env.TABLE_NAME = 'wardrobe-app-test';
     process.env.MEDIA_BUCKET_NAME = 'wardrobe-media-test';
     process.env.PROCESSING_QUEUE_URL = 'https://sqs.test/processing';
+    process.env.TRY_ON_QUEUE_URL = 'https://sqs.test/try-on';
     mockGetSignedUrl.mockResolvedValue(SIGNED_GET);
     mockCopyObject.mockResolvedValue(undefined);
     mockDeleteObjectBestEffort.mockResolvedValue(undefined);
+    mockDeleteObjectsUnderPrefix.mockResolvedValue({ deleted: 0, failed: 0 });
     mockSqsSend.mockResolvedValue({});
   });
 
@@ -297,6 +303,7 @@ describe('wishlist handler (WARDROBE-244)', () => {
     delete process.env.TABLE_NAME;
     delete process.env.MEDIA_BUCKET_NAME;
     delete process.env.PROCESSING_QUEUE_URL;
+    delete process.env.TRY_ON_QUEUE_URL;
   });
 
   describe('POST /wishlist', () => {
@@ -602,6 +609,10 @@ describe('wishlist handler (WARDROBE-244)', () => {
       );
       expect(result.statusCode).toBe(204);
       expect(mockDeleteObjectBestEffort).toHaveBeenCalledWith(OWNER_IMAGE_KEY);
+      expect(mockDeleteObjectsUnderPrefix).toHaveBeenCalledWith(
+        `users/${OWNER_ID}/wishlist/${WISH_ID}/renders/`,
+        'wish try-on wipe',
+      );
     });
 
     it('returns 404 for another user and does not delete', async () => {
@@ -613,6 +624,7 @@ describe('wishlist handler (WARDROBE-244)', () => {
       );
       expectEnvelope(result, 404, 'WISH_NOT_FOUND');
       expect(mockDeleteObjectBestEffort).not.toHaveBeenCalled();
+      expect(mockDeleteObjectsUnderPrefix).not.toHaveBeenCalled();
     });
   });
 
@@ -988,6 +1000,422 @@ describe('wishlist handler (WARDROBE-244)', () => {
       expectEnvelope(result, 404, 'WARDROBE_NOT_FOUND');
       expect(mockCopyObject).not.toHaveBeenCalled();
       expect(mutatingCommands()).toEqual([]);
+    });
+
+    it('moves READY wish try-on photos onto the new item (WARDROBE-253)', async () => {
+      const wishRenderKey = `users/${OWNER_ID}/wishlist/${WISH_ID}/renders/rend_wish1abcd.png`;
+      mockAcquireLookups();
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
+        }
+        if (command._op === 'Get') {
+          if (command.input.Key?.SK === `WISH#${WISH_ID}`) {
+            return {
+              Item: dynamoWish(OWNER_ID, {
+                render: {
+                  status: 'READY',
+                  aiProfileId: 'profile_generic_01',
+                  imageKey: wishRenderKey,
+                },
+                renderHistory: [
+                  {
+                    imageKey: wishRenderKey,
+                    createdAt: '2026-11-07T10:00:00.000Z',
+                    aiProfileId: 'profile_generic_01',
+                  },
+                ],
+              }),
+            };
+          }
+          if (command.input.Key?.SK === `WARDROBE#${WARDROBE_ID}`) {
+            return { Item: dynamoWardrobe() };
+          }
+        }
+        if (command._op === 'TransactWrite') {
+          return {};
+        }
+        return {};
+      });
+
+      const result = asResult(await handler(acquireEvent()));
+      expect(result.statusCode).toBe(201);
+      const body = bodyOf(result) as { itemId: string };
+      const itemRenderKey = `users/${OWNER_ID}/items/${body.itemId}/renders/rend_wish1abcd.png`;
+      expect(mockCopyObject).toHaveBeenCalledWith({
+        sourceKey: wishRenderKey,
+        destinationKey: itemRenderKey,
+      });
+      const putItem = transactCommands()[0].input.TransactItems?.[0].Put?.Item;
+      expect(putItem?.render).toEqual({
+        status: 'READY',
+        aiProfileId: 'profile_generic_01',
+        imageKey: itemRenderKey,
+      });
+      expect(putItem?.renderHistory).toEqual([
+        {
+          imageKey: itemRenderKey,
+          createdAt: '2026-11-07T10:00:00.000Z',
+          aiProfileId: 'profile_generic_01',
+        },
+      ]);
+      expect((bodyOf(result) as { render?: { imageKey?: string } }).render).toEqual(
+        expect.objectContaining({
+          status: 'READY',
+          imageKey: itemRenderKey,
+        }),
+      );
+    });
+
+    it('does not copy PENDING current try-on status onto the item', async () => {
+      const readyHistoryKey = `users/${OWNER_ID}/wishlist/${WISH_ID}/renders/rend_ready1abc.png`;
+      mockAcquireLookups();
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
+        }
+        if (command._op === 'Get') {
+          if (command.input.Key?.SK === `WISH#${WISH_ID}`) {
+            return {
+              Item: dynamoWish(OWNER_ID, {
+                render: {
+                  status: 'PENDING',
+                  aiProfileId: 'profile_generic_01',
+                },
+                renderHistory: [
+                  {
+                    imageKey: readyHistoryKey,
+                    createdAt: '2026-11-07T10:00:00.000Z',
+                    aiProfileId: 'profile_generic_01',
+                  },
+                ],
+              }),
+            };
+          }
+          if (command.input.Key?.SK === `WARDROBE#${WARDROBE_ID}`) {
+            return { Item: dynamoWardrobe() };
+          }
+        }
+        if (command._op === 'TransactWrite') {
+          return {};
+        }
+        return {};
+      });
+
+      const result = asResult(await handler(acquireEvent()));
+      expect(result.statusCode).toBe(201);
+      const body = bodyOf(result) as {
+        itemId: string;
+        render?: { status?: string };
+      };
+      const itemRenderKey = `users/${OWNER_ID}/items/${body.itemId}/renders/rend_ready1abc.png`;
+      expect(mockCopyObject).toHaveBeenCalledWith({
+        sourceKey: readyHistoryKey,
+        destinationKey: itemRenderKey,
+      });
+      const putItem = transactCommands()[0].input.TransactItems?.[0].Put?.Item;
+      expect(putItem?.render).toBeUndefined();
+      expect(putItem?.renderHistory).toEqual([
+        {
+          imageKey: itemRenderKey,
+          createdAt: '2026-11-07T10:00:00.000Z',
+          aiProfileId: 'profile_generic_01',
+        },
+      ]);
+      expect(body.render).toBeUndefined();
+    });
+  });
+
+  describe('wish Virtual Try On (WARDROBE-253)', () => {
+    const PROFILE_ID = 'profile_generic_01';
+    const RENDER_KEY = `users/${OWNER_ID}/wishlist/${WISH_ID}/renders/rend_wish1abcd.png`;
+
+    function dynamoGenericProfile(): DynamoItem {
+      return {
+        PK: 'AIPROFILE#GENERIC_MODEL',
+        SK: `AIPROFILE#${PROFILE_ID}`,
+        entityType: 'AIPROFILE',
+        userId: 'SYSTEM',
+        aiProfileId: PROFILE_ID,
+        type: 'GENERIC_MODEL',
+        referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
+        status: 'READY',
+        createdAt: '2026-09-06T00:00:00.000Z',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+      };
+    }
+
+    function mockWishRenderLookups(options?: {
+      wish?: DynamoItem;
+      tier?: 'FREE' | 'BASIC' | 'PREMIUM';
+    }) {
+      const tier = options?.tier ?? 'PREMIUM';
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(
+            tier === 'FREE' ? undefined : dynamoEntitlement(OWNER_ID, tier),
+          );
+        }
+        if (command._op === 'Get' && command.input.Key?.SK === `WISH#${WISH_ID}`) {
+          return { Item: options?.wish ?? dynamoWish() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('AIPROFILE#')) {
+          if (command.input.Key.PK === 'AIPROFILE#GENERIC_MODEL') {
+            return { Item: dynamoGenericProfile() };
+          }
+          return {};
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoWish(OWNER_ID, {
+              render: {
+                status: 'PENDING',
+                aiProfileId: PROFILE_ID,
+              },
+              updatedAt: '2026-11-07T12:00:00.000Z',
+            }),
+          };
+        }
+        return {};
+      });
+    }
+
+    it('rejects another user wish with 404 WISH_NOT_FOUND', async () => {
+      mockSend.mockResolvedValue({});
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            path: `/wishlist/${WISH_ID}/render`,
+            wishId: WISH_ID,
+            body: { aiProfileId: PROFILE_ID },
+            sub: OTHER_ID,
+          }),
+        ),
+      );
+      expectEnvelope(result, 404, 'WISH_NOT_FOUND');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects a wish without an image with WISH_IMAGE_REQUIRED', async () => {
+      mockWishRenderLookups({
+        wish: dynamoWish(OWNER_ID, { originalKey: undefined }),
+      });
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            path: `/wishlist/${WISH_ID}/render`,
+            wishId: WISH_ID,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expectEnvelope(result, 400, 'WISH_IMAGE_REQUIRED');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects a wish without a category with WISH_CATEGORY_REQUIRED', async () => {
+      mockWishRenderLookups({
+        wish: dynamoWish(OWNER_ID, { category: undefined }),
+      });
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            path: `/wishlist/${WISH_ID}/render`,
+            wishId: WISH_ID,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expectEnvelope(result, 400, 'WISH_CATEGORY_REQUIRED');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects Free with the same ENTITLEMENT_AI_REQUIRED as item Try On', async () => {
+      mockWishRenderLookups({ tier: 'FREE' });
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            path: `/wishlist/${WISH_ID}/render`,
+            wishId: WISH_ID,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expectEnvelope(
+        result,
+        403,
+        'ENTITLEMENT_AI_REQUIRED',
+        'Virtual Try On and other AI features require Premium.',
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('does not return ENTITLEMENT_ITEM_LIMIT for a wish Try On (no catalog usage)', async () => {
+      mockWishRenderLookups({ tier: 'PREMIUM' });
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            path: `/wishlist/${WISH_ID}/render`,
+            wishId: WISH_ID,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expect(result.statusCode).toBe(202);
+      expect((bodyOf(result) as { error?: { code?: string } }).error?.code).not.toBe(
+        'ENTITLEMENT_ITEM_LIMIT',
+      );
+      expect((bodyOf(result) as { error?: { code?: string } }).error?.code).not.toBe(
+        'RATE_LIMITED',
+      );
+    });
+
+    it('enqueues RENDER_WISH and returns 202 with pending render', async () => {
+      mockWishRenderLookups();
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            path: `/wishlist/${WISH_ID}/render`,
+            wishId: WISH_ID,
+            body: { aiProfileId: PROFILE_ID, userId: OTHER_ID },
+          }),
+        ),
+      );
+      expect(result.statusCode).toBe(202);
+      const body = bodyOf(result) as { render?: { status?: string; aiProfileId?: string } };
+      expect(body.render).toEqual({
+        status: 'PENDING',
+        aiProfileId: PROFILE_ID,
+      });
+      const sent = JSON.parse(
+        (SendMessageCommand as unknown as jest.Mock).mock.calls[0][0]
+          .MessageBody as string,
+      );
+      expect(sent).toEqual({
+        jobType: 'RENDER_WISH',
+        userId: OWNER_ID,
+        wishId: WISH_ID,
+        aiProfileId: PROFILE_ID,
+        renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
+      });
+    });
+
+    it('lists try-on history on GET wish', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK === `WISH#${WISH_ID}`) {
+          return {
+            Item: dynamoWish(OWNER_ID, {
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: RENDER_KEY,
+              },
+              renderHistory: [
+                {
+                  imageKey: RENDER_KEY,
+                  createdAt: '2026-11-07T10:00:00.000Z',
+                  aiProfileId: PROFILE_ID,
+                },
+              ],
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(event({ method: 'GET', wishId: WISH_ID })),
+      );
+      expect(result.statusCode).toBe(200);
+      const body = bodyOf(result) as {
+        render?: { status?: string; imageKey?: string; imageUrl?: string };
+        renderHistory?: Array<{ imageKey: string }>;
+        renderImageUrls?: string[];
+      };
+      expect(body.render?.status).toBe('READY');
+      expect(body.render?.imageKey).toBe(RENDER_KEY);
+      expect(body.renderHistory?.[0]?.imageKey).toBe(RENDER_KEY);
+      expect(body.renderImageUrls?.[0]).toBe(SIGNED_GET);
+    });
+
+    it('polls GET /wishlist/{wishId}/render', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK === `WISH#${WISH_ID}`) {
+          return {
+            Item: dynamoWish(OWNER_ID, {
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: RENDER_KEY,
+              },
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'GET',
+            path: `/wishlist/${WISH_ID}/render`,
+            wishId: WISH_ID,
+          }),
+        ),
+      );
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        status: 'READY',
+        aiProfileId: PROFILE_ID,
+        imageKey: RENDER_KEY,
+        imageUrl: SIGNED_GET,
+      });
+    });
+
+    it('deletes one wish try-on photo', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (command._op === 'Get' && command.input.Key?.SK === `WISH#${WISH_ID}`) {
+          return {
+            Item: dynamoWish(OWNER_ID, {
+              render: {
+                status: 'READY',
+                aiProfileId: PROFILE_ID,
+                imageKey: RENDER_KEY,
+              },
+              renderHistory: [
+                {
+                  imageKey: RENDER_KEY,
+                  createdAt: '2026-11-07T10:00:00.000Z',
+                  aiProfileId: PROFILE_ID,
+                },
+              ],
+            }),
+          };
+        }
+        if (command._op === 'Update') {
+          return { Attributes: dynamoWish() };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'DELETE',
+            path: `/wishlist/${WISH_ID}/renders`,
+            wishId: WISH_ID,
+            body: { imageKey: RENDER_KEY },
+          }),
+        ),
+      );
+      expect(result.statusCode).toBe(204);
+      expect(mockDeleteObjectBestEffort).toHaveBeenCalledWith(RENDER_KEY);
     });
   });
 });

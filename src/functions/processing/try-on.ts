@@ -5,6 +5,7 @@ import {
   MAX_UPLOAD_BYTES,
   outfitRenderObjectKey,
   putObjectBytes,
+  wishRenderObjectKey,
 } from '../../shared/s3';
 import { getSecretString } from '../../shared/secrets';
 import { PermanentProcessingError, RetryableProcessingError } from './errors';
@@ -152,6 +153,36 @@ export async function runOutfitTryOn(
       writeFailureMessage: 'Failed to write outfit render image',
       logLabel: 'Outfit try-on render stored',
       logContext: { outfitId: input.outfitId },
+      profileImageKeys: input.profileImageKeys,
+      garmentImages: input.garmentImages,
+      profileBody: input.profileBody,
+      mainImageKey: input.mainImageKey,
+    },
+    deps,
+  );
+}
+
+/** WARDROBE-253 — same Gemini path as item try-on, wish S3 prefix. */
+export async function runWishTryOn(
+  input: {
+    userId: string;
+    wishId: string;
+    profileImageKeys: string[];
+    garmentImages: OutfitTryOnGarment[];
+    profileBody?: AiProfileBodyContext;
+    renderId: string;
+    mainImageKey?: string;
+  },
+  deps: TryOnDeps = {},
+): Promise<string> {
+  return runTryOnRender(
+    {
+      imageKey: wishRenderObjectKey(input.userId, input.wishId, input.renderId),
+      emptyGarmentsMessage: 'Wish has no garment image to render.',
+      emptyWornMessage: 'Wish has no compatible garment to render.',
+      writeFailureMessage: 'Failed to write wish render image',
+      logLabel: 'Wish try-on render stored',
+      logContext: { wishId: input.wishId },
       profileImageKeys: input.profileImageKeys,
       garmentImages: input.garmentImages,
       profileBody: input.profileBody,

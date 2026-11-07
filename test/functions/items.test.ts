@@ -182,6 +182,8 @@ function event(options: {
   sub?: string | null;
   /** WARDROBE-173 GET /items/{itemId} — no wardrobeId in the path. */
   itemById?: boolean;
+  /** WARDROBE-253 POST /try-on — itemId XOR wishId in the body. */
+  tryOn?: boolean;
 }): APIGatewayProxyEventV2 {
   const wardrobeId = options.wardrobeId ?? WARDROBE_ID;
   const authorizer =
@@ -192,12 +194,16 @@ function event(options: {
         };
 
   const suffix = options.suffix ? `/${options.suffix}` : '';
-  const rawPath = options.itemById
+  const rawPath = options.tryOn
+    ? '/try-on'
+    : options.itemById
     ? `/items/${options.itemId}`
     : options.itemId
       ? `/wardrobes/${wardrobeId}/items/${options.itemId}${suffix}`
       : `/wardrobes/${wardrobeId}/items`;
-  const routeKey = options.itemById
+  const routeKey = options.tryOn
+    ? `${options.method} /try-on`
+    : options.itemById
     ? `${options.method} /items/{itemId}`
     : options.itemId
       ? options.suffix
@@ -225,7 +231,9 @@ function event(options: {
         : options.body !== undefined
           ? JSON.stringify(options.body)
           : undefined,
-    pathParameters: options.itemById
+    pathParameters: options.tryOn
+      ? undefined
+      : options.itemById
       ? { itemId: options.itemId }
       : {
           wardrobeId,
@@ -3387,6 +3395,158 @@ describe('items handler (WARDROBE-11 / WARDROBE-16 / WARDROBE-54)', () => {
       expect(body).not.toHaveProperty('render');
       expect(body).not.toHaveProperty('renderHistory');
       expect(body).not.toHaveProperty('renderImageUrls');
+    });
+  });
+
+  describe('POST /try-on (WARDROBE-253)', () => {
+    const PROFILE_ID = 'profile_generic_01';
+    const WISH_ID = 'wish_abc123xyz0';
+
+    function dynamoGenericProfile(): DynamoItem {
+      return {
+        PK: 'AIPROFILE#GENERIC_MODEL',
+        SK: `AIPROFILE#${PROFILE_ID}`,
+        entityType: 'AIPROFILE',
+        userId: 'SYSTEM',
+        aiProfileId: PROFILE_ID,
+        type: 'GENERIC_MODEL',
+        referenceImages: ['shared/ai-profiles/generic/alex/front.png'],
+        status: 'READY',
+        createdAt: '2026-09-06T00:00:00.000Z',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+      };
+    }
+
+    function dynamoWish(): DynamoItem {
+      return {
+        PK: `USER#${OWNER_ID}`,
+        SK: `WISH#${WISH_ID}`,
+        entityType: 'WISH',
+        userId: OWNER_ID,
+        wishId: WISH_ID,
+        name: 'Wanted coat',
+        category: 'OUTERWEAR',
+        originalKey: `users/${OWNER_ID}/wishlist/uploads/photo.jpg`,
+        createdAt: '2026-11-06T10:00:00.000Z',
+        updatedAt: '2026-11-06T10:00:00.000Z',
+      };
+    }
+
+    it('returns TRYON_SOURCE_INVALID when both ids are sent', async () => {
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            tryOn: true,
+            body: { itemId: ITEM_ID, wishId: WISH_ID, aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expectEnvelope(result, 400, 'TRYON_SOURCE_INVALID');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('returns TRYON_SOURCE_INVALID when neither id is sent', async () => {
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            tryOn: true,
+            body: { aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expectEnvelope(result, 400, 'TRYON_SOURCE_INVALID');
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps itemId behaviour: 202 ClothingItem and RENDER_ITEM', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
+        }
+        if (command._op === 'Query') {
+          return { Items: [dynamoWardrobe()] };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WARDROBE#')) {
+          return { Item: dynamoWardrobe() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('ITEM#')) {
+          return { Item: dynamoItem() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('AIPROFILE#')) {
+          return { Item: dynamoGenericProfile() };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoItem(OWNER_ID, {
+              render: { status: 'PENDING', aiProfileId: PROFILE_ID },
+            }),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            tryOn: true,
+            body: { itemId: ITEM_ID, aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expect(result.statusCode).toBe(202);
+      expect((bodyOf(result) as ClothingItem).itemId).toBe(ITEM_ID);
+      const sent = JSON.parse(
+        (SendMessageCommand as unknown as jest.Mock).mock.calls[0][0]
+          .MessageBody as string,
+      );
+      expect(sent.jobType).toBe('RENDER_ITEM');
+      expect(sent.itemId).toBe(ITEM_ID);
+    });
+
+    it('accepts wishId and enqueues RENDER_WISH', async () => {
+      mockSend.mockImplementation(async (command: Command) => {
+        if (isEntitlementGet(command)) {
+          return entitlementReadResult(dynamoEntitlement(OWNER_ID, 'PREMIUM'));
+        }
+        if (command._op === 'Get' && command.input.Key?.SK === `WISH#${WISH_ID}`) {
+          return { Item: dynamoWish() };
+        }
+        if (command._op === 'Get' && command.input.Key?.SK?.startsWith('AIPROFILE#')) {
+          return { Item: dynamoGenericProfile() };
+        }
+        if (command._op === 'Update') {
+          return {
+            Attributes: dynamoWish(),
+          };
+        }
+        return {};
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            method: 'POST',
+            tryOn: true,
+            body: { wishId: WISH_ID, aiProfileId: PROFILE_ID },
+          }),
+        ),
+      );
+      expect(result.statusCode).toBe(202);
+      expect((bodyOf(result) as { wishId?: string }).wishId).toBe(WISH_ID);
+      const sent = JSON.parse(
+        (SendMessageCommand as unknown as jest.Mock).mock.calls[0][0]
+          .MessageBody as string,
+      );
+      expect(sent).toEqual({
+        jobType: 'RENDER_WISH',
+        userId: OWNER_ID,
+        wishId: WISH_ID,
+        aiProfileId: PROFILE_ID,
+        renderId: expect.stringMatching(/^rend_[A-Za-z0-9_-]{12}$/),
+      });
     });
   });
 

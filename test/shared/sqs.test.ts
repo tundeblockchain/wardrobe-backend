@@ -3,6 +3,7 @@ import {
   PROCESS_WARDROBE_ITEM_JOB,
   RENDER_ITEM_JOB,
   RENDER_OUTFIT_JOB,
+  RENDER_WISH_JOB,
 } from '../../src/shared/types';
 
 const mockSqsSend = jest.fn();
@@ -20,9 +21,11 @@ import {
   enqueueProcessWardrobeItem,
   enqueueRenderItem,
   enqueueRenderOutfit,
+  enqueueRenderWish,
   parseProcessWardrobeItemJob,
   parseRenderItemJob,
   parseRenderOutfitJob,
+  parseRenderWishJob,
   processingQueueUrl,
   tryOnQueueUrl,
 } from '../../src/shared/sqs';
@@ -334,6 +337,59 @@ describe('sqs helpers (WARDROBE-16)', () => {
       ).rejects.toMatchObject({
         code: 'INTERNAL_ERROR',
         message: 'Failed to enqueue item render job.',
+      });
+    });
+  });
+
+  describe('parseRenderWishJob', () => {
+    const valid = {
+      jobType: RENDER_WISH_JOB,
+      userId: 'firebase-uid-123',
+      wishId: 'wish_abc123xyz0',
+      aiProfileId: 'profile_generic_01',
+    };
+
+    it('parses the RENDER_WISH payload', () => {
+      expect(parseRenderWishJob(JSON.stringify(valid))).toEqual(valid);
+    });
+
+    it('keeps an optional renderId for append-only try-on history', () => {
+      expect(
+        parseRenderWishJob(
+          JSON.stringify({ ...valid, renderId: 'rend_abc123xyz0' }),
+        ),
+      ).toEqual({ ...valid, renderId: 'rend_abc123xyz0' });
+    });
+
+    it('returns undefined for invalid JSON, wrong job type, or missing fields', () => {
+      expect(parseRenderWishJob('not-json')).toBeUndefined();
+      expect(
+        parseRenderWishJob(JSON.stringify({ ...valid, jobType: 'RENDER_ITEM' })),
+      ).toBeUndefined();
+      expect(
+        parseRenderWishJob(JSON.stringify({ ...valid, wishId: '   ' })),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('enqueueRenderWish', () => {
+    it('sends RENDER_WISH with the architecture payload', async () => {
+      await enqueueRenderWish({
+        userId: 'firebase-uid-123',
+        wishId: 'wish_abc123xyz0',
+        aiProfileId: 'profile_generic_01',
+        renderId: 'rend_abc123xyz0',
+      });
+
+      expect(SendMessageCommand).toHaveBeenCalledWith({
+        QueueUrl: TRY_ON_QUEUE_URL,
+        MessageBody: JSON.stringify({
+          jobType: RENDER_WISH_JOB,
+          userId: 'firebase-uid-123',
+          wishId: 'wish_abc123xyz0',
+          aiProfileId: 'profile_generic_01',
+          renderId: 'rend_abc123xyz0',
+        }),
       });
     });
   });

@@ -27,10 +27,12 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
 
 const mockRunTryOn = jest.fn();
 const mockRunItemTryOn = jest.fn();
+const mockRunWishTryOn = jest.fn();
 
 jest.mock('../../src/functions/processing/try-on', () => ({
   runOutfitTryOn: (...args: unknown[]) => mockRunTryOn(...args),
   runItemTryOn: (...args: unknown[]) => mockRunItemTryOn(...args),
+  runWishTryOn: (...args: unknown[]) => mockRunWishTryOn(...args),
 }));
 
 const mockRecordJobDone = jest.fn();
@@ -862,5 +864,107 @@ describe('item render worker (WARDROBE-150)', () => {
         },
       ],
     ]);
+  });
+});
+
+describe('wish render worker (WARDROBE-253)', () => {
+  const WISH_ID = 'wish_abc123xyz0';
+  const WISH_RENDER_KEY = `users/${OWNER_ID}/wishlist/${WISH_ID}/renders/rend_wish1abcd.png`;
+
+  function dynamoWish(overrides: Partial<DynamoItem> = {}): DynamoItem {
+    return {
+      PK: `USER#${OWNER_ID}`,
+      SK: `WISH#${WISH_ID}`,
+      entityType: 'WISH',
+      userId: OWNER_ID,
+      wishId: WISH_ID,
+      name: 'Wanted coat',
+      category: 'OUTERWEAR',
+      originalKey: `users/${OWNER_ID}/wishlist/uploads/coat.jpg`,
+      createdAt: '2026-11-06T10:00:00.000Z',
+      updatedAt: '2026-11-06T10:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function wishJob(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      jobType: 'RENDER_WISH',
+      userId: OWNER_ID,
+      wishId: WISH_ID,
+      aiProfileId: PROFILE_ID,
+      renderId: 'rend_wish1abcd',
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TABLE_NAME = 'wardrobe-app-test';
+    mockRunWishTryOn.mockResolvedValue(WISH_RENDER_KEY);
+    mockRecordJobDone.mockResolvedValue(true);
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get') {
+        const sk = command.input.Key?.SK ?? '';
+        const pk = command.input.Key?.PK ?? '';
+        if (sk.startsWith('WISH#')) {
+          return { Item: dynamoWish() };
+        }
+        if (pk === 'AIPROFILE#GENERIC_MODEL') {
+          return { Item: dynamoGenericProfile() };
+        }
+        return { Item: undefined };
+      }
+      return { Attributes: dynamoWish() };
+    });
+  });
+
+  it('loads the wish, sets PROCESSING then READY, and calls wish try-on', async () => {
+    const result = await handler(eventFor(wishJob()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(renderUpdates().map((render) => render.status)).toEqual([
+      'PROCESSING',
+      'READY',
+    ]);
+    expect(mockRunWishTryOn).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      wishId: WISH_ID,
+      profileImageKeys: ['shared/ai-profiles/generic/alex/front.png'],
+      mainImageKey: 'shared/ai-profiles/generic/alex/front.png',
+      garmentImages: [
+        {
+          slot: 'OUTERWEAR',
+          objectKey: `users/${OWNER_ID}/wishlist/uploads/coat.jpg`,
+          category: 'OUTERWEAR',
+          name: 'Wanted coat',
+        },
+      ],
+      renderId: 'rend_wish1abcd',
+    });
+    expect(mockRunItemTryOn).not.toHaveBeenCalled();
+    expect(mockRecordJobDone).toHaveBeenCalledWith({
+      userId: OWNER_ID,
+      jobType: 'RENDER_WISH',
+      status: 'READY',
+      wishId: WISH_ID,
+      aiProfileId: PROFILE_ID,
+      renderId: 'rend_wish1abcd',
+    });
+  });
+
+  it('acks a missing wish without writing FAILED', async () => {
+    mockSend.mockImplementation(async (command: Command) => {
+      if (command._op === 'Get' && command.input.Key?.SK?.startsWith('WISH#')) {
+        return {};
+      }
+      return { Attributes: dynamoWish() };
+    });
+
+    const result = await handler(eventFor(wishJob()));
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(renderUpdates()).toEqual([]);
+    expect(mockRunWishTryOn).not.toHaveBeenCalled();
   });
 });
