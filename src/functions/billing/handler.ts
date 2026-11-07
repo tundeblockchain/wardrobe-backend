@@ -12,6 +12,7 @@ import {
   createSubscriptionCheckoutSession,
   parseCheckoutInterval,
   parseCheckoutTier,
+  parseMarketingConsent,
   StripeCheckoutClient,
 } from '../../shared/stripe-checkout';
 import {
@@ -56,14 +57,19 @@ export interface BillingHandlerDeps {
 interface CheckoutSessionBody {
   tier?: unknown;
   interval?: unknown;
+  marketingConsent?: unknown;
 }
 
 /**
  * Stripe billing HTTP API.
  *
  * GET  /billing/plans             public catalog (WARDROBE-207; no Firebase)
- * POST /billing/checkout-session  authenticated Checkout (WARDROBE-189 / 196)
- *   { "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }
+ * POST /billing/checkout-session  authenticated Checkout (WARDROBE-189 / 196 / 252)
+ *   { "tier": "basic" | "premium", "interval"?: "monthly" | "yearly",
+ *     "marketingConsent"?: boolean }
+ *   `marketingConsent` is stored as Stripe metadata `marketing_consent`
+ *   `"true"` | `"false"` on both the Checkout Session and
+ *   `subscription_data` (absent → `"false"`). Any non-boolean is 400.
  * POST /billing/portal-session    authenticated Portal (WARDROBE-191)
  *
  * Checkout reuses one Stripe customer per Firebase uid and rejects
@@ -134,6 +140,7 @@ async function createCheckoutSession(
   const body = parseJsonBody<CheckoutSessionBody>(event);
   const tier = parseCheckoutTier(body.tier);
   const interval = parseCheckoutInterval(body.interval);
+  const marketingConsent = parseMarketingConsent(body.marketingConsent);
 
   const loadEntitlement = deps.resolveEntitlement ?? resolveEntitlement;
   const entitlement = await loadEntitlement(userId);
@@ -176,6 +183,7 @@ async function createCheckoutSession(
       event.headers,
       event.requestContext.http.userAgent,
     ),
+    marketingConsent,
     log,
   });
 }

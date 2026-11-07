@@ -50,11 +50,13 @@ describe('entitlements stack wiring (WARDROBE-91)', () => {
     }>;
 
     const me = routes.find((route) => route.Properties.RouteKey === 'GET /me');
+    const patchMe = routes.find((route) => route.Properties.RouteKey === 'PATCH /me');
     const webhook = routes.find(
       (route) => route.Properties.RouteKey === 'POST /webhooks/superwall',
     );
 
     expect(me?.Properties.AuthorizationType).toBe('CUSTOM');
+    expect(patchMe?.Properties.AuthorizationType).toBe('CUSTOM');
     expect(webhook?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
   });
 

@@ -86,6 +86,8 @@ interface DynamoCommand {
     Item?: DynamoItem;
     ConditionExpression?: string;
     KeyConditionExpression?: string;
+    UpdateExpression?: string;
+    ExpressionAttributeNames?: Record<string, string>;
     ExpressionAttributeValues?: Record<string, unknown>;
     ExclusiveStartKey?: Record<string, unknown>;
     IndexName?: string;
@@ -1317,6 +1319,7 @@ describe('me handler (WARDROBE-36)', () => {
         usage: { wardrobes: 0, items: 0, outfits: 0 },
         updatedAt: expect.any(String),
         paidTier: null,
+        trackingConsent: false,
       });
       const puts = mockDynamoSend.mock.calls
         .map((call) => call[0] as DynamoCommand)
@@ -1367,6 +1370,9 @@ describe('me handler (WARDROBE-36)', () => {
           exists.name = 'ConditionalCheckFailedException';
           throw exists;
         }
+        if (command._op === 'Get') {
+          return {};
+        }
         if (command._op === 'Query') {
           return { Items: [] };
         }
@@ -1382,6 +1388,7 @@ describe('me handler (WARDROBE-36)', () => {
         expect.objectContaining({
           tier: 'PREMIUM',
           status: 'ACTIVE',
+          trackingConsent: false,
         }),
       );
     });
@@ -1418,6 +1425,9 @@ describe('me handler (WARDROBE-36)', () => {
           }
           return { Items: [] };
         }
+        if (command._op === 'Get') {
+          return {};
+        }
         throw new Error(`unexpected Dynamo op ${command._op}`);
       });
 
@@ -1445,6 +1455,7 @@ describe('me handler (WARDROBE-36)', () => {
           tier: 'premium',
           source: 'ios',
         },
+        trackingConsent: false,
       });
       expect(bodyOf(result)).not.toHaveProperty('PK');
       expect(bodyOf(result)).not.toHaveProperty('lastEventId');
@@ -1500,6 +1511,9 @@ describe('me handler (WARDROBE-36)', () => {
             ],
           };
         }
+        if (command._op === 'Get') {
+          return {};
+        }
         if (command._op === 'Query') {
           return { Items: [] };
         }
@@ -1518,6 +1532,7 @@ describe('me handler (WARDROBE-36)', () => {
           limits: null,
           expiresAt: '2099-11-01T00:00:00.000Z',
           productId: 'premium_monthly',
+          trackingConsent: false,
         }),
       );
     });
@@ -1568,6 +1583,9 @@ describe('me handler (WARDROBE-36)', () => {
             };
           }
           return { Items: [] };
+        }
+        if (command._op === 'Get') {
+          return {};
         }
         if (command._op === 'Query') {
           return { Items: [] };
@@ -1642,6 +1660,9 @@ describe('me handler (WARDROBE-36)', () => {
           }
           return { Items: [] };
         }
+        if (command._op === 'Get') {
+          return {};
+        }
         throw new Error(`unexpected Dynamo op ${command._op}`);
       });
 
@@ -1676,6 +1697,7 @@ describe('me handler (WARDROBE-36)', () => {
         source: 'ios',
         expiresAt: '2099-11-01T00:00:00.000Z',
       });
+      expect(body.trackingConsent).toBe(false);
       expect(Object.keys(body)).toEqual(
         expect.arrayContaining([...GET_ME_EXISTING_REQUIRED_FIELDS]),
       );
@@ -1703,6 +1725,9 @@ describe('me handler (WARDROBE-36)', () => {
             ],
           };
         }
+        if (command._op === 'Get') {
+          return {};
+        }
         if (command._op === 'Query') {
           return { Items: [] };
         }
@@ -1720,9 +1745,138 @@ describe('me handler (WARDROBE-36)', () => {
           status: 'EXPIRED',
           features: { unlimitedCatalog: false, aiTryOn: false, otherAi: false },
           limits: { wardrobes: 1, items: 5, outfits: 5 },
+          trackingConsent: false,
         }),
       );
     });
+
+    it('returns trackingConsent true when the PROFILE flag is true', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Get') {
+          return {
+            Item: {
+              ...dynamoProfile(),
+              trackingConsent: true,
+              trackingConsentUpdatedAt: '2026-11-07T12:00:00.000Z',
+            },
+          };
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        if (command._op === 'Put') {
+          return {};
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({
+          trackingConsent: true,
+          paidTier: null,
+        }),
+      );
+    });
+  });
+
+  describe('PATCH /me trackingConsent (WARDROBE-252)', () => {
+    it('persists trackingConsent true on PROFILE with an updated timestamp', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Update') {
+          return {};
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({ path: '/me', method: 'PATCH', body: { trackingConsent: true } }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ trackingConsent: true });
+      const updates = mockDynamoSend.mock.calls
+        .map((call) => call[0] as DynamoCommand)
+        .filter((command) => command._op === 'Update');
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input.Key).toEqual({
+        PK: `USER#${OWNER_ID}`,
+        SK: 'PROFILE',
+      });
+      expect(updates[0].input.UpdateExpression).toContain('trackingConsent');
+      expect(updates[0].input.UpdateExpression).toContain(
+        'trackingConsentUpdatedAt',
+      );
+      expect(updates[0].input.ExpressionAttributeValues).toEqual(
+        expect.objectContaining({
+          ':trackingConsent': true,
+          ':entityType': 'PROFILE',
+          ':userId': OWNER_ID,
+        }),
+      );
+      expect(updates[0].input.ExpressionAttributeValues?.[':now']).toEqual(
+        expect.any(String),
+      );
+    });
+
+    it('persists trackingConsent false', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (command._op === 'Update') {
+          return {};
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(
+          event({
+            path: '/me',
+            method: 'PATCH',
+            body: { trackingConsent: false },
+          }),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({ trackingConsent: false });
+      const update = mockDynamoSend.mock.calls[0][0] as DynamoCommand;
+      expect(update.input.ExpressionAttributeValues?.[':trackingConsent']).toBe(
+        false,
+      );
+    });
+
+    it.each([undefined, 'true', 1, null, { ok: true }])(
+      'returns 400 VALIDATION_ERROR when trackingConsent is %p',
+      async (trackingConsent) => {
+        const result = asResult(
+          await handler(
+            event({
+              path: '/me',
+              method: 'PATCH',
+              body:
+                trackingConsent === undefined
+                  ? {}
+                  : { trackingConsent },
+            }),
+          ),
+        );
+
+        expectEnvelope(result, 400, 'VALIDATION_ERROR');
+        expect(bodyOf(result)).toEqual({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'trackingConsent must be a boolean.',
+          },
+        });
+        expect(mockDynamoSend).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('auth and errors', () => {
@@ -1737,7 +1891,7 @@ describe('me handler (WARDROBE-36)', () => {
 
     it('returns 400 for unsupported methods', async () => {
       const result = asResult(
-        await handler(event({ path: '/me', method: 'PATCH' })),
+        await handler(event({ path: '/me', method: 'PUT' })),
       );
       expectEnvelope(result, 400, 'VALIDATION_ERROR');
     });

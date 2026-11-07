@@ -153,6 +153,7 @@ export function featuresForTier(tier: SubscriptionTier): EntitlementFeatures {
 export function toEntitlementDto(
   stored: StoredEntitlement,
   usage: Entitlement['usage'],
+  trackingConsent = false,
 ): Entitlement {
   const features = featuresForTier(stored.tier);
   const dto: Entitlement = {
@@ -164,6 +165,7 @@ export function toEntitlementDto(
     usage,
     updatedAt: stored.updatedAt,
     paidTier: toPaidTierStatus(stored),
+    trackingConsent,
   };
   if (stored.productId) {
     dto.productId = stored.productId;

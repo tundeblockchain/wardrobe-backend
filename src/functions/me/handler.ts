@@ -10,9 +10,14 @@ import {
 } from '../../shared/entitlements';
 import { AppError, Errors } from '../../shared/errors';
 import { deleteFirebaseAuthUser } from '../../shared/firebase-admin-auth';
-import { errorResponse, ok, routeKey } from '../../shared/http';
+import { errorResponse, ok, parseJsonBody, routeKey } from '../../shared/http';
 import { nowIso } from '../../shared/ids';
 import { logger } from '../../shared/logger';
+import {
+  loadUserTrackingConsent,
+  parseTrackingConsent,
+  setUserTrackingConsent,
+} from '../../shared/tracking-consent';
 import {
   cancelAccountStripeSubscriptions,
   StripeCancelDeps,
@@ -30,6 +35,8 @@ import {
 
 export interface MeHandlerDeps {
   loadStoredEntitlement?: (userId: string) => Promise<StoredEntitlement | undefined>;
+  loadTrackingConsent?: (userId: string) => Promise<boolean>;
+  setTrackingConsent?: (userId: string, trackingConsent: boolean) => Promise<void>;
   cancelSubscription?: (
     input: CancelSubscriptionInput,
   ) => Promise<SubscriptionCancelResult>;
@@ -38,16 +45,26 @@ export interface MeHandlerDeps {
   deleteAuthUser?: (uid: string) => Promise<void>;
 }
 
+interface PatchMeBody {
+  trackingConsent?: unknown;
+}
+
 /**
  * Owner-only account APIs.
  *
  * GET    /me         — current entitlement (WARDROBE-91 / WARDROBE-159 /
- *                      WARDROBE-188). Flutter WARDROBE-90 reads this to
- *                      soft-gate Superwall UX. Adds `paidTier` without
- *                      changing existing fields. The first call for an
- *                      account writes FREE / NONE at SK=ENTITLEMENT.
- *                      Superwall appends history rows; this handler always
- *                      returns the latest record.
+ *                      WARDROBE-188 / WARDROBE-252). Flutter WARDROBE-90
+ *                      reads this to soft-gate Superwall UX. Adds
+ *                      `paidTier` and `trackingConsent` without changing
+ *                      existing fields. Missing PROFILE / flag is
+ *                      `trackingConsent: false` (no consent). The first
+ *                      call for an account writes FREE / NONE at
+ *                      SK=ENTITLEMENT. Superwall appends history rows;
+ *                      this handler always returns the latest record.
+ * PATCH  /me         — `{ "trackingConsent": true | false }` on
+ *                      `USER#{uid} / PROFILE` (WARDROBE-252). Any
+ *                      non-boolean is 400 VALIDATION_ERROR. Returns
+ *                      `{ trackingConsent }`.
  * DELETE /me/content — wipe wardrobes, items, outfits, worn-on dates,
  *                      wishes, personal AI profiles, job-done events, device
  *                      tokens, share tokens, and S3 under users/{uid}/
@@ -74,7 +91,14 @@ export async function handler(
 
     if (method === 'GET') {
       if (isAccountRoute(key, event.rawPath) && !isContentRoute(key, event.rawPath)) {
-        return ok(await getEntitlement(userId));
+        return ok(await getEntitlement(userId, deps));
+      }
+      throw Errors.validation(`Unsupported route: ${key}`);
+    }
+
+    if (method === 'PATCH') {
+      if (isAccountRoute(key, event.rawPath) && !isContentRoute(key, event.rawPath)) {
+        return ok(await patchTrackingConsent(userId, event, deps));
       }
       throw Errors.validation(`Unsupported route: ${key}`);
     }
@@ -96,10 +120,26 @@ export async function handler(
   }
 }
 
-async function getEntitlement(userId: string) {
+async function getEntitlement(userId: string, deps: MeHandlerDeps) {
   const stored = await ensureFreeEntitlement(userId);
-  const usage = await countUsage(userId);
-  return toEntitlementDto(stored, usage);
+  const loadConsent = deps.loadTrackingConsent ?? loadUserTrackingConsent;
+  const [usage, trackingConsent] = await Promise.all([
+    countUsage(userId),
+    loadConsent(userId),
+  ]);
+  return toEntitlementDto(stored, usage, trackingConsent);
+}
+
+async function patchTrackingConsent(
+  userId: string,
+  event: APIGatewayProxyEventV2,
+  deps: MeHandlerDeps,
+): Promise<{ trackingConsent: boolean }> {
+  const body = parseJsonBody<PatchMeBody>(event);
+  const trackingConsent = parseTrackingConsent(body.trackingConsent);
+  const persist = deps.setTrackingConsent ?? setUserTrackingConsent;
+  await persist(userId, trackingConsent);
+  return { trackingConsent };
 }
 
 async function deleteAccount(
@@ -192,6 +232,7 @@ function isContentRoute(key: string, rawPath: string): boolean {
 function isAccountRoute(key: string, rawPath: string): boolean {
   return (
     key === 'GET /me' ||
+    key === 'PATCH /me' ||
     key === 'DELETE /me' ||
     rawPath === '/me' ||
     rawPath.endsWith('/me')

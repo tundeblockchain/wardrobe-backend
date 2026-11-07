@@ -55,7 +55,7 @@ export class WardrobeStack extends cdk.Stack {
     cdk.Tags.of(this).add('Stage', stage);
 
     // Single-table PK/SK matches backend.md §16–17 access patterns:
-    // USER#{uid}                 / PROFILE (stripeCustomerId) | WARDROBE#{wardrobeId} | AIPROFILE#{id}
+    // USER#{uid}                 / PROFILE (stripeCustomerId, trackingConsent) | WARDROBE#{wardrobeId} | AIPROFILE#{id}
     //                            / EVENT#{eventId} | DEVICE#{deviceId} | WISH#{wishId}
     // STRIPE_EVENT#{eventId}     / PROCESSED (ttl)
     // STRIPE_CUSTOMER#{cus_id}   / UID
@@ -848,7 +848,11 @@ export class WardrobeStack extends cdk.Stack {
 
     httpApi.addRoutes({
       path: '/me',
-      methods: [apigwv2.HttpMethod.GET, apigwv2.HttpMethod.DELETE],
+      methods: [
+        apigwv2.HttpMethod.GET,
+        apigwv2.HttpMethod.PATCH,
+        apigwv2.HttpMethod.DELETE,
+      ],
       integration: meIntegration,
       authorizer: firebaseAuthorizer,
     });

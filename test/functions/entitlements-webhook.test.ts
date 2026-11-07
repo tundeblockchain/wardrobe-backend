@@ -132,6 +132,7 @@ describe('Superwall entitlements webhook (WARDROBE-91)', () => {
       loadTransactionOwner,
       bindTransactionOwner: bindOwner,
       nowSeconds: Number(TIMESTAMP),
+      loadTrackingConsent: async () => false,
     };
   }
 
@@ -530,6 +531,8 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
   const loadTransactionOwner = jest.fn();
   const bindOwner = jest.fn();
   const trackConversion = jest.fn().mockResolvedValue(undefined);
+  const loadTrackingConsent = jest.fn().mockResolvedValue(true);
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -542,6 +545,7 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
     loadTransactionOwner.mockResolvedValue(undefined);
     bindOwner.mockResolvedValue(true);
     trackConversion.mockResolvedValue(undefined);
+    loadTrackingConsent.mockResolvedValue(true);
   });
 
   function deps() {
@@ -553,6 +557,8 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
       bindTransactionOwner: bindOwner,
       nowSeconds: Number(TIMESTAMP),
       trackConversion,
+      loadTrackingConsent,
+      log,
     };
   }
 
@@ -733,6 +739,7 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
         loadTransactionOwner,
         bindTransactionOwner: bindOwner,
         nowSeconds: Number(TIMESTAMP),
+        loadTrackingConsent: async () => true,
         conversionSendDeps: {
           env: {
             META_CAPI_SECRET_ARN: 'arn:secret:meta-capi',
@@ -774,5 +781,77 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
     expect(serialized).not.toContain('meta-token');
     expect(serialized).not.toContain('tt-token');
     expect(serialized).not.toContain(OWNER_ID);
+  });
+
+  it('sends TikTok when trackingConsent is true', async () => {
+    loadTrackingConsent.mockResolvedValue(true);
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: conversionPayload() }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(loadTrackingConsent).toHaveBeenCalledWith(OWNER_ID);
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'sw_700002054157982',
+        actionSource: 'app',
+      }),
+    );
+  });
+
+  it('skips conversion when trackingConsent is false', async () => {
+    loadTrackingConsent.mockResolvedValue(false);
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: conversionPayload() }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalled();
+    expect(trackConversion).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledWith(
+      'Skipping conversion; tracking consent is not granted',
+      expect.objectContaining({ eventId: 'sw_700002054157982' }),
+    );
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('skips conversion when trackingConsent is missing', async () => {
+    loadTrackingConsent.mockResolvedValue(undefined as unknown as boolean);
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: conversionPayload() }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(trackConversion).not.toHaveBeenCalled();
+    expect(log.info).toHaveBeenCalledWith(
+      'Skipping conversion; tracking consent is not granted',
+      expect.objectContaining({ eventId: 'sw_700002054157982' }),
+    );
+    expect(log.error).not.toHaveBeenCalled();
   });
 });

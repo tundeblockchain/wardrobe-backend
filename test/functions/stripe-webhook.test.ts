@@ -677,6 +677,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
           customer: CUS_ID,
           amount_total: 1500,
           currency: 'gbp',
+          metadata: { marketing_consent: 'true' },
         },
       }),
     );
@@ -724,7 +725,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
           customer: CUS_ID,
           amount_total: 1500,
           currency: 'gbp',
-          metadata: { ua },
+          metadata: { ua, marketing_consent: 'true' },
         },
       }),
     );
@@ -762,6 +763,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
           subscription: SUB_ID,
           amount_total: 0,
           currency: 'gbp',
+          metadata: { marketing_consent: 'true' },
         },
       }),
     );
@@ -796,6 +798,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
           customer: CUS_ID,
           amount_total: 1500,
           currency: 'gbp',
+          metadata: { marketing_consent: 'true' },
         },
       }),
     );
@@ -819,6 +822,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
         status: 'active',
         trial_end: PERIOD_END,
         current_period_start: PERIOD_END,
+        metadata: { uid: UID, tier: 'premium', marketing_consent: 'true' },
       }),
     );
     const { payload, signature } = signedPayload(
@@ -867,6 +871,11 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
   });
 
   it('sends SubscriptionRenewed for invoice.paid subscription_cycle and still returns unhandled_event', async () => {
+    retrieve.mockResolvedValue(
+      subscription({
+        metadata: { uid: UID, tier: 'premium', marketing_consent: 'true' },
+      }),
+    );
     const { payload, signature } = signedPayload(
       stripeEventObject({
         type: 'invoice.paid',
@@ -928,6 +937,151 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
     expect(trackConversion).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['true', true],
+    ['false', false],
+    [undefined, false],
+  ] as const)(
+    'checkout.session.completed marketing_consent %s sends=%s',
+    async (consent, shouldSend) => {
+      const { payload, signature } = signedPayload(
+        stripeEventObject({
+          type: 'checkout.session.completed',
+          object: {
+            id: 'cs_consent',
+            object: 'checkout.session',
+            subscription: SUB_ID,
+            customer: CUS_ID,
+            amount_total: 1500,
+            currency: 'gbp',
+            ...(consent === undefined
+              ? {}
+              : { metadata: { marketing_consent: consent } }),
+          },
+        }),
+      );
+
+      const result = asResult(
+        await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual(
+        expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+      );
+      if (shouldSend) {
+        expect(trackConversion).toHaveBeenCalledWith(
+          expect.objectContaining({
+            eventName: 'Subscribe',
+            eventId: 'stripe_cs_consent',
+          }),
+        );
+      } else {
+        expect(trackConversion).not.toHaveBeenCalled();
+        expect(log.info).toHaveBeenCalledWith(
+          'Skipping conversion; marketing consent is not granted',
+          expect.objectContaining({ eventType: 'checkout.session.completed' }),
+        );
+      }
+    },
+  );
+
+  it.each([
+    ['true', true],
+    ['false', false],
+    [undefined, false],
+  ] as const)(
+    'invoice.paid marketing_consent %s sends=%s',
+    async (consent, shouldSend) => {
+      retrieve.mockResolvedValue(
+        subscription({
+          metadata:
+            consent === undefined
+              ? { uid: UID, tier: 'premium' }
+              : { uid: UID, tier: 'premium', marketing_consent: consent },
+        }),
+      );
+      const { payload, signature } = signedPayload(
+        stripeEventObject({
+          type: 'invoice.paid',
+          object: {
+            id: 'in_consent',
+            object: 'invoice',
+            billing_reason: 'subscription_cycle',
+            amount_paid: 1500,
+            currency: 'gbp',
+            customer: CUS_ID,
+            subscription: SUB_ID,
+          },
+        }),
+      );
+
+      const result = asResult(
+        await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        status: 'ignored',
+        reason: 'unhandled_event',
+        type: 'invoice.paid',
+      });
+      if (shouldSend) {
+        expect(trackConversion).toHaveBeenCalledWith(
+          expect.objectContaining({
+            eventName: 'SubscriptionRenewed',
+            eventId: 'stripe_in_consent',
+          }),
+        );
+      } else {
+        expect(trackConversion).not.toHaveBeenCalled();
+        expect(log.info).toHaveBeenCalledWith(
+          'Skipping conversion; marketing consent is not granted',
+          expect.objectContaining({ eventType: 'invoice.paid' }),
+        );
+      }
+    },
+  );
+
+  it('invoice.paid uses parent subscription_details metadata when present', async () => {
+    retrieve.mockResolvedValue(
+      subscription({
+        metadata: { uid: UID, tier: 'premium', marketing_consent: 'false' },
+      }),
+    );
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'invoice.paid',
+        object: {
+          id: 'in_parent_consent',
+          object: 'invoice',
+          billing_reason: 'subscription_cycle',
+          amount_paid: 1500,
+          currency: 'gbp',
+          customer: CUS_ID,
+          parent: {
+            subscription_details: {
+              subscription: SUB_ID,
+              metadata: { marketing_consent: 'true' },
+            },
+          },
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'SubscriptionRenewed',
+        eventId: 'stripe_in_parent_consent',
+      }),
+    );
+  });
+
   it('sends nothing for refunds and still returns 200', async () => {
     const { payload, signature } = signedPayload(
       stripeEventObject({
@@ -968,6 +1122,7 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
           subscription: SUB_ID,
           amount_total: 1500,
           currency: 'gbp',
+          metadata: { marketing_consent: 'true' },
         },
       }),
     );

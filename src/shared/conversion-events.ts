@@ -19,6 +19,16 @@ export const STRIPE_CHECKOUT_UA_METADATA_KEY = 'ua';
 /** Stripe metadata values max out at 500 characters; stay under that. */
 export const STRIPE_CHECKOUT_UA_MAX_LENGTH = 400;
 
+/**
+ * Stripe Checkout Session + Subscription metadata key for web marketing
+ * consent (WARDROBE-252). Stored as the exact strings `"true"` / `"false"`.
+ * Stripe does not copy Checkout Session metadata onto the Subscription, so
+ * both places are written at checkout. Missing / any other value is no consent.
+ */
+export const STRIPE_MARKETING_CONSENT_METADATA_KEY = 'marketing_consent';
+export const STRIPE_MARKETING_CONSENT_TRUE = 'true';
+export const STRIPE_MARKETING_CONSENT_FALSE = 'false';
+
 export interface ConversionEvent {
   eventName: ConversionEventName;
   eventId: string;
@@ -271,6 +281,71 @@ export function stripeObjectUid(
     return fromMetadata;
   }
   return optionalString(object.client_reference_id);
+}
+
+export function stripeMarketingConsentMetadataValue(
+  granted: boolean,
+): typeof STRIPE_MARKETING_CONSENT_TRUE | typeof STRIPE_MARKETING_CONSENT_FALSE {
+  return granted
+    ? STRIPE_MARKETING_CONSENT_TRUE
+    : STRIPE_MARKETING_CONSENT_FALSE;
+}
+
+/**
+ * Exact string `"true"` only. Missing, `"false"`, booleans, and any other
+ * value are no consent.
+ */
+export function stripeMarketingConsentGranted(value: unknown): boolean {
+  return value === STRIPE_MARKETING_CONSENT_TRUE;
+}
+
+/**
+ * `checkout.session.completed`: consent lives on the Checkout Session
+ * metadata (`marketing_consent`).
+ */
+export function stripeCheckoutMarketingConsentGranted(
+  session: Record<string, unknown> | undefined,
+): boolean {
+  return stripeMarketingConsentGranted(
+    asRecord(session?.metadata)?.[STRIPE_MARKETING_CONSENT_METADATA_KEY],
+  );
+}
+
+/**
+ * `invoice.paid`: prefer invoice parent / subscription_details metadata
+ * when the key is present, else the retrieved Subscription metadata.
+ */
+export function stripeInvoiceMarketingConsentGranted(
+  invoice: Record<string, unknown> | undefined,
+  subscription?: StripeSubscriptionLike,
+): boolean {
+  const fromInvoice = firstPresentMarketingConsent(
+    asRecord(asRecord(asRecord(invoice?.parent)?.subscription_details)?.metadata),
+    asRecord(asRecord(invoice?.subscription_details)?.metadata),
+  );
+  if (fromInvoice !== undefined) {
+    return stripeMarketingConsentGranted(fromInvoice);
+  }
+  return stripeMarketingConsentGranted(
+    asRecord(subscription?.metadata)?.[STRIPE_MARKETING_CONSENT_METADATA_KEY],
+  );
+}
+
+function firstPresentMarketingConsent(
+  ...metadatas: Array<Record<string, unknown> | undefined>
+): unknown {
+  for (const metadata of metadatas) {
+    if (
+      metadata &&
+      Object.prototype.hasOwnProperty.call(
+        metadata,
+        STRIPE_MARKETING_CONSENT_METADATA_KEY,
+      )
+    ) {
+      return metadata[STRIPE_MARKETING_CONSENT_METADATA_KEY];
+    }
+  }
+  return undefined;
 }
 
 /**

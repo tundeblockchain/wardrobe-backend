@@ -473,6 +473,35 @@ export async function setStripeCustomerIdIfAbsent(
   }
 }
 
+/**
+ * Persist app tracking consent on `USER#{uid} / PROFILE` (WARDROBE-252).
+ * Creates a minimal PROFILE row when the uid record does not exist and
+ * always refreshes `updatedAt` plus `trackingConsentUpdatedAt`.
+ */
+export async function setUserTrackingConsent(
+  userId: string,
+  trackingConsent: boolean,
+): Promise<void> {
+  const now = nowIso();
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName(),
+      Key: { PK: keys.userPk(userId), SK: keys.profileSk },
+      UpdateExpression:
+        'SET trackingConsent = :trackingConsent, trackingConsentUpdatedAt = :now, updatedAt = :now, entityType = if_not_exists(entityType, :entityType), #userId = if_not_exists(#userId, :userId), createdAt = if_not_exists(createdAt, :now)',
+      ExpressionAttributeNames: {
+        '#userId': 'userId',
+      },
+      ExpressionAttributeValues: {
+        ':trackingConsent': trackingConsent,
+        ':now': now,
+        ':entityType': 'PROFILE',
+        ':userId': userId,
+      },
+    }),
+  );
+}
+
 export async function updateAttributes(
   pk: string,
   sk: string,

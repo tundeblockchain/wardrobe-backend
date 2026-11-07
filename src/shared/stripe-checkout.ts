@@ -5,6 +5,8 @@ import {
 } from './billing-urls';
 import {
   STRIPE_CHECKOUT_UA_METADATA_KEY,
+  STRIPE_MARKETING_CONSENT_METADATA_KEY,
+  stripeMarketingConsentMetadataValue,
   truncateCheckoutUserAgent,
 } from './conversion-events';
 import { Errors } from './errors';
@@ -40,8 +42,17 @@ export interface StripeCheckoutClient {
         line_items: Array<{ price: string; quantity: number }>;
         success_url: string;
         cancel_url: string;
-        metadata?: { [STRIPE_CHECKOUT_UA_METADATA_KEY]: string };
-        subscription_data: { metadata: { uid: string; tier: string } };
+        metadata: {
+          [STRIPE_MARKETING_CONSENT_METADATA_KEY]: string;
+          [STRIPE_CHECKOUT_UA_METADATA_KEY]?: string;
+        };
+        subscription_data: {
+          metadata: {
+            uid: string;
+            tier: string;
+            [STRIPE_MARKETING_CONSENT_METADATA_KEY]: string;
+          };
+        };
       }) => Promise<{ url?: string | null }>;
     };
   };
@@ -57,6 +68,20 @@ export function parseCheckoutTier(value: unknown): PaidTier {
     return value.trim() as PaidTier;
   }
   throw Errors.validation('tier must be "basic" or "premium".');
+}
+
+/**
+ * Optional checkout `marketingConsent`. Missing / undefined is no consent
+ * (`false`). Any non-boolean (including null) is `VALIDATION_ERROR`.
+ */
+export function parseMarketingConsent(value: unknown): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  if (typeof value !== 'boolean') {
+    throw Errors.validation('marketingConsent must be a boolean.');
+  }
+  return value;
 }
 
 /**
@@ -109,6 +134,7 @@ export async function createSubscriptionCheckoutSession(options: {
   config: StripeRuntimeConfig;
   origin?: string;
   userAgent?: string;
+  marketingConsent?: boolean;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }): Promise<CheckoutSessionResult> {
   const interval = options.interval ?? 'monthly';
@@ -125,6 +151,9 @@ export async function createSubscriptionCheckoutSession(options: {
   );
 
   const userAgent = truncateCheckoutUserAgent(options.userAgent);
+  const marketingConsent = stripeMarketingConsentMetadataValue(
+    options.marketingConsent === true,
+  );
   const session = await options.stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: options.customerId,
@@ -132,11 +161,18 @@ export async function createSubscriptionCheckoutSession(options: {
     line_items: [{ price: priceId, quantity: 1 }],
     success_url: successUrl,
     cancel_url: cancelUrl,
-    ...(userAgent
-      ? { metadata: { [STRIPE_CHECKOUT_UA_METADATA_KEY]: userAgent } }
-      : {}),
+    metadata: {
+      [STRIPE_MARKETING_CONSENT_METADATA_KEY]: marketingConsent,
+      ...(userAgent
+        ? { [STRIPE_CHECKOUT_UA_METADATA_KEY]: userAgent }
+        : {}),
+    },
     subscription_data: {
-      metadata: { uid: options.userId, tier: options.tier },
+      metadata: {
+        uid: options.userId,
+        tier: options.tier,
+        [STRIPE_MARKETING_CONSENT_METADATA_KEY]: marketingConsent,
+      },
     },
   });
 

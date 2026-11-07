@@ -307,7 +307,9 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
       expect(stripe.sessionsCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           line_items: [{ price: priceId, quantity: 1 }],
-          subscription_data: { metadata: { uid: UID, tier } },
+          subscription_data: {
+            metadata: { uid: UID, tier, marketing_consent: 'false' },
+          },
         }),
       );
     },
@@ -409,8 +411,10 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
       line_items: [{ price: 'price_from_lookup', quantity: 1 }],
       success_url: checkoutSuccessUrl(CONFIGURED_ORIGIN),
       cancel_url: checkoutCancelUrl(CONFIGURED_ORIGIN),
-      metadata: { ua: 'jest' },
-      subscription_data: { metadata: { uid: UID, tier: 'premium' } },
+      metadata: { marketing_consent: 'false', ua: 'jest' },
+      subscription_data: {
+        metadata: { uid: UID, tier: 'premium', marketing_consent: 'false' },
+      },
     });
   });
 
@@ -437,10 +441,11 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
 
     expect(result.statusCode).toBe(200);
     const created = stripe.sessionsCreate.mock.calls[0]?.[0] as {
-      metadata?: { ua?: string };
+      metadata?: { ua?: string; marketing_consent?: string };
     };
     expect(created.metadata?.ua).toHaveLength(400);
     expect(created.metadata?.ua?.startsWith('Mozilla/5.0 ')).toBe(true);
+    expect(created.metadata?.marketing_consent).toBe('false');
     expect(JSON.stringify(log.info.mock.calls)).not.toContain(longUa);
   });
 
@@ -460,10 +465,103 @@ describe('POST /billing/checkout-session (WARDROBE-189)', () => {
     });
 
     const created = stripe.sessionsCreate.mock.calls[0]?.[0] as {
-      metadata?: unknown;
+      metadata?: { ua?: string; marketing_consent?: string };
     };
-    expect(created.metadata).toBeUndefined();
+    expect(created.metadata).toEqual({ marketing_consent: 'false' });
+    expect(created.metadata).not.toHaveProperty('ua');
   });
+
+  it('writes marketing_consent true on session and subscription metadata', async () => {
+    const stripe = mockStripe();
+    const result = asResult(
+      await handler(event({ body: { tier: 'premium', marketingConsent: true } }), {
+        resolveEntitlement: async () => freeEntitlement(),
+        ensureStripeCustomer: async () => 'cus_123',
+        getStripeConfig: async () => stripeConfig(),
+        getStripeClient: async () => stripe,
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { marketing_consent: 'true', ua: 'jest' },
+        subscription_data: {
+          metadata: { uid: UID, tier: 'premium', marketing_consent: 'true' },
+        },
+      }),
+    );
+  });
+
+  it('writes marketing_consent false on session and subscription metadata', async () => {
+    const stripe = mockStripe();
+    await handler(event({ body: { tier: 'basic', marketingConsent: false } }), {
+      resolveEntitlement: async () => freeEntitlement(),
+      ensureStripeCustomer: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripeClient: async () => stripe,
+    });
+
+    expect(stripe.sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { marketing_consent: 'false', ua: 'jest' },
+        subscription_data: {
+          metadata: { uid: UID, tier: 'basic', marketing_consent: 'false' },
+        },
+      }),
+    );
+  });
+
+  it('stores marketing_consent false when the body field is absent', async () => {
+    const stripe = mockStripe();
+    await handler(event({ body: { tier: 'basic' } }), {
+      resolveEntitlement: async () => freeEntitlement(),
+      ensureStripeCustomer: async () => 'cus_123',
+      getStripeConfig: async () => stripeConfig(),
+      getStripeClient: async () => stripe,
+    });
+
+    const created = stripe.sessionsCreate.mock.calls[0]?.[0] as {
+      metadata?: { marketing_consent?: string };
+      subscription_data?: { metadata?: { marketing_consent?: string } };
+    };
+    expect(created.metadata?.marketing_consent).toBe('false');
+    expect(created.subscription_data?.metadata?.marketing_consent).toBe('false');
+  });
+
+  it.each([
+    'true',
+    'false',
+    1,
+    0,
+    null,
+    { granted: true },
+    ['true'],
+  ])(
+    'returns 400 VALIDATION_ERROR when marketingConsent is %p',
+    async (marketingConsent) => {
+      const stripe = mockStripe();
+      const ensureCustomer = jest.fn().mockResolvedValue('cus_should_not_run');
+      const result = asResult(
+        await handler(event({ body: { tier: 'basic', marketingConsent } }), {
+          resolveEntitlement: async () => freeEntitlement(),
+          ensureStripeCustomer: ensureCustomer,
+          getStripeConfig: async () => stripeConfig(),
+          getStripeClient: async () => stripe,
+        }),
+      );
+
+      expect(result.statusCode).toBe(400);
+      expect(bodyOf(result)).toEqual({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'marketingConsent must be a boolean.',
+        },
+      });
+      expect(ensureCustomer).not.toHaveBeenCalled();
+      expect(stripe.sessionsCreate).not.toHaveBeenCalled();
+    },
+  );
 
   it('resolves a pinned price id from config without listing lookup keys', async () => {
     const stripe = mockStripe();
