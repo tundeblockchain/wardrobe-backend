@@ -3,6 +3,8 @@ import { checkoutEventSourceUrl } from '../../shared/billing-urls';
 import {
   ConversionEvent,
   mapStripeConversionEvent,
+  stripeCheckoutMarketingConsentGranted,
+  stripeInvoiceMarketingConsentGranted,
   stripeInvoiceSubscriptionId,
   stripeObjectCustomerId,
   stripeObjectUid,
@@ -236,6 +238,12 @@ async function trackStripeConversion(options: {
     ) {
       return;
     }
+    if (!stripeConversionConsentGranted(options.type, options.object, options.subscription)) {
+      options.log.info('Skipping conversion; marketing consent is not granted', {
+        eventType: options.type,
+      });
+      return;
+    }
     const userId =
       options.userId ??
       stripeObjectUid(options.object) ??
@@ -304,6 +312,20 @@ async function loadSubscriptionForConversion(
     });
     return undefined;
   }
+}
+
+function stripeConversionConsentGranted(
+  eventType: string,
+  object: Record<string, unknown> | undefined,
+  subscription?: StripeSubscriptionLike,
+): boolean {
+  if (eventType === 'checkout.session.completed') {
+    return stripeCheckoutMarketingConsentGranted(object);
+  }
+  if (eventType === 'invoice.paid') {
+    return stripeInvoiceMarketingConsentGranted(object, subscription);
+  }
+  return false;
 }
 
 function optionalString(value: unknown): string | undefined {

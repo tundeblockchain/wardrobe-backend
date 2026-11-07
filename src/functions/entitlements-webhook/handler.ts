@@ -4,6 +4,7 @@ import {
   ConversionSendDeps,
   sendConversionEvent,
 } from '../../shared/conversion-send';
+import { loadUserTrackingConsent } from '../../shared/tracking-consent';
 import {
   applySuperwallEvent,
   bindTransactionOwner,
@@ -44,6 +45,8 @@ export interface SuperwallWebhookDeps {
   nowSeconds?: number;
   trackConversion?: (event: ConversionEvent | undefined) => Promise<void>;
   conversionSendDeps?: ConversionSendDeps;
+  loadTrackingConsent?: (userId: string) => Promise<boolean>;
+  log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
 /**
@@ -61,7 +64,10 @@ export interface SuperwallWebhookDeps {
  * A store receipt is bound to the first owner and is never rebound or
  * attached to a later account; a bound receipt never grants its owner
  * from an event without a verified uid.
- * There is no client confirm grant path; GET /me is read-only.
+ * There is no client confirm grant path; GET /me does not grant
+ * entitlements. App conversion events send to TikTok only when
+ * PROFILE `trackingConsent === true` (WARDROBE-252). Missing user or
+ * flag is no consent: skip with an info log and never fail the webhook.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -290,14 +296,36 @@ async function trackSuperwallConversion(
     if (!event) {
       return;
     }
+    const log = deps.log ?? logger;
+    const consented = await superwallTrackingConsentGranted(userId, deps);
+    if (!consented) {
+      log.info('Skipping conversion; tracking consent is not granted', {
+        eventName: event.eventName,
+        eventId: event.eventId,
+      });
+      return;
+    }
     if (deps.trackConversion) {
       await deps.trackConversion(event);
       return;
     }
     await sendConversionEvent(event, deps.conversionSendDeps);
   } catch (error) {
-    logger.error('Conversion tracking failed', {
+    const log = deps.log ?? logger;
+    log.error('Conversion tracking failed', {
       error: error instanceof Error ? error.message : 'unknown',
     });
+  }
+}
+
+async function superwallTrackingConsentGranted(
+  userId: string,
+  deps: SuperwallWebhookDeps,
+): Promise<boolean> {
+  try {
+    const load = deps.loadTrackingConsent ?? loadUserTrackingConsent;
+    return (await load(userId)) === true;
+  } catch {
+    return false;
   }
 }

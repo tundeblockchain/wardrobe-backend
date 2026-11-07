@@ -4,12 +4,19 @@ import {
   CONVERSION_EVENT_START_TRIAL,
   CONVERSION_EVENT_SUBSCRIBE,
   STRIPE_CHECKOUT_UA_MAX_LENGTH,
+  STRIPE_MARKETING_CONSENT_FALSE,
+  STRIPE_MARKETING_CONSENT_METADATA_KEY,
+  STRIPE_MARKETING_CONSENT_TRUE,
   checkoutUserAgentFromHeaders,
   hashExternalId,
   mapStripeConversionEvent,
   mapSuperwallConversionEvent,
   stripeCheckoutEventId,
+  stripeCheckoutMarketingConsentGranted,
   stripeInvoiceEventId,
+  stripeInvoiceMarketingConsentGranted,
+  stripeMarketingConsentGranted,
+  stripeMarketingConsentMetadataValue,
   stripeMinorToMajor,
   superwallConversionEventId,
   superwallIsTrialStart,
@@ -437,5 +444,69 @@ describe('mapSuperwallConversionEvent', () => {
     const second = mapSuperwallConversionEvent(event('initial_purchase'), UID);
     expect(first?.eventId).toBe(second?.eventId);
     expect(first?.eventId).toBe('sw_700002054157982');
+  });
+});
+
+describe('Stripe marketing consent metadata (WARDROBE-252)', () => {
+  it('grants only the exact string true', () => {
+    expect(stripeMarketingConsentGranted(STRIPE_MARKETING_CONSENT_TRUE)).toBe(
+      true,
+    );
+    expect(stripeMarketingConsentGranted(STRIPE_MARKETING_CONSENT_FALSE)).toBe(
+      false,
+    );
+    expect(stripeMarketingConsentGranted(true)).toBe(false);
+    expect(stripeMarketingConsentGranted('TRUE')).toBe(false);
+    expect(stripeMarketingConsentGranted(undefined)).toBe(false);
+    expect(stripeMarketingConsentMetadataValue(true)).toBe('true');
+    expect(stripeMarketingConsentMetadataValue(false)).toBe('false');
+    expect(STRIPE_MARKETING_CONSENT_METADATA_KEY).toBe('marketing_consent');
+  });
+
+  it('reads checkout session metadata and treats missing as no consent', () => {
+    expect(
+      stripeCheckoutMarketingConsentGranted({
+        metadata: { marketing_consent: 'true' },
+      }),
+    ).toBe(true);
+    expect(
+      stripeCheckoutMarketingConsentGranted({
+        metadata: { marketing_consent: 'false' },
+      }),
+    ).toBe(false);
+    expect(stripeCheckoutMarketingConsentGranted({ metadata: {} })).toBe(false);
+    expect(stripeCheckoutMarketingConsentGranted({})).toBe(false);
+  });
+
+  it('prefers invoice parent metadata over the retrieved subscription', () => {
+    expect(
+      stripeInvoiceMarketingConsentGranted(
+        {
+          parent: {
+            subscription_details: {
+              metadata: { marketing_consent: 'true' },
+            },
+          },
+        },
+        { metadata: { marketing_consent: 'false' } },
+      ),
+    ).toBe(true);
+    expect(
+      stripeInvoiceMarketingConsentGranted(
+        {
+          subscription_details: { metadata: { marketing_consent: 'false' } },
+        },
+        { metadata: { marketing_consent: 'true' } },
+      ),
+    ).toBe(false);
+    expect(
+      stripeInvoiceMarketingConsentGranted(
+        {},
+        { metadata: { marketing_consent: 'true' } },
+      ),
+    ).toBe(true);
+    expect(stripeInvoiceMarketingConsentGranted({}, { metadata: {} })).toBe(
+      false,
+    );
   });
 });

@@ -247,6 +247,7 @@ describe('entitlement mapping (WARDROBE-91)', () => {
     expect(free.limits).toEqual(FREE_CATALOG_LIMITS);
     expect(free.usage).toEqual(usage);
     expect(free.paidTier).toBeNull();
+    expect(free.trackingConsent).toBe(false);
 
     const premium = toEntitlementDto(
       {

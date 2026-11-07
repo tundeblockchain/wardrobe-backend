@@ -712,6 +712,11 @@ export interface Entitlement {
    * plan is Free. Does not replace `tier` / `store` / `expiresAt`.
    */
   paidTier: PaidTierStatus | null;
+  /**
+   * App tracking consent (WARDROBE-252). `GET /me` always includes this
+   * boolean. Missing PROFILE / flag is returned as `false` (no consent).
+   */
+  trackingConsent: boolean;
 }
 
 /** Lowercase paid plan on `GET /me` `paidTier` (WARDROBE-188). */
