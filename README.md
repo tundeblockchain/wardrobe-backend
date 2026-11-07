@@ -14,7 +14,7 @@ The Flutter app authenticates with Firebase. This API validates Firebase ID toke
 | S3 | Private media bucket with CORS for pre-signed uploads |
 | SQS + DLQ | Async clothing-item processing + outfit try-on / render pipelines |
 | CloudWatch | Lambda logs plus SQS depth, oldest-message, and DLQ alarms |
-| Secrets Manager | Firebase project ID, Firebase Admin service account (account delete), optional Firebase FCM service account, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, OpenAI shopping keywords, Bright Data SERP, Resend support mail, Superwall webhook credentials, and Stripe billing credentials (separate test and live placeholders) |
+| Secrets Manager | Firebase project ID, Firebase Admin service account (account delete), optional Firebase FCM service account, Gemini background-removal, Gemini garment-classification, Gemini colour-detection, Gemini try-on, OpenAI recommender, OpenAI shopping keywords, Bright Data SERP, Resend support mail, Superwall webhook credentials, Stripe billing credentials (separate test and live placeholders), Meta Conversions API, and TikTok Events API |
 
 Working in this first cut:
 
@@ -2652,6 +2652,7 @@ API responses never expose `PK` / `SK` / `GSI1PK` / `GSI1SK`.
 bin/app.ts
 lib/wardrobe-stack.ts
 lib/entitlements.ts    isolated WARDROBE-91 Superwall webhook wiring
+lib/conversion-events.ts isolated WARDROBE-249 Meta CAPI + TikTok Events API secrets
 lib/stripe.ts          isolated WARDROBE-187 Stripe secrets + grantStripeSecretRead
 lib/support-mail.ts    isolated WARDROBE-38 / WARDROBE-143 Resend wiring (rebase-friendly)
 lib/wardrobe-pipeline-stack.ts
@@ -2708,6 +2709,8 @@ src/shared/
   stripe-portal.ts   Billing Portal session (WARDROBE-191)
   stripe-cancel.ts   DELETE /me Stripe cancel (WARDROBE-192; fail-closed)
   stripe-webhook.ts  Stripe-Signature verify + subscription apply (WARDROBE-190)
+  conversion-events.ts Meta/TikTok event_id + payload mapping (WARDROBE-249)
+  conversion-send.ts Meta CAPI + TikTok Events API send with retry (WARDROBE-249)
   billing-urls.ts    server-built checkout + portal return URLs (WARDROBE-189 / WARDROBE-191)
   validation.ts
 ```
@@ -2846,7 +2849,7 @@ Checkout looks up `stripeCustomerId` on `USER#{uid} / PROFILE`. If it is missing
 
 ### `POST /billing/checkout-session`
 
-Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }`. `interval` defaults to `"monthly"` when omitted. Return URLs are **server-built** from cdk.json context `billingWebOrigin` (`BILLING_WEB_ORIGIN`). Body `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` fields are ignored. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` (or the configured base) exactly on scheme + host + port. Otherwise the configured base is used. If `billingWebOrigin` is unset, the TEMPORARY WARDROBE-198 fallback (`https://wende-wardrobe.netlify.app`) is used and a WARN is logged once per cold start. Response remains `{ "url" }` only.
+Authenticated (Firebase authorizer). Body is `{ "tier": "basic" | "premium", "interval"?: "monthly" | "yearly" }`. `interval` defaults to `"monthly"` when omitted. Return URLs are **server-built** from cdk.json context `billingWebOrigin` (`BILLING_WEB_ORIGIN`). Body `successUrl` / `cancelUrl` / `success_url` / `cancel_url` / `url` fields are ignored. Request `Origin` is used only when it is https and matches `supportContactAllowedOrigins` (or the configured base) exactly on scheme + host + port. Otherwise the configured base is used. If `billingWebOrigin` is unset, the TEMPORARY WARDROBE-198 fallback (`https://wende-wardrobe.netlify.app`) is used and a WARN is logged once per cold start. The request `User-Agent` is stored on the Checkout Session as metadata `ua` (truncated to 400 characters) for Meta CAPI website events. Response remains `{ "url" }` only.
 
 ```http
 POST /billing/checkout-session
@@ -2995,6 +2998,7 @@ Handled event types (the handler re-fetches the subscription from Stripe and doe
    - `customer.subscription.created`
    - `customer.subscription.updated`
    - `customer.subscription.deleted`
+   - `invoice.paid` (WARDROBE-249 subscription renewals; entitlements still ignore this type)
 3. Put the endpoint's signing secret (`whsec_…`) into `webhookSecret` of the **test** secret (do not commit it):
 
 ```bash
@@ -3004,6 +3008,77 @@ aws secretsmanager put-secret-value \
 ```
 
 Live mode (prod only, after `stripeMode=live`) uses `wardrobe/prod/stripe-live` the same way. The Lambda never receives the raw key — only `STRIPE_SECRET_ARN`.
+
+## Server-side conversion events (WARDROBE-249)
+
+After Stripe and Superwall entitlement handling, the webhook Lambdas send conversion events to Meta Conversions API and TikTok Events API. Tracking never changes the webhook HTTP response: failures are caught, logged (no tokens, no PII), and retried a small bounded number of times with backoff. Duplicate deliveries reuse the same `event_id` so the platforms can dedupe. Restores, refunds, and cancellations send nothing.
+
+**Meta is Stripe only.** Superwall (app) events are **not** sent to Meta CAPI — the app SDK already sends those. Superwall still sends TikTok. Stripe events go to both platforms.
+
+### Events
+
+| Trigger | Meta | TikTok | Source |
+| --- | --- | --- | --- |
+| New paid subscription | `Subscribe` (Stripe only) | `Subscribe` | Stripe checkout; Superwall `initial_purchase` (including paid intro) |
+| Free trial / intro (price 0) | `StartTrial` (Stripe only) | `StartTrial` | Stripe `trialing` with no charge; Superwall `periodType` `TRIAL` or `INTRO` with price 0 |
+| Trial conversion (first paid period) | `Subscribe` (Stripe only) | `Subscribe` | Stripe `invoice.paid` `subscription_cycle` after a trial (`stripe_<invoiceId>`); Superwall `renewal` with `isTrialConversion` (`sw_<transactionId>`) |
+| Later paid renewal | `SubscriptionRenewed` (Stripe only) | `SubscriptionRenewed` | Stripe later `invoice.paid` `subscription_cycle`; Superwall `renewal` without `isTrialConversion` |
+
+Parameters sent when available:
+
+- `event_id` (see below; never a random id)
+- `event_time` (unix seconds)
+- `user_data.external_id` / `user.external_id` = SHA-256 hex of the Firebase uid only
+- `value` + `currency` when the webhook includes an amount
+
+No email, phone, name, item text, or raw ids in plain text.
+
+**Trial vs subscribe.** Matches the app: `StartTrial` only for a free trial or intro offer with price 0. Stripe: `status=trialing` and no charge. Superwall: `periodType` `TRIAL` or `INTRO` with price 0. A paid intro (price > 0) is `Subscribe`. Trial conversion (user pays after a trial) is `Subscribe`, not `SubscriptionRenewed`. Only later paid cycles are `SubscriptionRenewed`.
+
+**Meta Stripe events.** Checkout with a stored User-Agent uses `action_source=website` so the event can dedupe against the website pixel. `POST /billing/checkout-session` copies the request `User-Agent` (truncated to 400 characters) into Checkout Session metadata `ua`. On `checkout.session.completed`, Meta gets `user_data.client_user_agent` from that field and `event_source_url` = `{billingWebOrigin}/app/billing/success` (cdk.json context `billingWebOrigin` / `BILLING_WEB_ORIGIN`; no hardcoded domain). `user_data` is hashed `external_id` plus that UA only — no IP or other personal data. If `ua` is missing (older sessions) or the event is `invoice.paid` (renewals / trial conversions have no browser), Meta uses `action_source=system_generated` and an info log; those payloads omit the browser fields.
+
+**Meta app events.** Superwall / app-sourced events skip Meta CAPI entirely (info log). The app SDK is the Meta path for app purchases the client can see.
+
+**Known gap.** App-store trial conversions and renewals (Superwall) are not sent to Meta. Meta CAPI `action_source=app` events need `app_data` (ATT status / `extinfo`) that the server does not have. TikTok still receives them. The app SDK cannot see these events — they arrive only on Superwall webhooks. Follow-up WARDROBE-250 (app sending ATT/device context at purchase so the server can emit valid Meta app events) is on hold.
+
+**TikTok Stripe / web events.** TikTok `event_source=web` requires `page.url`; Stripe events send `{billingWebOrigin}/app/billing/success` and, when present, `user.user_agent`. IP is not sent.
+
+**TikTok app events.** Superwall sends TikTok `event_source=app` with `event_source_id` set to the secret's `pixelCode`. TikTok app events typically expect a TikTok App ID as `event_source_id`; if the pixel code is not accepted for app events, put the App ID in `pixelCode` (the JSON field name stays `pixelCode`).
+
+**Timeouts.** Both webhook Lambdas are 20 seconds. Conversion send is capped at 4 seconds wall-clock (2 attempts × 1.5s HTTP timeout + 100ms backoff; Meta and TikTok in parallel). 4xx responses are not retried except 429; the platform error code is logged at error (no tokens, no PII).
+
+### `event_id` formats (fixed; shared with the app and web)
+
+| Source | Format | Id used |
+| --- | --- | --- |
+| Stripe web checkout | `stripe_<checkoutSessionId>` | `checkout.session.completed` session id |
+| Stripe renewal | `stripe_<invoiceId>` | `invoice.paid` invoice id (`billing_reason=subscription_cycle`) |
+| Superwall purchase or renewal | `sw_<transaction_id>` | Store transaction id in the Superwall payload (`data.transactionId`), unique per purchase and per renewal |
+
+### Secrets (placeholders in CDK; add real values in Secrets Manager)
+
+CDK creates empty placeholders. Replace the generated value **after deploy** for each stage. Never commit tokens. If a secret is missing or still a placeholder, sending is skipped and an info log is written.
+
+| Secret | Stage examples | JSON |
+| --- | --- | --- |
+| `wardrobe/{stage}/meta-capi` | `wardrobe/dev/meta-capi`, `wardrobe/staging/meta-capi`, `wardrobe/prod/meta-capi` | `{ "pixelId", "accessToken", "testEventCode"? }` |
+| `wardrobe/{stage}/tiktok-events` | `wardrobe/dev/tiktok-events`, `wardrobe/staging/tiktok-events`, `wardrobe/prod/tiktok-events` | `{ "pixelCode", "accessToken", "testEventCode"? }` |
+
+Where to add the real values: **AWS Secrets Manager** → secret name above → **Set secret value** (or `put-secret-value`). Optional `testEventCode` is passed through as Meta `test_event_code` / TikTok `test_event_code` and must not be committed.
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/meta-capi \
+  --secret-string '{"pixelId":"<meta-pixel-id>","accessToken":"<meta-access-token>"}'
+
+aws secretsmanager put-secret-value \
+  --secret-id wardrobe/prod/tiktok-events \
+  --secret-string '{"pixelCode":"<tiktok-pixel-code>","accessToken":"<tiktok-access-token>"}'
+```
+
+Use the same JSON shape for `dev` and `staging`, with that stage in the secret name. `StripeWebhookFn` and `EntitlementsWebhookFn` receive `META_CAPI_SECRET_ARN` and `TIKTOK_EVENTS_SECRET_ARN` only — never the raw tokens. Stack outputs: `MetaCapiSecretName`, `TiktokEventsSecretName`.
+
+Also add `invoice.paid` on the Stripe webhook endpoint (see Stripe webhook after-deploy above) so server-side renewals are received. Entitlement handling of `invoice.paid` stays `ignored` / `unhandled_event`.
 
 ## Environments
 

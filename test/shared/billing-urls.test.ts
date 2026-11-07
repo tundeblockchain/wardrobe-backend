@@ -3,6 +3,7 @@ import {
   CHECKOUT_SESSION_ID_PLACEHOLDER,
   TEMPORARY_BILLING_WEB_ORIGIN_FALLBACK,
   checkoutCancelUrl,
+  checkoutEventSourceUrl,
   checkoutReturnUrls,
   checkoutSuccessUrl,
   isAllowlistedHttpsOrigin,
@@ -67,6 +68,15 @@ describe('billing return URLs (WARDROBE-198)', () => {
     );
     expect(checkoutCancelUrl('https://preview.example')).toBe(
       'https://preview.example/app/billing/cancel',
+    );
+    expect(checkoutEventSourceUrl(CONFIGURED)).toBe(
+      `${CONFIGURED}/app/billing/success`,
+    );
+    expect(checkoutEventSourceUrl('https://preview.example/')).toBe(
+      'https://preview.example/app/billing/success',
+    );
+    expect(checkoutEventSourceUrl(CONFIGURED)).not.toContain(
+      CHECKOUT_SESSION_ID_PLACEHOLDER,
     );
   });
 

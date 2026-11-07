@@ -214,6 +214,7 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
         STRIPE_SECRET_ARN: expect.anything(),
       }),
     );
+    expect(webhookEnv).not.toHaveProperty('BILLING_WEB_ORIGIN');
     expect(webhookEnv).not.toHaveProperty('STRIPE_SECRET_KEY');
     expect(webhookEnv).not.toHaveProperty('STRIPE_WEBHOOK_SECRET');
 
@@ -287,6 +288,10 @@ describe('Stripe secrets and grants (WARDROBE-187)', () => {
     });
     const billingEnv = functionEnvById(custom, 'BillingFn');
     expect(billingEnv?.BILLING_WEB_ORIGIN).toBe('https://preview.example');
+    const webhookEnvConfigured = functionEnvById(custom, 'StripeWebhookFn');
+    expect(webhookEnvConfigured?.BILLING_WEB_ORIGIN).toBe(
+      'https://preview.example',
+    );
     expect(billingEnv?.SUPPORT_CONTACT_ALLOWED_ORIGINS).toBe(
       'https://preview.example,https://app.example',
     );

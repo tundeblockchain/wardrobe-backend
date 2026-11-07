@@ -522,3 +522,257 @@ describe('Superwall derived app user id (WARDROBE-167)', () => {
     });
   });
 });
+
+describe('Superwall conversion events (WARDROBE-249)', () => {
+  const loadConfig = jest.fn();
+  const loadStored = jest.fn();
+  const save = jest.fn();
+  const loadTransactionOwner = jest.fn();
+  const bindOwner = jest.fn();
+  const trackConversion = jest.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    loadConfig.mockResolvedValue({
+      webhookSecret: SECRET,
+      productTiers: {},
+    });
+    loadStored.mockResolvedValue(undefined);
+    save.mockResolvedValue(undefined);
+    loadTransactionOwner.mockResolvedValue(undefined);
+    bindOwner.mockResolvedValue(true);
+    trackConversion.mockResolvedValue(undefined);
+  });
+
+  function deps() {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+      trackConversion,
+    };
+  }
+
+  function conversionPayload(overrides: Record<string, unknown> = {}) {
+    const name = (overrides.name as string) ?? 'initial_purchase';
+    return JSON.stringify({
+      object: 'event',
+      type: name,
+      data: {
+        id: 'evt_conv_1',
+        name,
+        productId: 'premium_monthly',
+        originalAppUserId: deriveSuperwallAppUserId(OWNER_ID),
+        userAttributes: { firebaseUid: OWNER_ID },
+        store: 'APP_STORE',
+        transactionId: '700002054157982',
+        originalTransactionId: '700002050981465',
+        periodType: 'NORMAL',
+        isTrialConversion: false,
+        price: 9.99,
+        priceInPurchasedCurrency: 7.99,
+        currencyCode: 'GBP',
+        purchasedAt: 1_717_000_000_000,
+        ...overrides,
+      },
+    });
+  }
+
+  it('sends Subscribe after initial_purchase without changing the webhook body', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: conversionPayload() }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'sw_700002054157982',
+        actionSource: 'app',
+      }),
+    );
+  });
+
+  it('sends StartTrial for a Superwall trial period', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: conversionPayload({
+            periodType: 'TRIAL',
+            price: 0,
+            priceInPurchasedCurrency: 0,
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventName: 'initial_purchase' }),
+    );
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'StartTrial',
+        eventId: 'sw_700002054157982',
+      }),
+    );
+  });
+
+  it('sends Subscribe for a paid Superwall intro offer', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: conversionPayload({ periodType: 'INTRO' }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'sw_700002054157982',
+      }),
+    );
+  });
+
+  it('sends Subscribe for a Superwall trial conversion renewal', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: conversionPayload({
+            name: 'renewal',
+            transactionId: '700008888001',
+            isTrialConversion: true,
+            periodType: 'NORMAL',
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventName: 'renewal' }),
+    );
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'Subscribe',
+        eventId: 'sw_700008888001',
+      }),
+    );
+  });
+
+  it('sends SubscriptionRenewed for a Superwall renewal', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: conversionPayload({
+            name: 'renewal',
+            transactionId: '700009999001',
+          }),
+        }),
+        deps(),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventName: 'renewal' }),
+    );
+    expect(trackConversion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventName: 'SubscriptionRenewed',
+        eventId: 'sw_700009999001',
+      }),
+    );
+  });
+
+  it.each(['cancellation', 'restore', 'refund', 'expiration'])(
+    'sends nothing for Superwall %s and keeps the webhook response',
+    async (name) => {
+      const result = asResult(
+        await handleSuperwallWebhook(
+          webhookEvent({ payload: conversionPayload({ name }) }),
+          deps(),
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(trackConversion).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retries a platform HTTP failure, logs it, and still returns 200 applied', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => '{"code":50000}',
+    } as Response);
+    const sleep = jest.fn(async () => undefined);
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    const result = asResult(
+      await handleSuperwallWebhook(webhookEvent({ payload: conversionPayload() }), {
+        loadConfig,
+        loadStored,
+        save,
+        loadTransactionOwner,
+        bindTransactionOwner: bindOwner,
+        nowSeconds: Number(TIMESTAMP),
+        conversionSendDeps: {
+          env: {
+            META_CAPI_SECRET_ARN: 'arn:secret:meta-capi',
+            TIKTOK_EVENTS_SECRET_ARN: 'arn:secret:tiktok-events',
+          },
+          getSecretString: async (arn: string) =>
+            arn.includes('meta')
+              ? JSON.stringify({ pixelId: '111', accessToken: 'meta-token' })
+              : JSON.stringify({ pixelCode: 'C1', accessToken: 'tt-token' }),
+          fetchImpl,
+          sleep,
+          log,
+        },
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalled();
+    expect(fetchImpl.mock.calls).toHaveLength(2);
+    expect(
+      fetchImpl.mock.calls.every(
+        ([url]) => !String(url).includes('graph.facebook.com'),
+      ),
+    ).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      'Conversion platform request failed',
+      expect.objectContaining({ eventId: 'sw_700002054157982', status: 500 }),
+    );
+    const serialized = JSON.stringify({
+      info: log.info.mock.calls,
+      warn: log.warn.mock.calls,
+      error: log.error.mock.calls,
+    });
+    expect(serialized).not.toContain('meta-token');
+    expect(serialized).not.toContain('tt-token');
+    expect(serialized).not.toContain(OWNER_ID);
+  });
+});
