@@ -673,5 +673,7 @@ function escapeHtml(value: string): string {
 
 export function safeErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : 'unknown';
-  return raw.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted]');
+  return raw
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted]');
 }

@@ -33,6 +33,7 @@ import {
   mapSuperwallOwnerNotify,
   OwnerNotifyEnqueueDeps,
   OwnerNotifyMessage,
+  safeErrorMessage,
 } from '../../shared/owner-notify';
 import { loadSuperwallConfig, SuperwallConfig } from './config';
 
@@ -311,7 +312,7 @@ async function notifySuperwallOwner(
     const log = deps.log ?? logger;
     log.error('Owner notify failed', {
       providerEventId: stringOrUndefined(inbound.data?.id),
-      error: error instanceof Error ? error.message : 'unknown',
+      error: safeErrorMessage(error),
     });
   }
 }

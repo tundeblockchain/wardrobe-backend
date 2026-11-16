@@ -114,7 +114,12 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
     );
   });
 
-  it('reports a batch item failure when Resend throws so SQS retries', async () => {
+  it('reports a batch item failure on 429 so SQS retries', async () => {
+    const http = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => '{"message":"rate limited"}',
+    });
     const result = await handleOwnerNotifyQueue(eventOf(JSON.stringify(payload())), {
       claimEvent: async () => true,
       forgetEvent: async () => undefined,
@@ -122,9 +127,8 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
         recipient: 'owner@example.com',
         sender: 'sender@example.com',
       }),
-      sendEmail: async () => {
-        throw new Error('Resend send HTTP 500');
-      },
+      loadApiKey: async () => 'placeholder',
+      http,
       log,
     });
 
@@ -133,6 +137,96 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
     });
     expect(log.error).toHaveBeenCalledWith(
       'Owner notify Resend send failed',
+      expect.objectContaining({ providerEventId: 'evt_test_123' }),
+    );
+  });
+
+  it('reports a batch item failure on 5xx so SQS retries', async () => {
+    const http = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => '{"message":"unavailable"}',
+    });
+    const result = await handleOwnerNotifyQueue(eventOf(JSON.stringify(payload())), {
+      claimEvent: async () => true,
+      forgetEvent: async () => undefined,
+      loadConfig: async () => ({
+        recipient: 'owner@example.com',
+        sender: 'sender@example.com',
+      }),
+      loadApiKey: async () => 'placeholder',
+      http,
+      log,
+    });
+
+    expect(result).toEqual({
+      batchItemFailures: [{ itemIdentifier: 'msg-1' }],
+    });
+    expect(log.error).toHaveBeenCalledWith(
+      'Owner notify Resend send failed',
+      expect.objectContaining({ providerEventId: 'evt_test_123' }),
+    );
+  });
+
+  it('acks when sender or recipient config is missing', async () => {
+    const http = jest.fn();
+    const result = await handleOwnerNotifyQueue(eventOf(JSON.stringify(payload())), {
+      claimEvent: async () => true,
+      forgetEvent: async () => undefined,
+      loadConfig: async () => undefined,
+      http,
+      log,
+    });
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(http).not.toHaveBeenCalled();
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('acks when the Resend secret is missing', async () => {
+    const http = jest.fn();
+    const result = await handleOwnerNotifyQueue(eventOf(JSON.stringify(payload())), {
+      claimEvent: async () => true,
+      forgetEvent: async () => undefined,
+      loadConfig: async () => ({
+        recipient: 'owner@example.com',
+        sender: 'sender@example.com',
+      }),
+      loadApiKey: async () => undefined,
+      http,
+      log,
+    });
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(http).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Owner notify skipped; Resend secret is missing or invalid',
+      expect.objectContaining({ providerEventId: 'evt_test_123' }),
+    );
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('acks a 4xx so SQS does not retry', async () => {
+    const http = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => '{"message":"invalid"}',
+    });
+    const result = await handleOwnerNotifyQueue(eventOf(JSON.stringify(payload())), {
+      claimEvent: async () => true,
+      forgetEvent: async () => undefined,
+      loadConfig: async () => ({
+        recipient: 'owner@example.com',
+        sender: 'sender@example.com',
+      }),
+      loadApiKey: async () => 'placeholder',
+      http,
+      log,
+    });
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(log.error).toHaveBeenCalledWith(
+      'Owner notify Resend rejected the request',
       expect.objectContaining({ providerEventId: 'evt_test_123' }),
     );
   });

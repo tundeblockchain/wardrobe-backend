@@ -1,6 +1,6 @@
 import { SQSBatchItemFailure, SQSBatchResponse, SQSEvent, SQSRecord } from 'aws-lambda';
 import { logger } from '../../shared/logger';
-import { parseOwnerNotifyMessage } from '../../shared/owner-notify';
+import { parseOwnerNotifyMessage, safeErrorMessage } from '../../shared/owner-notify';
 import {
   OwnerNotifySendDeps,
   sendOwnerNotify,
@@ -34,7 +34,7 @@ export async function handleOwnerNotifyQueue(
       log.error('Owner notify record failed', {
         messageId: record.messageId,
         ...(parsed ? { providerEventId: parsed.providerEventId } : {}),
-        error: error instanceof Error ? error.message : 'unknown',
+        error: safeErrorMessage(error),
       });
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }

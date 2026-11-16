@@ -25,6 +25,7 @@ import {
   OWNER_NOTIFY_QUEUE_URL_ENV,
   OwnerNotifyMessage,
   parseOwnerNotifyMessage,
+  safeErrorMessage,
   STRIPE_OWNER_NOTIFY_EVENTS,
   SUPERWALL_OWNER_NOTIFY_EVENTS,
 } from '../../src/shared/owner-notify';
@@ -484,6 +485,16 @@ describe('parseOwnerNotifyMessage', () => {
   });
 });
 
+describe('safeErrorMessage', () => {
+  it('redacts Bearer tokens and email addresses', () => {
+    expect(
+      safeErrorMessage(
+        new Error('Authorization: Bearer placeholder owner@example.com failed'),
+      ),
+    ).toBe('Authorization: Bearer [redacted] [redacted] failed');
+  });
+});
+
 describe('enqueueOwnerNotify', () => {
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
@@ -698,23 +709,21 @@ describe('sendOwnerNotify', () => {
   });
 
   it('caches a successful Resend secret read for the Lambda container', async () => {
-    const getSecret = jest.fn().mockResolvedValue('test-api-key');
+    const getSecret = jest.fn().mockResolvedValueOnce('placeholder');
     const env = {
-      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]: 'arn:aws:secretsmanager:eu-west-1:1:secret:placeholder',
+      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]:
+        'arn:aws:secretsmanager:eu-west-1:1:secret:wardrobe/dev/resend-api-key',
     };
-    await expect(loadOwnerNotifyApiKey({ env, getSecret, log })).resolves.toBe(
-      'test-api-key',
-    );
-    await expect(loadOwnerNotifyApiKey({ env, getSecret, log })).resolves.toBe(
-      'test-api-key',
-    );
+    const first = await loadOwnerNotifyApiKey({ env, getSecret, log });
+    const second = await loadOwnerNotifyApiKey({ env, getSecret, log });
+    expect(second).toBe(first);
     expect(getSecret).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(log.warn.mock.calls) + JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain('placeholder');
   });
 });
 
 describe('sendResendEmail', () => {
-  const apiKey = 'test-api-key';
-
   function okHttp(status = 200) {
     return jest.fn().mockResolvedValue({
       ok: status >= 200 && status < 300,
@@ -723,55 +732,59 @@ describe('sendResendEmail', () => {
     });
   }
 
-  it('POSTs /emails with Bearer auth on success', async () => {
+  function failHttp(status: number) {
+    return jest.fn().mockResolvedValue({
+      ok: false,
+      status,
+      text: async () => '{"message":"failed"}',
+    });
+  }
+
+  const sendInput = {
+    apiKey: 'placeholder',
+    sender: 'sender@example.com',
+    recipient: 'owner@example.com',
+    subject: 'Wardrobe subscribed: premium (web)',
+    text: 'body',
+    html: '<pre>body</pre>',
+  };
+
+  it('POSTs /emails with Idempotency-Key set to the provider event ID', async () => {
     const http = okHttp();
     await sendResendEmail({
-      apiKey,
-      sender: 'sender@example.com',
-      recipient: 'owner@example.com',
-      subject: 'Wardrobe subscribed: premium (web)',
-      text: 'body',
-      html: '<pre>body</pre>',
-      idempotencyKey: `stripe:${EVENT_ID}`,
+      ...sendInput,
+      idempotencyKey: EVENT_ID,
       http,
     });
-    expect(http).toHaveBeenCalledWith(OWNER_NOTIFY_RESEND_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'Idempotency-Key': `stripe:${EVENT_ID}`,
-      },
-      body: JSON.stringify({
-        from: 'sender@example.com',
-        to: ['owner@example.com'],
-        subject: 'Wardrobe subscribed: premium (web)',
-        text: 'body',
-        html: '<pre>body</pre>',
+    expect(http).toHaveBeenCalledWith(
+      OWNER_NOTIFY_RESEND_API_URL,
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: expect.stringMatching(/^Bearer /),
+          'Idempotency-Key': EVENT_ID,
+        }),
       }),
-    });
+    );
+    const headers = http.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.Authorization).not.toMatch(/^Bearer re_/);
   });
 
-  it.each([422, 429, 500])(
+  it.each([429, 500, 503])(
     'throws on HTTP %s so SQS retries and the message can reach the DLQ',
     async (status) => {
-      const http = jest.fn().mockResolvedValue({
-        ok: false,
-        status,
-        text: async () => '{"message":"failed"}',
-      });
       await expect(
-        sendResendEmail({
-          apiKey,
-          sender: 'sender@example.com',
-          recipient: 'owner@example.com',
-          subject: 'subject',
-          text: 'body',
-          html: '<pre>body</pre>',
-          http,
-        }),
+        sendResendEmail({ ...sendInput, http: failHttp(status) }),
       ).rejects.toThrow(`Resend send HTTP ${status}`);
+    },
+  );
+
+  it.each([400, 403, 422])(
+    'throws a permanent error on HTTP %s so the notifier can drop the message',
+    async (status) => {
+      await expect(
+        sendResendEmail({ ...sendInput, http: failHttp(status) }),
+      ).rejects.toMatchObject({ name: 'PermanentResendError', status });
     },
   );
 
@@ -780,17 +793,16 @@ describe('sendResendEmail', () => {
       name: 'AbortError',
     });
     const http = jest.fn().mockRejectedValue(timeout);
-    await expect(
-      sendResendEmail({
-        apiKey,
-        sender: 'sender@example.com',
-        recipient: 'owner@example.com',
-        subject: 'subject',
-        text: 'body',
-        html: '<pre>body</pre>',
-        http,
-      }),
-    ).rejects.toThrow('Resend send timed out');
+    await expect(sendResendEmail({ ...sendInput, http })).rejects.toThrow(
+      'Resend send timed out',
+    );
+  });
+
+  it('throws on a network error so SQS retries', async () => {
+    const http = jest.fn().mockRejectedValue(new Error('fetch failed'));
+    await expect(sendResendEmail({ ...sendInput, http })).rejects.toThrow(
+      'fetch failed',
+    );
   });
 
   it('sends via mocked HTTP from sendOwnerNotify on success', async () => {
@@ -802,18 +814,73 @@ describe('sendResendEmail', () => {
         recipient: 'owner@example.com',
         sender: 'sender@example.com',
       }),
-      loadApiKey: async () => apiKey,
+      loadApiKey: async () => 'placeholder',
       http,
       log,
     });
     expect(http).toHaveBeenCalledTimes(1);
     expect(http.mock.calls[0][0]).toBe(OWNER_NOTIFY_RESEND_API_URL);
+    expect(http.mock.calls[0][1].headers['Idempotency-Key']).toBe(EVENT_ID);
     expect(log.info).toHaveBeenCalledWith(
       'Owner notify sent',
       expect.objectContaining({ providerEventId: EVENT_ID }),
     );
     const serialized = JSON.stringify(log.info.mock.calls);
-    expect(serialized).not.toContain(apiKey);
+    expect(serialized).not.toContain('placeholder');
     expect(serialized).not.toContain('owner@example.com');
   });
+
+  it('drops a 4xx without retrying and keeps the dedupe claim', async () => {
+    const http = failHttp(400);
+    const forgetEvent = jest.fn();
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    await expect(
+      sendOwnerNotify(message(), {
+        claimEvent: async () => true,
+        forgetEvent,
+        loadConfig: async () => ({
+          recipient: 'owner@example.com',
+          sender: 'sender@example.com',
+        }),
+        loadApiKey: async () => 'placeholder',
+        http,
+        log,
+      }),
+    ).resolves.toBeUndefined();
+    expect(forgetEvent).not.toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalledWith(
+      'Owner notify Resend rejected the request',
+      expect.objectContaining({ providerEventId: EVENT_ID }),
+    );
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain('placeholder');
+    expect(serialized).not.toContain('owner@example.com');
+  });
+
+  it.each([429, 500, 503])(
+    'rethrows HTTP %s so SQS retries after releasing the claim',
+    async (status) => {
+      const http = failHttp(status);
+      const forgetEvent = jest.fn().mockResolvedValue(undefined);
+      const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+      await expect(
+        sendOwnerNotify(message(), {
+          claimEvent: async () => true,
+          forgetEvent,
+          loadConfig: async () => ({
+            recipient: 'owner@example.com',
+            sender: 'sender@example.com',
+          }),
+          loadApiKey: async () => 'placeholder',
+          http,
+          log,
+        }),
+      ).rejects.toThrow(`Resend send HTTP ${status}`);
+      expect(forgetEvent).toHaveBeenCalled();
+      expect(log.error).toHaveBeenCalledWith(
+        'Owner notify Resend send failed',
+        expect.objectContaining({ providerEventId: EVENT_ID }),
+      );
+    },
+  );
 });

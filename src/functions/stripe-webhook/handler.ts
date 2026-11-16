@@ -19,6 +19,7 @@ import {
   mapStripeOwnerNotify,
   OwnerNotifyEnqueueDeps,
   OwnerNotifyMessage,
+  safeErrorMessage,
 } from '../../shared/owner-notify';
 import { errorResponse, json } from '../../shared/http';
 import { logger } from '../../shared/logger';
@@ -329,7 +330,7 @@ async function notifyStripeOwner(options: {
     options.log.error('Owner notify failed', {
       eventType: options.type,
       providerEventId: options.eventId,
-      error: error instanceof Error ? error.message : 'unknown',
+      error: safeErrorMessage(error),
     });
   }
 }

@@ -211,9 +211,10 @@ export async function loadOwnerNotifyApiKey(
 }
 
 /**
- * Dedupe, load SSM/env + Resend secret, POST to Resend. Throws only after
- * forgetting a claim so SQS can retry send failures. Missing config or
- * secret is a quiet skip (acked).
+ * Dedupe, load SSM/env + Resend secret, POST to Resend.
+ * 429 / 5xx / timeout / network errors forget the claim and throw so SQS
+ * retries (then DLQ). Other 4xx are logged with the event ID and dropped.
+ * Missing config or secret is a quiet skip (acked).
  */
 export async function sendOwnerNotify(
   message: OwnerNotifyMessage,
@@ -287,7 +288,7 @@ export async function sendOwnerNotify(
         subject: input.subject,
         text: input.text,
         html: input.html,
-        idempotencyKey: `${message.provider}:${message.providerEventId}`,
+        idempotencyKey: message.providerEventId,
         http: deps.http,
         timeoutMs: deps.timeoutMs,
       });
@@ -309,6 +310,15 @@ export async function sendOwnerNotify(
   } catch (error) {
     if (error instanceof SkipOwnerNotifyError) {
       await forget(message);
+      return;
+    }
+    if (error instanceof PermanentResendError) {
+      log.error('Owner notify Resend rejected the request', {
+        provider: message.provider,
+        providerEventId: message.providerEventId,
+        eventType: message.eventType,
+        error: safeErrorMessage(error),
+      });
       return;
     }
     log.error('Owner notify Resend send failed', {
@@ -378,7 +388,20 @@ export async function sendResendEmail(input: {
     // Body is unused; never log it.
   }
   if (!response.ok) {
-    throw new Error(`Resend send HTTP ${response.status}`);
+    if (isRetryableResendStatus(response.status)) {
+      throw new Error(`Resend send HTTP ${response.status}`);
+    }
+    throw new PermanentResendError(response.status);
+  }
+}
+
+export class PermanentResendError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Resend send HTTP ${status}`);
+    this.name = 'PermanentResendError';
+    this.status = status;
   }
 }
 
@@ -387,6 +410,10 @@ class SkipOwnerNotifyError extends Error {
     super(reason);
     this.name = 'SkipOwnerNotifyError';
   }
+}
+
+function isRetryableResendStatus(status: number): boolean {
+  return status === 429 || status >= 500;
 }
 
 function envOwnerNotifyConfig(env: NodeJS.ProcessEnv): OwnerNotifyConfig | undefined {

@@ -156,9 +156,9 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(actionsFor(template, 'OwnerNotifyFn', 'dynamodb:')).toEqual(
       expect.arrayContaining(['dynamodb:PutItem', 'dynamodb:DeleteItem']),
     );
-    expect(actionsFor(template, 'OwnerNotifyFn', 'secretsmanager:')).toEqual(
-      expect.arrayContaining(['secretsmanager:GetSecretValue']),
-    );
+    expect(actionsFor(template, 'OwnerNotifyFn', 'secretsmanager:')).toEqual([
+      'secretsmanager:GetSecretValue',
+    ]);
 
     const notifyTimeout = functionById(template, 'OwnerNotifyFn')?.Timeout;
     expect(notifyTimeout).toBe(OWNER_NOTIFY_LAMBDA_TIMEOUT_SECONDS);
@@ -173,9 +173,11 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     );
     const serialized = JSON.stringify(ownerPolicies);
     expect(serialized).toContain('secretsmanager:GetSecretValue');
+    expect(serialized).not.toContain('secretsmanager:DescribeSecret');
     expect(serialized).not.toContain('ses:');
     expect(serialized).not.toContain('ses:SendEmail');
     expect(serialized).not.toContain(':identity/');
+    expect(serialized).toContain('OwnerNotifyResendSecret');
     expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/recipient');
     expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/sender');
     expect(serialized).toContain('NOTIFY#*');
@@ -183,6 +185,37 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'wardrobe/dev/resend-api-key',
     });
+    const secrets = Object.values(
+      template.findResources('AWS::SecretsManager::Secret'),
+    ) as Array<{
+      Properties: {
+        Name?: string;
+        SecretString?: unknown;
+        GenerateSecretString?: unknown;
+      };
+    }>;
+    const ownerSecret = secrets.find(
+      (secret) => secret.Properties.Name === 'wardrobe/dev/resend-api-key',
+    );
+    expect(ownerSecret?.Properties.SecretString).toBeUndefined();
+    expect(ownerSecret?.Properties.GenerateSecretString).toBeUndefined();
+
+    const secretStatements = ownerPolicies.flatMap((policy) =>
+      policy.Properties.PolicyDocument.Statement.filter((statement) => {
+        const actions = statement.Action;
+        const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+        return list.includes('secretsmanager:GetSecretValue');
+      }),
+    );
+    expect(secretStatements).toHaveLength(1);
+    const secretActions = secretStatements[0].Action;
+    expect(
+      Array.isArray(secretActions) ? secretActions : [secretActions],
+    ).toEqual(['secretsmanager:GetSecretValue']);
+    expect(JSON.stringify(secretStatements[0].Resource)).toContain(
+      'OwnerNotifyResendSecret',
+    );
+    expect(JSON.stringify(secretStatements[0].Resource)).not.toContain('*');
   });
 
   test('does not hardcode mailbox addresses in the template', () => {

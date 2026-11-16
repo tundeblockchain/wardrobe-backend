@@ -42,7 +42,7 @@ export interface OwnerNotifyResources {
   queue: sqs.Queue;
   dlq: sqs.Queue;
   fn: NodejsFunction;
-  resendSecret: secretsmanager.Secret;
+  resendSecret: secretsmanager.CfnSecret;
   recipientParamName: string;
   senderParamName: string;
   resendSecretName: string;
@@ -90,12 +90,15 @@ export function addOwnerNotify(
     },
   });
 
-  const resendSecret = new secretsmanager.Secret(scope, 'OwnerNotifyResendSecret', {
-    secretName: resendSecretName,
+  // Named secret with no SecretString / GenerateSecretString. Operators put
+  // the Resend key in after deploy. A generated placeholder would 401 Resend
+  // and be dropped as a permanent 4xx until TTL.
+  const resendSecret = new secretsmanager.CfnSecret(scope, 'OwnerNotifyResendSecret', {
+    name: resendSecretName,
     description:
-      'Resend API key for owner subscription emails (WARDROBE-273). Replace the placeholder. Never commit the real key.',
-    removalPolicy,
+      'Resend API key for owner subscription emails (WARDROBE-273). Set the value after deploy. Never commit the real key.',
   });
+  resendSecret.applyRemovalPolicy(removalPolicy);
 
   const logGroup = new logs.LogGroup(scope, 'OwnerNotifyFnLogs', {
     retention: logs.RetentionDays.ONE_WEEK,
@@ -110,7 +113,7 @@ export function addOwnerNotify(
       [OWNER_NOTIFY_QUEUE_URL_ENV]: queue.queueUrl,
       [OWNER_NOTIFY_RECIPIENT_PARAM_ENV]: recipientParamName,
       [OWNER_NOTIFY_SENDER_PARAM_ENV]: senderParamName,
-      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]: resendSecret.secretArn,
+      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]: resendSecret.ref,
     },
     entry: path.join(__dirname, '../src/functions/owner-notify/handler.ts'),
     handler: 'handler',
@@ -149,7 +152,13 @@ export function addOwnerNotify(
     }),
   );
 
-  resendSecret.grantRead(fn);
+  fn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: 'OwnerNotifyResendSecretRead',
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [resendSecret.ref],
+    }),
+  );
 
   queue.grantSendMessages(stripeWebhookFn);
   queue.grantSendMessages(entitlementsWebhookFn);
