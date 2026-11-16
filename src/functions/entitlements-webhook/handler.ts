@@ -212,8 +212,8 @@ export async function handleSuperwallWebhook(
       await (deps.save ?? persistEntitlement)(stored);
     }
 
-    await trackSuperwallConversion(inbound, userId, deps);
     await notifySuperwallOwner(inbound, userId, deps);
+    await trackSuperwallConversion(inbound, userId, deps);
 
     return json(200, {
       status: skipped ? 'duplicate' : 'applied',
@@ -310,6 +310,7 @@ async function notifySuperwallOwner(
   } catch (error) {
     const log = deps.log ?? logger;
     log.error('Owner notify failed', {
+      providerEventId: stringOrUndefined(inbound.data?.id),
       error: error instanceof Error ? error.message : 'unknown',
     });
   }

@@ -1190,7 +1190,7 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
     retrieve.mockResolvedValue(subscription());
     customersRetrieve.mockResolvedValue({
       id: CUS_ID,
-      email: 'buyer@example.com',
+      email: 'owner@example.com',
       metadata: { uid: UID },
     });
     notifyOwner.mockResolvedValue(undefined);
@@ -1212,7 +1212,7 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
   it('enqueues subscribed for checkout.session.completed without changing the webhook body', async () => {
     retrieve.mockResolvedValue(
       subscription({
-        customer: { id: CUS_ID, email: 'buyer@example.com', metadata: { uid: UID } },
+        customer: { id: CUS_ID, email: 'owner@example.com', metadata: { uid: UID } },
       }),
     );
     const { payload, signature } = signedPayload(
@@ -1225,7 +1225,7 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
           customer: CUS_ID,
           amount_total: 1500,
           currency: 'gbp',
-          customer_details: { email: 'buyer@example.com' },
+          customer_details: { email: 'owner@example.com' },
         },
       }),
     );
@@ -1248,7 +1248,7 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
         platform: 'web',
         provider: 'stripe',
         providerEventId: EVENT_ID,
-        userEmail: 'buyer@example.com',
+        userEmail: 'owner@example.com',
         userId: UID,
       }),
     );

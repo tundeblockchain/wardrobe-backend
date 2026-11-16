@@ -15,21 +15,29 @@ jest.mock('../../src/shared/dynamodb', () => {
   };
 });
 
+import * as fs from 'fs';
+import * as path from 'path';
 import {
-  claimOwnerNotifyEvent,
   enqueueOwnerNotify,
   formatOwnerNotifyEmail,
-  loadOwnerNotifyConfig,
   mapStripeOwnerNotify,
   mapSuperwallOwnerNotify,
   OWNER_NOTIFY_QUEUE_URL_ENV,
-  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
-  OWNER_NOTIFY_SENDER_PARAM_ENV,
   OwnerNotifyMessage,
   parseOwnerNotifyMessage,
+  STRIPE_OWNER_NOTIFY_EVENTS,
+  SUPERWALL_OWNER_NOTIFY_EVENTS,
+} from '../../src/shared/owner-notify';
+import {
+  claimOwnerNotifyEvent,
+  loadOwnerNotifyConfig,
+  OWNER_NOTIFY_RECIPIENT_ENV,
+  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
+  OWNER_NOTIFY_SENDER_ENV,
+  OWNER_NOTIFY_SENDER_PARAM_ENV,
   resetOwnerNotifyConfigCache,
   sendOwnerNotify,
-} from '../../src/shared/owner-notify';
+} from '../../src/shared/owner-notify-send';
 
 const LOOKUP_KEYS: StripeLookupKeys = {
   basicMonthly: 'wardrobe_basic_monthly',
@@ -48,7 +56,7 @@ function premiumSubscription(
   return {
     id: 'sub_test_123',
     status: 'active',
-    customer: { id: 'cus_test_123', email: 'buyer@example.com', metadata: { uid: UID } },
+    customer: { id: 'cus_test_123', email: 'owner@example.com', metadata: { uid: UID } },
     metadata: { uid: UID, tier: 'premium' },
     current_period_end: 1_762_819_200,
     items: {
@@ -83,7 +91,7 @@ function superwallEvent(
       priceInPurchasedCurrency: 7.99,
       currencyCode: 'GBP',
       purchasedAt: 1_717_000_000_000,
-      userAttributes: { firebaseUid: UID, email: 'ios-user@example.com' },
+      userAttributes: { firebaseUid: UID, email: 'owner@example.com' },
       ...data,
     },
   };
@@ -97,7 +105,7 @@ function message(overrides: Partial<OwnerNotifyMessage> = {}): OwnerNotifyMessag
     platform: 'web',
     price: 15,
     currency: 'GBP',
-    userEmail: 'buyer@example.com',
+    userEmail: 'owner@example.com',
     userId: UID,
     eventTimestamp: '2024-05-29T16:26:40.000Z',
     provider: 'stripe',
@@ -116,7 +124,7 @@ describe('mapStripeOwnerNotify', () => {
         id: 'cs_paid',
         amount_total: 1500,
         currency: 'gbp',
-        customer_details: { email: 'buyer@example.com' },
+        customer_details: { email: 'owner@example.com' },
         metadata: { uid: UID },
       },
       subscription: premiumSubscription(),
@@ -132,7 +140,7 @@ describe('mapStripeOwnerNotify', () => {
         platform: 'web',
         price: 15,
         currency: 'GBP',
-        userEmail: 'buyer@example.com',
+        userEmail: 'owner@example.com',
         userId: UID,
         provider: 'stripe',
         providerEventId: EVENT_ID,
@@ -150,7 +158,7 @@ describe('mapStripeOwnerNotify', () => {
         id: 'cs_trial',
         amount_total: 0,
         currency: 'gbp',
-        customer_email: 'trial@example.com',
+        customer_email: 'owner@example.com',
       },
       subscription: premiumSubscription({ status: 'trialing', trial_end: CREATED + 86_400 }),
       userId: UID,
@@ -160,7 +168,7 @@ describe('mapStripeOwnerNotify', () => {
     expect(mapped).toEqual(
       expect.objectContaining({
         eventType: 'trial_started',
-        userEmail: 'trial@example.com',
+        userEmail: 'owner@example.com',
         price: 0,
       }),
     );
@@ -284,15 +292,40 @@ describe('mapStripeOwnerNotify', () => {
     expect(mapped?.userId).toBe(UID);
   });
 
-  it('sends nothing for invoice.paid or missing event id', () => {
+  it('sends nothing when subscription.updated has status canceled without a cancel_at_period_end flip', () => {
     expect(
       mapStripeOwnerNotify({
-        type: 'invoice.paid',
+        type: 'customer.subscription.updated',
+        eventId: EVENT_ID,
+        created: CREATED,
+        previousAttributes: { status: 'active' },
+        subscription: premiumSubscription({
+          status: 'canceled',
+          cancel_at_period_end: false,
+        }),
+        lookupKeys: LOOKUP_KEYS,
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    'invoice.paid',
+    'invoice.payment_succeeded',
+    'customer.updated',
+    'charge.succeeded',
+    'customer.subscription.paused',
+  ])('sends nothing for unmapped Stripe type %s', (type) => {
+    expect(
+      mapStripeOwnerNotify({
+        type,
         eventId: EVENT_ID,
         subscription: premiumSubscription(),
         lookupKeys: LOOKUP_KEYS,
       }),
     ).toBeUndefined();
+  });
+
+  it('sends nothing when the Stripe event id is missing', () => {
     expect(
       mapStripeOwnerNotify({
         type: 'checkout.session.completed',
@@ -300,6 +333,35 @@ describe('mapStripeOwnerNotify', () => {
         lookupKeys: LOOKUP_KEYS,
       }),
     ).toBeUndefined();
+  });
+});
+
+describe('owner notify mapping tables', () => {
+  it('lists the Stripe types that enqueue an owner email', () => {
+    expect(Object.keys(STRIPE_OWNER_NOTIFY_EVENTS).sort()).toEqual([
+      'checkout.session.completed',
+      'customer.subscription.created',
+      'customer.subscription.deleted',
+      'customer.subscription.updated',
+    ]);
+  });
+
+  it('lists the Superwall names that enqueue an owner email', () => {
+    expect(Object.keys(SUPERWALL_OWNER_NOTIFY_EVENTS).sort()).toEqual([
+      'cancellation',
+      'expiration',
+      'initial_purchase',
+    ]);
+  });
+
+  it('keeps SES out of the webhook mapping module', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, '../../src/shared/owner-notify.ts'),
+      'utf8',
+    );
+    expect(source).not.toContain('@aws-sdk/client-ses');
+    expect(source).not.toContain('@aws-sdk/client-ssm');
+    expect(source).not.toContain('SendEmail');
   });
 });
 
@@ -314,7 +376,7 @@ describe('mapSuperwallOwnerNotify', () => {
         platform: 'ios',
         price: 7.99,
         currency: 'GBP',
-        userEmail: 'ios-user@example.com',
+        userEmail: 'owner@example.com',
         userId: UID,
         provider: 'superwall',
         providerEventId: 'sw_evt_1',
@@ -344,10 +406,13 @@ describe('mapSuperwallOwnerNotify', () => {
     expect(mapped?.platform).toBe('android');
   });
 
-  it('maps cancellation and expiration', () => {
+  it('maps cancellation to canceled', () => {
     expect(mapSuperwallOwnerNotify(superwallEvent('cancellation'), UID)?.eventType).toBe(
       'canceled',
     );
+  });
+
+  it('maps expiration to expired', () => {
     expect(mapSuperwallOwnerNotify(superwallEvent('expiration'), UID)?.eventType).toBe(
       'expired',
     );
@@ -363,8 +428,17 @@ describe('mapSuperwallOwnerNotify', () => {
     expect(mapped?.userId).toBe(UID);
   });
 
-  it('sends nothing for renewal or missing event id', () => {
-    expect(mapSuperwallOwnerNotify(superwallEvent('renewal'), UID)).toBeUndefined();
+  it.each([
+    'renewal',
+    'product_change',
+    'billing_issue',
+    'uncancellation',
+    'subscription_paused',
+  ])('sends nothing for unmapped Superwall type %s', (name) => {
+    expect(mapSuperwallOwnerNotify(superwallEvent(name), UID)).toBeUndefined();
+  });
+
+  it('sends nothing when the Superwall event id is missing', () => {
     expect(
       mapSuperwallOwnerNotify(
         superwallEvent('initial_purchase', { id: undefined }),
@@ -382,7 +456,7 @@ describe('formatOwnerNotifyEmail', () => {
     expect(email.text).toContain('Plan: premium');
     expect(email.text).toContain('Platform: web');
     expect(email.text).toContain('Price: 15 GBP');
-    expect(email.text).toContain('User: buyer@example.com');
+    expect(email.text).toContain('User: owner@example.com');
     expect(email.text).toContain('Event time: 2024-05-29T16:26:40.000Z');
     expect(email.text).toContain(`Provider event ID: ${EVENT_ID}`);
     expect(email.html).toContain('Event type: subscribed');
@@ -444,7 +518,7 @@ describe('enqueueOwnerNotify', () => {
       log,
     });
     const serialized = JSON.stringify(log.error.mock.calls);
-    expect(serialized).not.toContain('buyer@example.com');
+    expect(serialized).not.toContain('owner@example.com');
   });
 });
 
@@ -476,7 +550,7 @@ describe('sendOwnerNotify', () => {
 
     const loadConfig = async () => ({
       recipient: 'owner@example.com',
-      sender: 'alerts@example.com',
+      sender: 'sender@example.com',
     });
     await sendOwnerNotify(message(), { claimEvent, sendEmail, loadConfig, log });
     await sendOwnerNotify(message(), { claimEvent, sendEmail, loadConfig, log });
@@ -484,7 +558,7 @@ describe('sendOwnerNotify', () => {
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({
-        sender: 'alerts@example.com',
+        sender: 'sender@example.com',
         recipient: 'owner@example.com',
         subject: 'Wardrobe subscribed: premium (web)',
       }),
@@ -546,7 +620,7 @@ describe('sendOwnerNotify', () => {
         forgetEvent,
         loadConfig: async () => ({
           recipient: 'owner@example.com',
-          sender: 'alerts@example.com',
+          sender: 'sender@example.com',
         }),
         sendEmail,
         log,
@@ -558,7 +632,32 @@ describe('sendOwnerNotify', () => {
       expect.objectContaining({ providerEventId: EVENT_ID }),
     );
     const serialized = JSON.stringify(log.error.mock.calls);
-    expect(serialized).not.toContain('buyer@example.com');
     expect(serialized).not.toContain('owner@example.com');
+    expect(serialized).not.toContain('sender@example.com');
+  });
+
+  it('reads sender and recipient from env without calling SSM', async () => {
+    const getParameter = jest.fn();
+    const config = await loadOwnerNotifyConfig({
+      env: {
+        [OWNER_NOTIFY_RECIPIENT_ENV]: 'owner@example.com',
+        [OWNER_NOTIFY_SENDER_ENV]: 'sender@example.com',
+      },
+      getParameter,
+      log,
+    });
+    expect(config).toEqual({
+      recipient: 'owner@example.com',
+      sender: 'sender@example.com',
+    });
+    expect(getParameter).not.toHaveBeenCalled();
+  });
+
+  it('warns and skips when env and SSM config are both missing', async () => {
+    const config = await loadOwnerNotifyConfig({ env: {}, log });
+    expect(config).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Owner notify skipped; sender or recipient is not configured',
+    );
   });
 });

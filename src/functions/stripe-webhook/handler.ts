@@ -250,17 +250,6 @@ export async function handleStripeWebhook(
         nowMs: deps.nowMs,
       });
 
-      await trackStripeConversion({
-        type: eventType,
-        object: asRecord(stripeEvent.data?.object),
-        userId,
-        subscription,
-        eventTimeSeconds:
-          typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
-        deps,
-        log,
-      });
-
       await notifyStripeOwner({
         type: eventType,
         eventId,
@@ -275,6 +264,17 @@ export async function handleStripeWebhook(
         userId,
         lookupKeys: config.lookupKeys,
         priceIds: config.priceIds,
+        deps,
+        log,
+      });
+
+      await trackStripeConversion({
+        type: eventType,
+        object: asRecord(stripeEvent.data?.object),
+        userId,
+        subscription,
+        eventTimeSeconds:
+          typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
         deps,
         log,
       });
@@ -328,6 +328,7 @@ async function notifyStripeOwner(options: {
   } catch (error) {
     options.log.error('Owner notify failed', {
       eventType: options.type,
+      providerEventId: options.eventId,
       error: error instanceof Error ? error.message : 'unknown',
     });
   }

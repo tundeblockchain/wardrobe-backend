@@ -36,7 +36,7 @@ function payload(): OwnerNotifyMessage {
     platform: 'web',
     price: 15,
     currency: 'GBP',
-    userEmail: 'buyer@example.com',
+    userEmail: 'owner@example.com',
     userId: 'firebase-uid-owner',
     eventTimestamp: '2024-05-29T16:26:40.000Z',
     provider: 'stripe',
@@ -57,7 +57,7 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
       claimEvent: async () => true,
       loadConfig: async () => ({
         recipient: 'owner@example.com',
-        sender: 'alerts@example.com',
+        sender: 'sender@example.com',
       }),
       sendEmail,
       log,
@@ -81,13 +81,46 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
     );
   });
 
+  it('a retried event with the same provider event ID sends exactly one email', async () => {
+    let claimed = false;
+    const sendEmail = jest.fn().mockResolvedValue(undefined);
+    const body = JSON.stringify(payload());
+    const result = await handleOwnerNotifyQueue(
+      {
+        Records: [record(body, 'msg-1'), record(body, 'msg-2')],
+      },
+      {
+        claimEvent: async () => {
+          if (claimed) {
+            return false;
+          }
+          claimed = true;
+          return true;
+        },
+        loadConfig: async () => ({
+          recipient: 'owner@example.com',
+          sender: 'sender@example.com',
+        }),
+        sendEmail,
+        log,
+      },
+    );
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(log.info).toHaveBeenCalledWith(
+      'Owner notify skipped; event already sent',
+      expect.objectContaining({ providerEventId: 'evt_test_123' }),
+    );
+  });
+
   it('reports a batch item failure when SES throws so SQS retries', async () => {
     const result = await handleOwnerNotifyQueue(eventOf(JSON.stringify(payload())), {
       claimEvent: async () => true,
       forgetEvent: async () => undefined,
       loadConfig: async () => ({
         recipient: 'owner@example.com',
-        sender: 'alerts@example.com',
+        sender: 'sender@example.com',
       }),
       sendEmail: async () => {
         throw new Error('SES throttled');

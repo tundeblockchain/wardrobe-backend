@@ -1,15 +1,15 @@
-import { SendEmailCommand, SESClient } from '@aws-sdk/client-ses';
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
-import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import {
   superwallIsTrialStart,
   stripeMinorToMajor,
   isStripeFreeTrialCheckout,
 } from './conversion-events';
-import { deleteItem, keys, putItemIfNotExists } from './dynamodb';
 import { SuperwallWebhookEvent, superwallEventName } from './entitlements';
 import { nowIso } from './ids';
 import { logger } from './logger';
+import {
+  OWNER_NOTIFY_QUEUE_URL_ENV,
+} from './owner-notify-names';
 import type { StripeLookupKeys, StripePriceIds } from './stripe-plans';
 import {
   paidTierFromStripeSubscription,
@@ -17,13 +17,14 @@ import {
 } from './stripe-webhook';
 import { OWNER_NOTIFY_JOB } from './types';
 
-export const OWNER_NOTIFY_QUEUE_URL_ENV = 'OWNER_NOTIFY_QUEUE_URL';
-export const OWNER_NOTIFY_RECIPIENT_PARAM_ENV = 'OWNER_NOTIFY_RECIPIENT_PARAM';
-export const OWNER_NOTIFY_SENDER_PARAM_ENV = 'OWNER_NOTIFY_SENDER_PARAM';
-
-export const OWNER_NOTIFY_EVENT_TTL_SECONDS = 90 * 24 * 60 * 60;
-
-const EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export {
+  OWNER_NOTIFY_EVENT_TTL_SECONDS,
+  OWNER_NOTIFY_QUEUE_URL_ENV,
+  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
+  OWNER_NOTIFY_SENDER_PARAM_ENV,
+  ownerNotifyRecipientParamName,
+  ownerNotifySenderParamName,
+} from './owner-notify-names';
 
 export type OwnerNotifyEventType =
   | 'subscribed'
@@ -33,6 +34,32 @@ export type OwnerNotifyEventType =
 
 export type OwnerNotifyPlatform = 'web' | 'ios' | 'android';
 export type OwnerNotifyProvider = 'stripe' | 'superwall';
+
+/**
+ * Explicit Stripe webhook types that enqueue an owner email.
+ * Values are the default mapped event; helpers may refine trial vs paid
+ * and cancel vs expiry from payload fields.
+ */
+export const STRIPE_OWNER_NOTIFY_EVENTS = {
+  'checkout.session.completed': 'subscribed',
+  'customer.subscription.created': 'subscribed',
+  'customer.subscription.updated': 'canceled',
+  'customer.subscription.deleted': 'canceled',
+} as const satisfies Record<string, OwnerNotifyEventType>;
+
+export type StripeOwnerNotifyEventName = keyof typeof STRIPE_OWNER_NOTIFY_EVENTS;
+
+/**
+ * Explicit Superwall event names that enqueue an owner email.
+ * `initial_purchase` may refine to trial_started.
+ */
+export const SUPERWALL_OWNER_NOTIFY_EVENTS = {
+  initial_purchase: 'subscribed',
+  cancellation: 'canceled',
+  expiration: 'expired',
+} as const satisfies Record<string, OwnerNotifyEventType>;
+
+export type SuperwallOwnerNotifyEventName = keyof typeof SUPERWALL_OWNER_NOTIFY_EVENTS;
 
 export interface OwnerNotifyMessage {
   jobType: typeof OWNER_NOTIFY_JOB;
@@ -48,66 +75,24 @@ export interface OwnerNotifyMessage {
   providerEventId: string;
 }
 
-export interface OwnerNotifyConfig {
-  recipient: string;
-  sender: string;
-}
-
 export interface OwnerNotifyEnqueueDeps {
   env?: NodeJS.ProcessEnv;
   sqsSend?: (input: { QueueUrl: string; MessageBody: string }) => Promise<unknown>;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+  /**
+   * Test seam that replaces SQS send. Production webhooks never pass this;
+   * they enqueue and return. There is no inline SES path.
+   */
   notifyOwner?: (message: OwnerNotifyMessage) => Promise<void>;
 }
 
-export interface OwnerNotifySendDeps {
-  env?: NodeJS.ProcessEnv;
-  nowSeconds?: number;
-  ttlSeconds?: number;
-  claimEvent?: (message: OwnerNotifyMessage) => Promise<boolean>;
-  forgetEvent?: (message: OwnerNotifyMessage) => Promise<void>;
-  loadConfig?: () => Promise<OwnerNotifyConfig | undefined>;
-  sendEmail?: (input: {
-    sender: string;
-    recipient: string;
-    subject: string;
-    text: string;
-    html: string;
-  }) => Promise<void>;
-  log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-}
-
-export interface OwnerNotifySsmDeps {
-  env?: NodeJS.ProcessEnv;
-  getParameter?: (name: string) => Promise<string | undefined>;
-  log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-}
-
 const sqs = new SQSClient({});
-const ssm = new SSMClient({});
-const ses = new SESClient({});
-
-let cachedConfig:
-  | { recipientParam: string; senderParam: string; config: OwnerNotifyConfig }
-  | undefined;
-
-export function ownerNotifyRecipientParamName(stage: string): string {
-  return `/wardrobe/${stage.trim()}/owner-notify/recipient`;
-}
-
-export function ownerNotifySenderParamName(stage: string): string {
-  return `/wardrobe/${stage.trim()}/owner-notify/sender`;
-}
-
-export function resetOwnerNotifyConfigCache(): void {
-  cachedConfig = undefined;
-}
 
 /**
  * Map a verified Stripe webhook onto an owner-notify payload.
  * Subscribe / trial: checkout.session.completed and customer.subscription.created.
- * Cancellation: cancel_at_period_end flipping to true, or a clear/deleted sub.
- * Expiry: customer.subscription.deleted after a scheduled cancel (or ended).
+ * Cancellation: cancel_at_period_end flipping to true.
+ * Expiry: customer.subscription.deleted after a scheduled cancel (or immediate cancel).
  */
 export function mapStripeOwnerNotify(options: {
   type: string;
@@ -122,6 +107,9 @@ export function mapStripeOwnerNotify(options: {
 }): OwnerNotifyMessage | undefined {
   const providerEventId = optionalString(options.eventId);
   if (!providerEventId) {
+    return undefined;
+  }
+  if (!isStripeOwnerNotifyEvent(options.type)) {
     return undefined;
   }
 
@@ -167,6 +155,9 @@ export function mapSuperwallOwnerNotify(
   nowSeconds?: number,
 ): OwnerNotifyMessage | undefined {
   const name = superwallEventName(event).trim().toLowerCase();
+  if (!isSuperwallOwnerNotifyEvent(name)) {
+    return undefined;
+  }
   const eventType = superwallOwnerEventType(name, event.data);
   if (!eventType) {
     return undefined;
@@ -273,8 +264,9 @@ export function parseOwnerNotifyMessage(
 }
 
 /**
- * Best-effort enqueue. Never throws. Missing queue URL logs a warning
- * and returns so webhook tests and undeployed stages stay quiet.
+ * Best-effort enqueue onto SQS. Never throws and never waits on SES.
+ * Missing queue URL logs a warning and returns so webhook tests and
+ * undeployed stages stay quiet.
  */
 export async function enqueueOwnerNotify(
   message: OwnerNotifyMessage | undefined,
@@ -323,176 +315,20 @@ export async function enqueueOwnerNotify(
   }
 }
 
-export async function claimOwnerNotifyEvent(
-  message: OwnerNotifyMessage,
-  options?: { nowSeconds?: number; ttlSeconds?: number },
-): Promise<boolean> {
-  const providerEventId = message.providerEventId.trim();
-  if (!providerEventId) {
-    return false;
-  }
-  const nowSeconds = options?.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const ttlSeconds = options?.ttlSeconds ?? OWNER_NOTIFY_EVENT_TTL_SECONDS;
-  const timestamp = nowIso();
-  return putItemIfNotExists({
-    PK: keys.ownerNotifyPk(message.provider, providerEventId),
-    SK: keys.ownerNotifySk,
-    entityType: 'OWNER_NOTIFY',
-    userId: message.userId ?? message.provider,
-    eventId: providerEventId,
-    provider: message.provider,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    ttl: nowSeconds + ttlSeconds,
-  });
+function isStripeOwnerNotifyEvent(
+  type: string,
+): type is StripeOwnerNotifyEventName {
+  return Object.prototype.hasOwnProperty.call(STRIPE_OWNER_NOTIFY_EVENTS, type);
 }
 
-export async function forgetOwnerNotifyEvent(
-  message: OwnerNotifyMessage,
-): Promise<void> {
-  const providerEventId = message.providerEventId.trim();
-  if (!providerEventId) {
-    return;
-  }
-  await deleteItem(
-    keys.ownerNotifyPk(message.provider, providerEventId),
-    keys.ownerNotifySk,
-  );
-}
-
-export async function loadOwnerNotifyConfig(
-  deps: OwnerNotifySsmDeps = {},
-): Promise<OwnerNotifyConfig | undefined> {
-  const log = deps.log ?? logger;
-  const env = deps.env ?? process.env;
-  const recipientParam = env[OWNER_NOTIFY_RECIPIENT_PARAM_ENV]?.trim();
-  const senderParam = env[OWNER_NOTIFY_SENDER_PARAM_ENV]?.trim();
-  if (!recipientParam || !senderParam) {
-    log.warn('Owner notify skipped; SSM parameter names are not configured');
-    return undefined;
-  }
-
-  if (
-    cachedConfig &&
-    cachedConfig.recipientParam === recipientParam &&
-    cachedConfig.senderParam === senderParam
-  ) {
-    return cachedConfig.config;
-  }
-
-  const getParameter = deps.getParameter ?? getSsmParameter;
-  let recipient: string | undefined;
-  let sender: string | undefined;
-  try {
-    [recipient, sender] = await Promise.all([
-      getParameter(recipientParam),
-      getParameter(senderParam),
-    ]);
-  } catch (error) {
-    log.warn('Owner notify skipped; failed to read SSM parameters', {
-      error: safeErrorMessage(error),
-    });
-    return undefined;
-  }
-
-  if (!isNotifyEmail(recipient) || !isNotifyEmail(sender)) {
-    log.warn('Owner notify skipped; sender or recipient is missing or invalid');
-    return undefined;
-  }
-
-  const config = { recipient, sender };
-  cachedConfig = { recipientParam, senderParam, config };
-  return config;
-}
-
-/**
- * Dedupe, load SSM, send SES. Throws only after forgetting a claim so
- * SQS can retry SES failures. Missing config is a quiet skip (acked).
- */
-export async function sendOwnerNotify(
-  message: OwnerNotifyMessage,
-  deps: OwnerNotifySendDeps = {},
-): Promise<void> {
-  const log = deps.log ?? logger;
-  const claim = deps.claimEvent ?? claimOwnerNotifyEvent;
-  const forget = deps.forgetEvent ?? forgetOwnerNotifyEvent;
-  const claimed = await claim(message, {
-    nowSeconds: deps.nowSeconds,
-    ttlSeconds: deps.ttlSeconds,
-  });
-  if (!claimed) {
-    log.info('Owner notify skipped; event already sent', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      eventType: message.eventType,
-    });
-    return;
-  }
-
-  const loadConfig = deps.loadConfig ?? (() => loadOwnerNotifyConfig({ log }));
-  let config: OwnerNotifyConfig | undefined;
-  try {
-    config = await loadConfig();
-  } catch (error) {
-    log.warn('Owner notify skipped; failed to load config', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      error: safeErrorMessage(error),
-    });
-    await forget(message);
-    return;
-  }
-  if (!config) {
-    await forget(message);
-    return;
-  }
-
-  const email = formatOwnerNotifyEmail(message);
-  const send =
-    deps.sendEmail ??
-    ((input: {
-      sender: string;
-      recipient: string;
-      subject: string;
-      text: string;
-      html: string;
-    }) => sendSesEmail(input));
-  try {
-    await send({
-      sender: config.sender,
-      recipient: config.recipient,
-      subject: email.subject,
-      text: email.text,
-      html: email.html,
-    });
-    log.info('Owner notify sent', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      eventType: message.eventType,
-      platform: message.platform,
-    });
-  } catch (error) {
-    log.error('Owner notify SES send failed', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      eventType: message.eventType,
-      error: safeErrorMessage(error),
-    });
-    try {
-      await forget(message);
-    } catch (forgetError) {
-      log.error('Owner notify failed to release dedupe claim', {
-        provider: message.provider,
-        providerEventId: message.providerEventId,
-        error: safeErrorMessage(forgetError),
-      });
-    }
-    throw error;
-  }
+function isSuperwallOwnerNotifyEvent(
+  name: string,
+): name is SuperwallOwnerNotifyEventName {
+  return Object.prototype.hasOwnProperty.call(SUPERWALL_OWNER_NOTIFY_EVENTS, name);
 }
 
 function stripeOwnerEventType(
-  type: string,
+  type: StripeOwnerNotifyEventName,
   object: Record<string, unknown> | undefined,
   subscription: StripeSubscriptionLike | undefined,
   previousAttributes: Record<string, unknown> | undefined,
@@ -514,10 +350,6 @@ function stripeOwnerEventType(
   if (type === 'customer.subscription.updated') {
     const cancelAtPeriodEnd = subscription?.cancel_at_period_end === true;
     if (cancelAtPeriodEnd && previousAttributes?.cancel_at_period_end === false) {
-      return 'canceled';
-    }
-    const status = optionalString(subscription?.status)?.toLowerCase();
-    if (status === 'canceled' || status === 'unpaid' || status === 'incomplete_expired') {
       return 'canceled';
     }
     return undefined;
@@ -641,7 +473,7 @@ function subscriptionPrice(
 }
 
 function superwallOwnerEventType(
-  name: string,
+  name: SuperwallOwnerNotifyEventName,
   data: unknown,
 ): OwnerNotifyEventType | undefined {
   if (name === 'initial_purchase') {
@@ -776,57 +608,6 @@ function formatOwnerNotifyPrice(
     return currency ? `${amount} ${currency}` : amount;
   }
   return currency ?? 'unknown';
-}
-
-async function getSsmParameter(name: string): Promise<string | undefined> {
-  try {
-    const result = await ssm.send(
-      new GetParameterCommand({ Name: name, WithDecryption: true }),
-    );
-    return result.Parameter?.Value?.trim() || undefined;
-  } catch (error) {
-    if (isSsmMissing(error)) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-async function sendSesEmail(input: {
-  sender: string;
-  recipient: string;
-  subject: string;
-  text: string;
-  html: string;
-}): Promise<void> {
-  await ses.send(
-    new SendEmailCommand({
-      Source: input.sender,
-      Destination: { ToAddresses: [input.recipient] },
-      Message: {
-        Subject: { Data: input.subject, Charset: 'UTF-8' },
-        Body: {
-          Text: { Data: input.text, Charset: 'UTF-8' },
-          Html: { Data: input.html, Charset: 'UTF-8' },
-        },
-      },
-    }),
-  );
-}
-
-function isSsmMissing(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const name = (error as { name?: unknown }).name;
-  return (
-    name === 'ParameterNotFound' ||
-    name === 'ParameterNotFoundException'
-  );
-}
-
-function isNotifyEmail(value: string | undefined): value is string {
-  return Boolean(value && EMAIL_ADDRESS.test(value));
 }
 
 function isOwnerNotifyEventType(value: unknown): value is OwnerNotifyEventType {

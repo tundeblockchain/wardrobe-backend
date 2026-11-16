@@ -901,7 +901,7 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
         name,
         productId: 'premium_monthly',
         originalAppUserId: deriveSuperwallAppUserId(OWNER_ID),
-        userAttributes: { firebaseUid: OWNER_ID, email: 'ios-user@example.com' },
+        userAttributes: { firebaseUid: OWNER_ID, email: 'owner@example.com' },
         store: 'APP_STORE',
         transactionId: '700002054157982',
         originalTransactionId: '700002050981465',
@@ -932,7 +932,7 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
         platform: 'ios',
         provider: 'superwall',
         providerEventId: 'evt_initial_purchase_1',
-        userEmail: 'ios-user@example.com',
+        userEmail: 'owner@example.com',
         userId: OWNER_ID,
       }),
     );

@@ -146,8 +146,9 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(actionsFor(template, 'StripeWebhookFn', 'ses:')).toEqual([]);
     expect(actionsFor(template, 'EntitlementsWebhookFn', 'ses:')).toEqual([]);
     expect(actionsFor(template, 'BillingFn', 'ses:')).toEqual([]);
-    expect(actionsFor(template, 'OwnerNotifyFn', 'ses:')).toEqual(
-      expect.arrayContaining(['ses:SendEmail', 'ses:SendRawEmail']),
+    expect(actionsFor(template, 'OwnerNotifyFn', 'ses:')).toEqual(['ses:SendEmail']);
+    expect(actionsFor(template, 'OwnerNotifyFn', 'ses:')).not.toEqual(
+      expect.arrayContaining(['ses:SendRawEmail']),
     );
     expect(actionsFor(template, 'OwnerNotifyFn', 'ssm:')).toEqual(
       expect.arrayContaining(['ssm:GetParameter', 'ssm:GetParameters']),
@@ -160,7 +161,7 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(notifyTimeout).toBe(OWNER_NOTIFY_LAMBDA_TIMEOUT_SECONDS);
   });
 
-  test('SES is scoped to identities and SSM is scoped to owner-notify params', () => {
+  test('SES is scoped to the sender identity ARN and SSM is scoped to owner-notify params', () => {
     const policies = Object.values(
       template.findResources('AWS::IAM::Policy'),
     ) as PolicyResource[];
@@ -168,8 +169,14 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
       JSON.stringify(policy).includes('OwnerNotifyFn'),
     );
     const serialized = JSON.stringify(ownerPolicies);
-    expect(serialized).toContain('ses:');
-    expect(serialized).toContain(':identity/*');
+    expect(serialized).toContain('ses:SendEmail');
+    expect(serialized).not.toContain('ses:SendRawEmail');
+    expect(serialized).not.toContain(':identity/*');
+    expect(serialized).toContain(':identity/');
+    expect(serialized).toMatch(
+      /SsmParameterValue.*ownernotifysender.*Parameter/,
+    );
+    expect(serialized).toContain('/wardrobe/dev/owner-notify/sender');
     expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/recipient');
     expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/sender');
     expect(serialized).toContain('NOTIFY#*');
