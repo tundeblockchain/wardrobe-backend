@@ -182,6 +182,10 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(serialized).not.toContain('ses:');
     expect(serialized).not.toContain('ses:SendEmail');
     expect(serialized).not.toContain(':identity/');
+    const stackJson = JSON.stringify(template.toJSON());
+    expect(stackJson).not.toMatch(/"ses:/);
+    expect(stackJson).not.toContain('ses:SendEmail');
+    expect(template.findResources('AWS::SSM::Parameter')).toEqual({});
     expect(serialized).toContain('ResendSecret');
     expect(serialized).toContain('SupportMailSecret');
     expect(serialized).toContain('OwnerNotifyExistingSecretRead');
