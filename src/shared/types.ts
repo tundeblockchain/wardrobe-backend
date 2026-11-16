@@ -283,6 +283,9 @@ export interface RenderItemJob {
   renderId?: string;
 }
 
+/** WARDROBE-273 — owner subscription email (inline Resend from webhooks). */
+export const OWNER_NOTIFY_JOB = 'OWNER_NOTIFY' as const;
+
 /** WARDROBE-253 — async wish Virtual Try On / render job. */
 export const RENDER_WISH_JOB = 'RENDER_WISH' as const;
 

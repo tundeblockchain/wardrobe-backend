@@ -14,6 +14,15 @@ import {
   sendConversionEvent,
 } from '../../shared/conversion-send';
 import { Errors } from '../../shared/errors';
+import {
+  mapStripeOwnerNotify,
+  ownerNotifyFailureFields,
+  OwnerNotifyMessage,
+} from '../../shared/owner-notify';
+import {
+  notifyOwnerBestEffort,
+  type OwnerNotifySendDeps,
+} from '../../shared/owner-notify-send';
 import { errorResponse, json } from '../../shared/http';
 import { logger } from '../../shared/logger';
 import {
@@ -57,6 +66,8 @@ export interface StripeWebhookHandlerDeps extends StripeWebhookApplyDeps {
   stripeConfigDeps?: StripeConfigDeps;
   trackConversion?: (event: ConversionEvent | undefined) => Promise<void>;
   conversionSendDeps?: ConversionSendDeps;
+  notifyOwner?: (message: OwnerNotifyMessage) => Promise<void>;
+  ownerNotifyDeps?: OwnerNotifySendDeps;
 }
 
 /**
@@ -195,6 +206,26 @@ export async function handleStripeWebhook(
         nowMs: deps.nowMs,
       });
 
+      if (result.status === 'applied' || result.status === 'cleared') {
+        await notifyStripeOwner({
+          type: eventType,
+          eventId,
+          created:
+            typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
+          object: asRecord(stripeEvent.data?.object),
+          previousAttributes: asRecord(
+            (stripeEvent.data as { previous_attributes?: unknown } | undefined)
+              ?.previous_attributes,
+          ),
+          subscription,
+          userId,
+          lookupKeys: config.lookupKeys,
+          priceIds: config.priceIds,
+          deps,
+          log,
+        });
+      }
+
       await trackStripeConversion({
         type: eventType,
         object: asRecord(stripeEvent.data?.object),
@@ -219,6 +250,44 @@ export async function handleStripeWebhook(
     }
   } catch (error) {
     return errorResponse(error);
+  }
+}
+
+async function notifyStripeOwner(options: {
+  type: string;
+  eventId: string;
+  created?: number;
+  object?: Record<string, unknown>;
+  previousAttributes?: Record<string, unknown>;
+  subscription?: StripeSubscriptionLike;
+  userId?: string;
+  lookupKeys: StripeRuntimeConfig['lookupKeys'];
+  priceIds: StripeRuntimeConfig['priceIds'];
+  deps: StripeWebhookHandlerDeps;
+  log: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+}): Promise<void> {
+  try {
+    const message = mapStripeOwnerNotify({
+      type: options.type,
+      eventId: options.eventId,
+      created: options.created,
+      object: options.object,
+      previousAttributes: options.previousAttributes,
+      subscription: options.subscription,
+      userId: options.userId,
+      lookupKeys: options.lookupKeys,
+      priceIds: options.priceIds,
+    });
+    await notifyOwnerBestEffort(message, {
+      ...options.deps.ownerNotifyDeps,
+      notifyOwner: options.deps.notifyOwner,
+      log: options.log,
+    });
+  } catch (error) {
+    options.log.error(
+      'Owner notify failed',
+      ownerNotifyFailureFields(options.eventId, error),
+    );
   }
 }
 

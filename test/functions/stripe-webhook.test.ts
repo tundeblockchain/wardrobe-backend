@@ -1170,3 +1170,373 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
     expect(serialized).not.toContain(UID);
   });
 });
+
+describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
+  const retrieve = jest.fn();
+  const customersRetrieve = jest.fn();
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  const notifyOwner = jest.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPutItem.mockResolvedValue(undefined);
+    mockPutItemIfNotExists.mockResolvedValue(true);
+    mockGetItem.mockResolvedValue({
+      entityType: 'STRIPE_CUSTOMER',
+      userId: UID,
+    });
+    mockQueryByPk.mockResolvedValue([]);
+    mockDeleteItem.mockResolvedValue(undefined);
+    retrieve.mockResolvedValue(subscription());
+    customersRetrieve.mockResolvedValue({
+      id: CUS_ID,
+      email: 'owner@example.com',
+      metadata: { uid: UID },
+    });
+    notifyOwner.mockResolvedValue(undefined);
+  });
+
+  function deps() {
+    return {
+      loadConfig: async () => stripeConfig(),
+      getStripeClient: async () => ({
+        subscriptions: { retrieve },
+        customers: { retrieve: customersRetrieve },
+      }),
+      log,
+      notifyOwner,
+      trackConversion: async () => undefined,
+    };
+  }
+
+  it('sends subscribed for checkout.session.completed without changing the webhook body', async () => {
+    retrieve.mockResolvedValue(
+      subscription({
+        customer: { id: CUS_ID, email: 'owner@example.com', metadata: { uid: UID } },
+      }),
+    );
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_test_paid',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          customer: CUS_ID,
+          amount_total: 1500,
+          currency: 'gbp',
+          customer_details: { email: 'owner@example.com' },
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({
+        status: 'applied',
+        tier: 'premium',
+        eventId: EVENT_ID,
+      }),
+    );
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'subscribed',
+        platform: 'web',
+        provider: 'stripe',
+        providerEventId: EVENT_ID,
+        userEmail: 'owner@example.com',
+        userId: UID,
+      }),
+    );
+  });
+
+  it('sends canceled when cancel_at_period_end flips to true', async () => {
+    retrieve.mockResolvedValue(
+      subscription({ cancel_at_period_end: true, status: 'active' }),
+    );
+    const { payload, signature } = signedPayload({
+      id: EVENT_ID,
+      object: 'event',
+      type: 'customer.subscription.updated',
+      created: 1_717_000_000,
+      data: {
+        object: {
+          id: SUB_ID,
+          object: 'subscription',
+          status: 'active',
+          customer: CUS_ID,
+          cancel_at_period_end: true,
+          metadata: { uid: UID },
+        },
+        previous_attributes: { cancel_at_period_end: false },
+      },
+    });
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'canceled',
+        providerEventId: EVENT_ID,
+        platform: 'web',
+      }),
+    );
+  });
+
+  it('keeps the webhook 200 when owner notify throws', async () => {
+    notifyOwner.mockRejectedValue(new Error('Resend down'));
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify failed', {
+      providerEventId: EVENT_ID,
+      error: 'Error',
+    });
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('owner@example.com');
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('placeholder');
+  });
+
+  it('does not send when the Stripe signature is invalid', async () => {
+    const { payload } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(
+        webhookEvent({ payload, signature: 't=1,v1=notavalidsignature' }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(400);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send on a duplicate Stripe event', async () => {
+    mockPutItemIfNotExists.mockResolvedValueOnce(false);
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ status: 'duplicate', eventId: EVENT_ID });
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send when the paid-tier write fails', async () => {
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), {
+        ...deps(),
+        setPaidTierStatus: async () => {
+          throw new Error('dynamo down');
+        },
+      }),
+    );
+    expect(result.statusCode).toBe(500);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send on unmapped Stripe types and still returns 200', async () => {
+    retrieve.mockResolvedValue(
+      subscription({ cancel_at_period_end: false, status: 'active' }),
+    );
+    const { payload, signature } = signedPayload({
+      id: EVENT_ID,
+      object: 'event',
+      type: 'customer.subscription.updated',
+      created: 1_717_000_000,
+      data: {
+        object: {
+          id: SUB_ID,
+          object: 'subscription',
+          status: 'active',
+          customer: CUS_ID,
+          cancel_at_period_end: false,
+          metadata: { uid: UID },
+        },
+        previous_attributes: { current_period_end: 1 },
+      },
+    });
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  function hangingHttp() {
+    return jest.fn().mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const abort = () => {
+          reject(
+            Object.assign(new Error('The operation was aborted'), {
+              name: 'AbortError',
+            }),
+          );
+        };
+        if (init?.signal?.aborted) {
+          abort();
+          return;
+        }
+        init?.signal?.addEventListener('abort', abort, { once: true });
+      });
+    });
+  }
+
+  function resendHttp(status = 200) {
+    return jest.fn().mockResolvedValue({
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => JSON.stringify({ id: 'email_test' }),
+    });
+  }
+
+  function inlineDeps(http: jest.Mock, extra: Record<string, unknown> = {}) {
+    return {
+      loadConfig: async () => stripeConfig(),
+      getStripeClient: async () => ({
+        subscriptions: { retrieve },
+        customers: { retrieve: customersRetrieve },
+      }),
+      log,
+      trackConversion: async () => undefined,
+      ownerNotifyDeps: {
+        env: {
+          OWNER_NOTIFY_RECIPIENT: 'owner@example.com',
+          SUPPORT_FROM_EMAIL: 'sender@example.com',
+          RESEND_API_KEY: 'placeholder',
+        },
+        http,
+        timeoutMs: 50,
+        log,
+        ...extra,
+      },
+    };
+  }
+
+  it('POSTs Resend with Idempotency-Key equal to the event ID', async () => {
+    const http = resendHttp();
+    retrieve.mockResolvedValue(
+      subscription({
+        customer: { id: CUS_ID, email: 'owner@example.com', metadata: { uid: UID } },
+      }),
+    );
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_test_paid',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          customer: CUS_ID,
+          amount_total: 1500,
+          currency: 'gbp',
+          customer_details: { email: 'owner@example.com' },
+        },
+      }),
+    );
+    const expectedBody = {
+      status: 'applied',
+      tier: 'premium',
+      eventId: EVENT_ID,
+    };
+    const result = asResult(
+      await handleStripeWebhook(
+        webhookEvent({ payload, signature }),
+        inlineDeps(http),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(expect.objectContaining(expectedBody));
+    expect(http).toHaveBeenCalledTimes(1);
+    expect(http.mock.calls[0][1].headers['Idempotency-Key']).toBe(EVENT_ID);
+    expect(http.mock.calls[0][1].headers.Authorization).toMatch(/^Bearer /);
+  });
+
+  it('keeps status 200 and the same body when Resend fails', async () => {
+    const http = resendHttp(500);
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(
+        webhookEvent({ payload, signature }),
+        inlineDeps(http),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+    );
+    expect(http).toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: EVENT_ID,
+      error: 'ResendHttpError',
+      status: 500,
+    });
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain('owner@example.com');
+    expect(serialized).not.toContain('placeholder');
+  });
+
+  it('keeps status 200 and the same body when Resend times out', async () => {
+    const http = hangingHttp();
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(
+        webhookEvent({ payload, signature }),
+        inlineDeps(http, { timeoutMs: 20 }),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: EVENT_ID,
+      error: 'Timeout',
+    });
+  });
+
+  it('skips the send when recipient config is missing and still returns 200', async () => {
+    const http = resendHttp();
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(
+        webhookEvent({ payload, signature }),
+        inlineDeps(http, { env: {} }),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+    );
+    expect(http).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Owner notify skipped; sender or recipient is not configured',
+    );
+  });
+});

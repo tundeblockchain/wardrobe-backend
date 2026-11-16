@@ -374,6 +374,8 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'AiProfilesFn',
       'GenericModelSeedFn',
       'SharesFn',
+      'StripeWebhookFn',
+      'EntitlementsWebhookFn',
     ]) {
       expect(sqsActionsFor(fnId)).toEqual([]);
     }

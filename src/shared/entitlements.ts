@@ -91,6 +91,8 @@ export interface SuperwallEventData {
 
 export interface SuperwallWebhookEvent {
   type?: unknown;
+  /** Unix ms (or seconds) on the Superwall envelope, when present. */
+  timestamp?: unknown;
   data?: SuperwallEventData;
 }
 

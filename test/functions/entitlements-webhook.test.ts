@@ -855,3 +855,339 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
     expect(log.error).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
+  const loadConfig = jest.fn();
+  const loadStored = jest.fn();
+  const save = jest.fn();
+  const loadTransactionOwner = jest.fn();
+  const bindOwner = jest.fn();
+  const notifyOwner = jest.fn().mockResolvedValue(undefined);
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    loadConfig.mockResolvedValue({
+      webhookSecret: SECRET,
+      productTiers: {},
+    });
+    loadStored.mockResolvedValue(undefined);
+    save.mockResolvedValue(undefined);
+    loadTransactionOwner.mockResolvedValue(undefined);
+    bindOwner.mockResolvedValue(true);
+    notifyOwner.mockResolvedValue(undefined);
+  });
+
+  function deps() {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+      loadTrackingConsent: async () => false,
+      notifyOwner,
+      log,
+    };
+  }
+
+  function payload(name: string, extra: Record<string, unknown> = {}) {
+    return JSON.stringify({
+      object: 'event',
+      type: name,
+      data: {
+        id: `evt_${name}_1`,
+        name,
+        productId: 'premium_monthly',
+        originalAppUserId: deriveSuperwallAppUserId(OWNER_ID),
+        userAttributes: { firebaseUid: OWNER_ID, email: 'owner@example.com' },
+        store: 'APP_STORE',
+        transactionId: '700002054157982',
+        originalTransactionId: '700002050981465',
+        periodType: 'NORMAL',
+        price: 9.99,
+        priceInPurchasedCurrency: 7.99,
+        currencyCode: 'GBP',
+        purchasedAt: 1_717_000_000_000,
+        ...extra,
+      },
+    });
+  }
+
+  it('sends subscribed after initial_purchase without changing the webhook body', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(webhookEvent({ payload: payload('initial_purchase') }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'subscribed',
+        platform: 'ios',
+        provider: 'superwall',
+        providerEventId: 'evt_initial_purchase_1',
+        userEmail: 'owner@example.com',
+        userId: OWNER_ID,
+      }),
+    );
+  });
+
+  it('sends canceled and expired Superwall events', async () => {
+    await handleSuperwallWebhook(
+      webhookEvent({ payload: payload('cancellation') }),
+      deps(),
+    );
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'canceled', providerEventId: 'evt_cancellation_1' }),
+    );
+
+    notifyOwner.mockClear();
+    await handleSuperwallWebhook(
+      webhookEvent({ payload: payload('expiration') }),
+      deps(),
+    );
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'expired', providerEventId: 'evt_expiration_1' }),
+    );
+  });
+
+  it('does not notify on renewal and still returns 200', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('renewal') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('keeps the webhook 200 when owner notify throws', async () => {
+    notifyOwner.mockRejectedValue(new Error('Resend down'));
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalledWith('Owner notify failed', {
+      providerEventId: 'evt_initial_purchase_1',
+      error: 'Error',
+    });
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('owner@example.com');
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('placeholder');
+  });
+
+  it('does not send when the Superwall signature is invalid', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: payload('initial_purchase'),
+          signature: 'v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(403);
+    expect(save).not.toHaveBeenCalled();
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send when entitlement persist fails', async () => {
+    save.mockRejectedValue(new Error('dynamo down'));
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(500);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send on a duplicate Superwall event', async () => {
+    loadStored.mockResolvedValue({
+      userId: OWNER_ID,
+      tier: 'PREMIUM',
+      status: 'ACTIVE',
+      lastEventId: 'evt_initial_purchase_1',
+      createdAt: '2026-09-16T00:00:00.000Z',
+      updatedAt: '2026-09-16T00:00:00.000Z',
+    });
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'duplicate',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  function hangingHttp() {
+    return jest.fn().mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const abort = () => {
+          reject(
+            Object.assign(new Error('The operation was aborted'), {
+              name: 'AbortError',
+            }),
+          );
+        };
+        if (init?.signal?.aborted) {
+          abort();
+          return;
+        }
+        init?.signal?.addEventListener('abort', abort, { once: true });
+      });
+    });
+  }
+
+  function resendHttp(status = 200) {
+    return jest.fn().mockResolvedValue({
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => JSON.stringify({ id: 'email_test' }),
+    });
+  }
+
+  function inlineDeps(http: jest.Mock, extra: Record<string, unknown> = {}) {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+      loadTrackingConsent: async () => false,
+      log,
+      ownerNotifyDeps: {
+        env: {
+          OWNER_NOTIFY_RECIPIENT: 'owner@example.com',
+          SUPPORT_FROM_EMAIL: 'sender@example.com',
+          RESEND_API_KEY: 'placeholder',
+        },
+        http,
+        timeoutMs: 50,
+        log,
+        ...extra,
+      },
+    };
+  }
+
+  it('POSTs Resend with Idempotency-Key equal to the Superwall event ID', async () => {
+    const http = resendHttp();
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        inlineDeps(http),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(http).toHaveBeenCalledTimes(1);
+    expect(http.mock.calls[0][1].headers['Idempotency-Key']).toBe(
+      'evt_initial_purchase_1',
+    );
+    expect(http.mock.calls[0][1].headers.Authorization).toMatch(/^Bearer /);
+  });
+
+  it('keeps status 200 and the same body when Resend fails', async () => {
+    const http = resendHttp(500);
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        inlineDeps(http),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: 'evt_initial_purchase_1',
+      error: 'ResendHttpError',
+      status: 500,
+    });
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain('owner@example.com');
+    expect(serialized).not.toContain('placeholder');
+  });
+
+  it('keeps status 200 and the same body when Resend times out', async () => {
+    const http = hangingHttp();
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        inlineDeps(http, { timeoutMs: 20 }),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: 'evt_initial_purchase_1',
+      error: 'Timeout',
+    });
+  });
+
+  it('skips the send when recipient config is missing and still returns 200', async () => {
+    const http = resendHttp();
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        inlineDeps(http, { env: {} }),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(http).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Owner notify skipped; sender or recipient is not configured',
+    );
+  });
+
+  it('does not send on unmapped Superwall types', async () => {
+    const http = resendHttp();
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('renewal') }),
+        inlineDeps(http),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(http).not.toHaveBeenCalled();
+  });
+});

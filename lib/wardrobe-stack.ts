@@ -27,6 +27,7 @@ import {
   grantConversionEventSecretRead,
 } from './conversion-events';
 import { addEntitlements } from './entitlements';
+import { addOwnerNotify } from './owner-notify';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
 import { resolveUploadAllowedOrigins } from './upload-cors';
@@ -1239,7 +1240,7 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // Isolated WARDROBE-38 module — see lib/support-mail.ts.
-    addSupportMail(this, {
+    const supportMail = addSupportMail(this, {
       stage,
       httpApi,
       authorizer: firebaseAuthorizer,
@@ -1290,6 +1291,16 @@ export class WardrobeStack extends cdk.Stack {
     const conversion = addConversionEventSecrets(this, { stage, removalPolicy });
     grantConversionEventSecretRead(stripeWebhookFn, conversion);
     grantConversionEventSecretRead(entitlements.webhookFn, conversion);
+
+    // WARDROBE-273: owner subscription emails, sent inline from the Stripe
+    // and Superwall webhooks via the existing WARDROBE-38 Resend setup.
+    addOwnerNotify(this, {
+      stage,
+      stripeWebhookFn,
+      entitlementsWebhookFn: entitlements.webhookFn,
+      resendSecret: supportMail.resendSecret,
+      supportMailSecret: supportMail.supportMailSecret,
+    });
 
     new cdk.CfnOutput(this, 'StripeWebhookUrl', {
       value: `${httpApi.apiEndpoint}/billing/stripe-webhook`,
