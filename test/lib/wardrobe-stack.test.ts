@@ -374,12 +374,14 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       'AiProfilesFn',
       'GenericModelSeedFn',
       'SharesFn',
+      'StripeWebhookFn',
+      'EntitlementsWebhookFn',
     ]) {
       expect(sqsActionsFor(fnId)).toEqual([]);
     }
 
     const eventSources = template.findResources('AWS::Lambda::EventSourceMapping');
-    expect(Object.keys(eventSources).length).toBe(4);
+    expect(Object.keys(eventSources).length).toBe(3);
   });
 
   test('ProcessingFn consumes the item-processing DLQ so exhausted jobs become FAILED', () => {

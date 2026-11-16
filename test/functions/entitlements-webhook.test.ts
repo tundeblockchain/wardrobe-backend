@@ -989,6 +989,25 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
     );
   });
 
+  function hangingHttp() {
+    return jest.fn().mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const abort = () => {
+          reject(
+            Object.assign(new Error('The operation was aborted'), {
+              name: 'AbortError',
+            }),
+          );
+        };
+        if (init?.signal?.aborted) {
+          abort();
+          return;
+        }
+        init?.signal?.addEventListener('abort', abort, { once: true });
+      });
+    });
+  }
+
   function resendHttp(status = 200) {
     return jest.fn().mockResolvedValue({
       ok: status >= 200 && status < 300,
@@ -1062,7 +1081,7 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
   });
 
   it('keeps status 200 and the same body when Resend times out', async () => {
-    const http = jest.fn().mockImplementation(() => new Promise(() => {}));
+    const http = hangingHttp();
     const result = asResult(
       await handleSuperwallWebhook(
         webhookEvent({ payload: payload('initial_purchase') }),

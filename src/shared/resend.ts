@@ -206,6 +206,7 @@ function fetchWithOptionalTimeout(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
   if (init.signal) {
     if (init.signal.aborted) {
       controller.abort();

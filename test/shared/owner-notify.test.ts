@@ -542,6 +542,25 @@ describe('sendOwnerNotify', () => {
     });
   }
 
+  function hangingHttp() {
+    return jest.fn().mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const abort = () => {
+          reject(
+            Object.assign(new Error('The operation was aborted'), {
+              name: 'AbortError',
+            }),
+          );
+        };
+        if (init?.signal?.aborted) {
+          abort();
+          return;
+        }
+        init?.signal?.addEventListener('abort', abort, { once: true });
+      });
+    });
+  }
+
   it('sends via mocked HTTP on success', async () => {
     const http = okHttp();
     await sendOwnerNotify(message(), {
@@ -588,7 +607,7 @@ describe('sendOwnerNotify', () => {
   });
 
   it('times out hanging HTTP without throwing', async () => {
-    const http = jest.fn().mockImplementation(() => new Promise(() => {}));
+    const http = hangingHttp();
     await expect(
       sendOwnerNotify(message(), {
         loadConfig: async () => ({
