@@ -1,6 +1,12 @@
+import {
+  GetSecretValueCommand,
+  SecretsManagerClient,
+} from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { logger } from './logger';
 import {
+  OWNER_NOTIFY_AWS_MAX_ATTEMPTS,
+  OWNER_NOTIFY_AWS_REQUEST_TIMEOUT_MS,
   OWNER_NOTIFY_RECIPIENT_ENV,
   OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
   OWNER_NOTIFY_SEND_TIMEOUT_MS,
@@ -15,9 +21,11 @@ import {
   type OwnerNotifyMessage,
 } from './owner-notify';
 import { sendEmail, type FetchLike } from './resend';
-import { getSecretString, parseJsonObjectOrString } from './secrets';
+import { parseJsonObjectOrString } from './secrets';
 
 export {
+  OWNER_NOTIFY_AWS_MAX_ATTEMPTS,
+  OWNER_NOTIFY_AWS_REQUEST_TIMEOUT_MS,
   OWNER_NOTIFY_RECIPIENT_ENV,
   OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
   OWNER_NOTIFY_SEND_TIMEOUT_MS,
@@ -25,7 +33,21 @@ export {
   RESEND_SECRET_ARN_ENV,
 } from './owner-notify-names';
 
-const ssm = new SSMClient({});
+/**
+ * Short timeout, no retries: config reads must not eat the webhook budget
+ * on a cold start. Values are cached after the first successful read.
+ */
+export const OWNER_NOTIFY_AWS_CLIENT_CONFIG = {
+  maxAttempts: OWNER_NOTIFY_AWS_MAX_ATTEMPTS,
+  requestHandler: {
+    connectionTimeout: OWNER_NOTIFY_AWS_REQUEST_TIMEOUT_MS,
+    requestTimeout: OWNER_NOTIFY_AWS_REQUEST_TIMEOUT_MS,
+    throwOnRequestTimeout: true,
+  },
+};
+
+const ssm = new SSMClient(OWNER_NOTIFY_AWS_CLIENT_CONFIG);
+const secrets = new SecretsManagerClient(OWNER_NOTIFY_AWS_CLIENT_CONFIG);
 
 export interface OwnerNotifyConfig {
   recipient: string;
@@ -159,7 +181,7 @@ export async function loadOwnerNotifyApiKey(
     return undefined;
   }
 
-  const getSecret = deps.getSecret ?? getSecretString;
+  const getSecret = deps.getSecret ?? getOwnerNotifySecretString;
   try {
     const apiKey = parseResendApiKey(await getSecret(secretId));
     if (!apiKey) {
@@ -263,6 +285,16 @@ async function getSsmParameter(name: string): Promise<string | undefined> {
   );
   const value = result.Parameter?.Value;
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+async function getOwnerNotifySecretString(
+  secretId: string,
+): Promise<string | undefined> {
+  const result = await secrets.send(
+    new GetSecretValueCommand({ SecretId: secretId }),
+  );
+  const value = result.SecretString?.trim();
+  return value || undefined;
 }
 
 function optionalEmail(value: string | undefined): string | undefined {

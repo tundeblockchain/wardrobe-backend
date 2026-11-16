@@ -1,5 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
+import * as fs from 'fs';
+import * as path from 'path';
 import { WardrobeStack } from '../../lib/wardrobe-stack';
 import { ownerNotifyRecipientParamName } from '../../src/shared/owner-notify-names';
 
@@ -130,6 +132,11 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(stackJson).not.toContain('wardrobe-owner-notify-dlq-dev');
     expect(stackJson).not.toContain('OwnerNotifyQueue');
     expect(stackJson).not.toContain('OwnerNotifyDlq');
+    const stackSource = fs.readFileSync(
+      path.join(__dirname, '../../lib/wardrobe-stack.ts'),
+      'utf8',
+    );
+    expect(stackSource).not.toContain('NOTIFY#');
   });
 
   test('wires the recipient SSM param and existing Resend secret onto webhook Lambdas', () => {

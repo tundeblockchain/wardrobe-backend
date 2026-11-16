@@ -60,7 +60,6 @@ export class WardrobeStack extends cdk.Stack {
     //                            / EVENT#{eventId} | DEVICE#{deviceId} | WISH#{wishId}
     // STRIPE_EVENT#{eventId}     / PROCESSED (ttl)
     // STRIPE_CUSTOMER#{cus_id}   / UID
-    // NOTIFY#{provider}#{eventId} / SENT (ttl; WARDROBE-273)
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
     //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
     // SHARE#{token}              / SHARE

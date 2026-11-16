@@ -19,6 +19,9 @@ export const OWNER_NOTIFY_RECIPIENT_PARAM_ENV = 'OWNER_NOTIFY_RECIPIENT_PARAM';
 
 /** Best-effort inline send budget so conversion still fits in the webhook timeout. */
 export const OWNER_NOTIFY_SEND_TIMEOUT_MS = 3_000;
+/** Cold-start SSM / Secrets reads on the webhook path; cached after the first hit. */
+export const OWNER_NOTIFY_AWS_REQUEST_TIMEOUT_MS = 1_000;
+export const OWNER_NOTIFY_AWS_MAX_ATTEMPTS = 1;
 
 export function ownerNotifyRecipientParamName(stage: string): string {
   return `/wardrobe/${stage}/owner-notify/recipient`;

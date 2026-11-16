@@ -19,6 +19,9 @@ import {
   loadOwnerNotifyApiKey,
   loadOwnerNotifyConfig,
   notifyOwnerBestEffort,
+  OWNER_NOTIFY_AWS_CLIENT_CONFIG,
+  OWNER_NOTIFY_AWS_MAX_ATTEMPTS,
+  OWNER_NOTIFY_AWS_REQUEST_TIMEOUT_MS,
   OWNER_NOTIFY_RECIPIENT_ENV,
   OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
   OWNER_NOTIFY_SENDER_ENV,
@@ -715,6 +718,19 @@ describe('sendOwnerNotify', () => {
     );
   });
 
+  it('bounds SSM and Secrets Manager reads so a cold start cannot hang the webhook', () => {
+    expect(OWNER_NOTIFY_AWS_MAX_ATTEMPTS).toBe(1);
+    expect(OWNER_NOTIFY_AWS_REQUEST_TIMEOUT_MS).toBe(1_000);
+    expect(OWNER_NOTIFY_AWS_CLIENT_CONFIG).toEqual({
+      maxAttempts: 1,
+      requestHandler: {
+        connectionTimeout: 1_000,
+        requestTimeout: 1_000,
+        throwOnRequestTimeout: true,
+      },
+    });
+  });
+
   it('warns and skips when the recipient parameter is missing', async () => {
     const getParameter = jest.fn().mockResolvedValue(undefined);
     const config = await loadOwnerNotifyConfig({
@@ -729,6 +745,26 @@ describe('sendOwnerNotify', () => {
     expect(log.warn).toHaveBeenCalledWith(
       'Owner notify skipped; sender or recipient is missing or invalid',
     );
+  });
+
+  it('warns and skips when the recipient parameter read times out', async () => {
+    const getParameter = jest.fn().mockRejectedValue(
+      Object.assign(new Error('Timeout'), { name: 'TimeoutError' }),
+    );
+    const config = await loadOwnerNotifyConfig({
+      env: {
+        [OWNER_NOTIFY_RECIPIENT_PARAM_ENV]: '/wardrobe/dev/owner-notify/recipient',
+        [SUPPORT_FROM_EMAIL_ENV]: 'sender@example.com',
+      },
+      getParameter,
+      log,
+    });
+    expect(config).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Owner notify skipped; failed to read recipient parameter',
+      { error: 'TimeoutError' },
+    );
+    expect(JSON.stringify(log.warn.mock.calls)).not.toContain('owner@example.com');
   });
 
   it('warns and skips when env and SSM config are both missing', async () => {
