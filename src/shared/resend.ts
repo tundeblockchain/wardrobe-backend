@@ -28,6 +28,8 @@ export interface SendEmailInput {
   html?: string;
   replyTo?: string;
   idempotencyKey?: string;
+  /** Owner-notify passes ~3s. Support omits this and keeps the 8s default fetch. */
+  timeoutMs?: number;
 }
 
 export interface SendEmailResult {
@@ -49,7 +51,8 @@ export interface ReceivedEmail {
  * notify (WARDROBE-273). Tests inject `http` — never call the live API in CI.
  *
  * 429 / 5xx / timeout / network errors throw a retryable Error. Other 4xx
- * throw PermanentResendError so SQS can drop; support handlers still 500.
+ * throw PermanentResendError. Support handlers still 500; owner-notify
+ * catches everything and never changes the webhook response.
  */
 export function createResendClient(http: FetchLike = defaultResendFetch) {
   return {
@@ -94,11 +97,16 @@ export async function sendEmail(
 
   let response: { ok: boolean; status: number; text(): Promise<string> };
   try {
-    response = await http(`${RESEND_API_BASE}${RESEND_SEND_PATH}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    });
+    response = await fetchWithOptionalTimeout(
+      http,
+      `${RESEND_API_BASE}${RESEND_SEND_PATH}`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      },
+      input.timeoutMs,
+    );
   } catch (error) {
     if (isAbortError(error)) {
       throw new Error('Resend send timed out');
@@ -179,6 +187,53 @@ function parseSendResult(bodyText: string): SendEmailResult {
   } catch {
     return {};
   }
+}
+
+function fetchWithOptionalTimeout(
+  http: FetchLike,
+  url: string,
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+  },
+  timeoutMs?: number,
+): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return http(url, init);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (init.signal) {
+    if (init.signal.aborted) {
+      controller.abort();
+    } else {
+      init.signal.addEventListener('abort', () => controller.abort(), {
+        once: true,
+      });
+    }
+  }
+
+  const abortError = Object.assign(new Error('The operation was aborted'), {
+    name: 'AbortError',
+  });
+  const timeout = new Promise<never>((_, reject) => {
+    const onAbort = () => reject(abortError);
+    if (controller.signal.aborted) {
+      onAbort();
+      return;
+    }
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+  });
+
+  return Promise.race([
+    http(url, { ...init, signal: controller.signal }),
+    timeout,
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
 }
 
 function defaultResendFetch(

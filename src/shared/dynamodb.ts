@@ -119,13 +119,6 @@ export const keys = {
   stripeCustomerPk: (stripeCustomerId: string) =>
     `STRIPE_CUSTOMER#${stripeCustomerId}`,
   stripeCustomerSk: 'UID',
-  /**
-   * Owner-notify dedupe (WARDROBE-273). Conditional create + Dynamo TTL
-   * so Stripe / Superwall webhook retries do not double-email.
-   */
-  ownerNotifyPk: (provider: string, eventId: string) =>
-    `NOTIFY#${provider}#${eventId}`,
-  ownerNotifySk: 'SENT',
 };
 
 export async function putItem(item: DynamoItem): Promise<void> {

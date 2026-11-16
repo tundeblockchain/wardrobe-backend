@@ -99,7 +99,11 @@ describe('support mail stack wiring (WARDROBE-38)', () => {
 
     const supportFns = functions.filter((fn) => {
       const env = fn.Properties.Environment?.Variables;
-      return Boolean(env?.RESEND_SECRET_ARN) && !env?.OWNER_NOTIFY_QUEUE_URL;
+      return (
+        Boolean(env?.RESEND_SECRET_ARN) &&
+        Boolean(env?.SUPPORT_MAIL_SECRET_ARN) &&
+        !env?.OWNER_NOTIFY_RECIPIENT_PARAM
+      );
     });
     expect(supportFns.length).toBe(2);
     for (const fn of supportFns) {

@@ -29,12 +29,14 @@ import {
   verifySvixWebhookSignature,
 } from '../../shared/svix';
 import {
-  enqueueOwnerNotify,
   mapSuperwallOwnerNotify,
-  OwnerNotifyEnqueueDeps,
   OwnerNotifyMessage,
   safeErrorMessage,
 } from '../../shared/owner-notify';
+import {
+  notifyOwnerBestEffort,
+  type OwnerNotifySendDeps,
+} from '../../shared/owner-notify-send';
 import { loadSuperwallConfig, SuperwallConfig } from './config';
 
 export interface SuperwallWebhookDeps {
@@ -54,7 +56,7 @@ export interface SuperwallWebhookDeps {
   conversionSendDeps?: ConversionSendDeps;
   loadTrackingConsent?: (userId: string) => Promise<boolean>;
   notifyOwner?: (message: OwnerNotifyMessage) => Promise<void>;
-  ownerNotifyDeps?: OwnerNotifyEnqueueDeps;
+  ownerNotifyDeps?: OwnerNotifySendDeps;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
@@ -303,7 +305,7 @@ async function notifySuperwallOwner(
 ): Promise<void> {
   try {
     const message = mapSuperwallOwnerNotify(inbound, userId, deps.nowSeconds);
-    await enqueueOwnerNotify(message, {
+    await notifyOwnerBestEffort(message, {
       ...deps.ownerNotifyDeps,
       notifyOwner: deps.notifyOwner,
       log: deps.log,

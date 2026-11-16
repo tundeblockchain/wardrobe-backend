@@ -1293,17 +1293,14 @@ export class WardrobeStack extends cdk.Stack {
     grantConversionEventSecretRead(stripeWebhookFn, conversion);
     grantConversionEventSecretRead(entitlements.webhookFn, conversion);
 
-    // WARDROBE-273: owner subscription emails. Webhooks enqueue to SQS;
-    // OwnerNotifyFn reuses the WARDROBE-38 Resend + support-mail secrets.
+    // WARDROBE-273: owner subscription emails, sent inline from the Stripe
+    // and Superwall webhooks via the existing WARDROBE-38 Resend setup.
     addOwnerNotify(this, {
       stage,
-      table,
       stripeWebhookFn,
       entitlementsWebhookFn: entitlements.webhookFn,
       resendSecret: supportMail.resendSecret,
       supportMailSecret: supportMail.supportMailSecret,
-      commonLambdaProps,
-      removalPolicy,
     });
 
     new cdk.CfnOutput(this, 'StripeWebhookUrl', {

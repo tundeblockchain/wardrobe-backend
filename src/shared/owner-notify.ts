@@ -1,4 +1,3 @@
-import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import {
   superwallIsTrialStart,
   stripeMinorToMajor,
@@ -6,21 +5,12 @@ import {
 } from './conversion-events';
 import { SuperwallWebhookEvent, superwallEventName } from './entitlements';
 import { nowIso } from './ids';
-import { logger } from './logger';
-import {
-  OWNER_NOTIFY_QUEUE_URL_ENV,
-} from './owner-notify-names';
 import type { StripeLookupKeys, StripePriceIds } from './stripe-plans';
 import {
   paidTierFromStripeSubscription,
   type StripeSubscriptionLike,
 } from './stripe-webhook';
 import { OWNER_NOTIFY_JOB } from './types';
-
-export {
-  OWNER_NOTIFY_EVENT_TTL_SECONDS,
-  OWNER_NOTIFY_QUEUE_URL_ENV,
-} from './owner-notify-names';
 
 export type OwnerNotifyEventType =
   | 'subscribed'
@@ -32,7 +22,7 @@ export type OwnerNotifyPlatform = 'web' | 'ios' | 'android';
 export type OwnerNotifyProvider = 'stripe' | 'superwall';
 
 /**
- * Explicit Stripe webhook types that enqueue an owner email.
+ * Explicit Stripe webhook types that send an owner email.
  * Values are the default mapped event; helpers may refine trial vs paid
  * and cancel vs expiry from payload fields.
  */
@@ -46,7 +36,7 @@ export const STRIPE_OWNER_NOTIFY_EVENTS = {
 export type StripeOwnerNotifyEventName = keyof typeof STRIPE_OWNER_NOTIFY_EVENTS;
 
 /**
- * Explicit Superwall event names that enqueue an owner email.
+ * Explicit Superwall event names that send an owner email.
  * `initial_purchase` may refine to trial_started.
  */
 export const SUPERWALL_OWNER_NOTIFY_EVENTS = {
@@ -70,19 +60,6 @@ export interface OwnerNotifyMessage {
   provider: OwnerNotifyProvider;
   providerEventId: string;
 }
-
-export interface OwnerNotifyEnqueueDeps {
-  env?: NodeJS.ProcessEnv;
-  sqsSend?: (input: { QueueUrl: string; MessageBody: string }) => Promise<unknown>;
-  log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-  /**
-   * Test seam that replaces SQS send. Production webhooks never pass this;
-   * they enqueue and return. There is no inline send path.
-   */
-  notifyOwner?: (message: OwnerNotifyMessage) => Promise<void>;
-}
-
-const sqs = new SQSClient({});
 
 /**
  * Map a verified Stripe webhook onto an owner-notify payload.
@@ -257,58 +234,6 @@ export function parseOwnerNotifyMessage(
     provider,
     providerEventId,
   });
-}
-
-/**
- * Best-effort enqueue onto SQS. Never throws and never waits on Resend.
- * Missing queue URL logs a warning and returns so webhook tests and
- * undeployed stages stay quiet.
- */
-export async function enqueueOwnerNotify(
-  message: OwnerNotifyMessage | undefined,
-  deps: OwnerNotifyEnqueueDeps = {},
-): Promise<void> {
-  if (!message) {
-    return;
-  }
-  const log = deps.log ?? logger;
-  try {
-    if (deps.notifyOwner) {
-      await deps.notifyOwner(message);
-      return;
-    }
-    const env = deps.env ?? process.env;
-    const queueUrl = env[OWNER_NOTIFY_QUEUE_URL_ENV]?.trim();
-    if (!queueUrl) {
-      log.warn('Owner notify skipped; queue is not configured', {
-        provider: message.provider,
-        providerEventId: message.providerEventId,
-        eventType: message.eventType,
-      });
-      return;
-    }
-    const send =
-      deps.sqsSend ??
-      ((input: { QueueUrl: string; MessageBody: string }) =>
-        sqs.send(new SendMessageCommand(input)));
-    await send({
-      QueueUrl: queueUrl,
-      MessageBody: JSON.stringify(message),
-    });
-    log.info('Owner notify enqueued', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      eventType: message.eventType,
-      platform: message.platform,
-    });
-  } catch (error) {
-    log.error('Owner notify enqueue failed', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      eventType: message.eventType,
-      error: safeErrorMessage(error),
-    });
-  }
 }
 
 function isStripeOwnerNotifyEvent(

@@ -15,12 +15,14 @@ import {
 } from '../../shared/conversion-send';
 import { Errors } from '../../shared/errors';
 import {
-  enqueueOwnerNotify,
   mapStripeOwnerNotify,
-  OwnerNotifyEnqueueDeps,
   OwnerNotifyMessage,
   safeErrorMessage,
 } from '../../shared/owner-notify';
+import {
+  notifyOwnerBestEffort,
+  type OwnerNotifySendDeps,
+} from '../../shared/owner-notify-send';
 import { errorResponse, json } from '../../shared/http';
 import { logger } from '../../shared/logger';
 import {
@@ -65,7 +67,7 @@ export interface StripeWebhookHandlerDeps extends StripeWebhookApplyDeps {
   trackConversion?: (event: ConversionEvent | undefined) => Promise<void>;
   conversionSendDeps?: ConversionSendDeps;
   notifyOwner?: (message: OwnerNotifyMessage) => Promise<void>;
-  ownerNotifyDeps?: OwnerNotifyEnqueueDeps;
+  ownerNotifyDeps?: OwnerNotifySendDeps;
 }
 
 /**
@@ -321,7 +323,7 @@ async function notifyStripeOwner(options: {
       lookupKeys: options.lookupKeys,
       priceIds: options.priceIds,
     });
-    await enqueueOwnerNotify(message, {
+    await notifyOwnerBestEffort(message, {
       ...options.deps.ownerNotifyDeps,
       notifyOwner: options.deps.notifyOwner,
       log: options.log,
