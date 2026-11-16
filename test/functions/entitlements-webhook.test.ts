@@ -855,3 +855,137 @@ describe('Superwall conversion events (WARDROBE-249)', () => {
     expect(log.error).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
+  const loadConfig = jest.fn();
+  const loadStored = jest.fn();
+  const save = jest.fn();
+  const loadTransactionOwner = jest.fn();
+  const bindOwner = jest.fn();
+  const notifyOwner = jest.fn().mockResolvedValue(undefined);
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    loadConfig.mockResolvedValue({
+      webhookSecret: SECRET,
+      productTiers: {},
+    });
+    loadStored.mockResolvedValue(undefined);
+    save.mockResolvedValue(undefined);
+    loadTransactionOwner.mockResolvedValue(undefined);
+    bindOwner.mockResolvedValue(true);
+    notifyOwner.mockResolvedValue(undefined);
+  });
+
+  function deps() {
+    return {
+      loadConfig,
+      loadStored,
+      save,
+      loadTransactionOwner,
+      bindTransactionOwner: bindOwner,
+      nowSeconds: Number(TIMESTAMP),
+      loadTrackingConsent: async () => false,
+      notifyOwner,
+      log,
+    };
+  }
+
+  function payload(name: string, extra: Record<string, unknown> = {}) {
+    return JSON.stringify({
+      object: 'event',
+      type: name,
+      data: {
+        id: `evt_${name}_1`,
+        name,
+        productId: 'premium_monthly',
+        originalAppUserId: deriveSuperwallAppUserId(OWNER_ID),
+        userAttributes: { firebaseUid: OWNER_ID, email: 'ios-user@example.com' },
+        store: 'APP_STORE',
+        transactionId: '700002054157982',
+        originalTransactionId: '700002050981465',
+        periodType: 'NORMAL',
+        price: 9.99,
+        priceInPurchasedCurrency: 7.99,
+        currencyCode: 'GBP',
+        purchasedAt: 1_717_000_000_000,
+        ...extra,
+      },
+    });
+  }
+
+  it('enqueues subscribed after initial_purchase without changing the webhook body', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(webhookEvent({ payload: payload('initial_purchase') }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'subscribed',
+        platform: 'ios',
+        provider: 'superwall',
+        providerEventId: 'evt_initial_purchase_1',
+        userEmail: 'ios-user@example.com',
+        userId: OWNER_ID,
+      }),
+    );
+  });
+
+  it('enqueues canceled and expired Superwall events', async () => {
+    await handleSuperwallWebhook(
+      webhookEvent({ payload: payload('cancellation') }),
+      deps(),
+    );
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'canceled', providerEventId: 'evt_cancellation_1' }),
+    );
+
+    notifyOwner.mockClear();
+    await handleSuperwallWebhook(
+      webhookEvent({ payload: payload('expiration') }),
+      deps(),
+    );
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: 'expired', providerEventId: 'evt_expiration_1' }),
+    );
+  });
+
+  it('does not notify on renewal and still returns 200', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('renewal') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('keeps the webhook 200 when owner notify throws', async () => {
+    notifyOwner.mockRejectedValue(new Error('SQS down'));
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'applied',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalledWith(
+      'Owner notify enqueue failed',
+      expect.objectContaining({ providerEventId: 'evt_initial_purchase_1' }),
+    );
+  });
+});

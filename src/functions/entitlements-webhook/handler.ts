@@ -28,6 +28,12 @@ import {
   SvixWebhookHeaders,
   verifySvixWebhookSignature,
 } from '../../shared/svix';
+import {
+  enqueueOwnerNotify,
+  mapSuperwallOwnerNotify,
+  OwnerNotifyEnqueueDeps,
+  OwnerNotifyMessage,
+} from '../../shared/owner-notify';
 import { loadSuperwallConfig, SuperwallConfig } from './config';
 
 export interface SuperwallWebhookDeps {
@@ -46,6 +52,8 @@ export interface SuperwallWebhookDeps {
   trackConversion?: (event: ConversionEvent | undefined) => Promise<void>;
   conversionSendDeps?: ConversionSendDeps;
   loadTrackingConsent?: (userId: string) => Promise<boolean>;
+  notifyOwner?: (message: OwnerNotifyMessage) => Promise<void>;
+  ownerNotifyDeps?: OwnerNotifyEnqueueDeps;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
@@ -205,6 +213,7 @@ export async function handleSuperwallWebhook(
     }
 
     await trackSuperwallConversion(inbound, userId, deps);
+    await notifySuperwallOwner(inbound, userId, deps);
 
     return json(200, {
       status: skipped ? 'duplicate' : 'applied',
@@ -284,6 +293,26 @@ function stringOrUndefined(value: unknown): string | undefined {
 
 function numberOrUndefined(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+async function notifySuperwallOwner(
+  inbound: SuperwallWebhookEvent,
+  userId: string,
+  deps: SuperwallWebhookDeps,
+): Promise<void> {
+  try {
+    const message = mapSuperwallOwnerNotify(inbound, userId, deps.nowSeconds);
+    await enqueueOwnerNotify(message, {
+      ...deps.ownerNotifyDeps,
+      notifyOwner: deps.notifyOwner,
+      log: deps.log,
+    });
+  } catch (error) {
+    const log = deps.log ?? logger;
+    log.error('Owner notify failed', {
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+  }
 }
 
 async function trackSuperwallConversion(

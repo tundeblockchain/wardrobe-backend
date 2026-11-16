@@ -1170,3 +1170,143 @@ describe('POST /billing/stripe-webhook conversion events (WARDROBE-249)', () => 
     expect(serialized).not.toContain(UID);
   });
 });
+
+describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
+  const retrieve = jest.fn();
+  const customersRetrieve = jest.fn();
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  const notifyOwner = jest.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPutItem.mockResolvedValue(undefined);
+    mockPutItemIfNotExists.mockResolvedValue(true);
+    mockGetItem.mockResolvedValue({
+      entityType: 'STRIPE_CUSTOMER',
+      userId: UID,
+    });
+    mockQueryByPk.mockResolvedValue([]);
+    mockDeleteItem.mockResolvedValue(undefined);
+    retrieve.mockResolvedValue(subscription());
+    customersRetrieve.mockResolvedValue({
+      id: CUS_ID,
+      email: 'buyer@example.com',
+      metadata: { uid: UID },
+    });
+    notifyOwner.mockResolvedValue(undefined);
+  });
+
+  function deps() {
+    return {
+      loadConfig: async () => stripeConfig(),
+      getStripeClient: async () => ({
+        subscriptions: { retrieve },
+        customers: { retrieve: customersRetrieve },
+      }),
+      log,
+      notifyOwner,
+      trackConversion: async () => undefined,
+    };
+  }
+
+  it('enqueues subscribed for checkout.session.completed without changing the webhook body', async () => {
+    retrieve.mockResolvedValue(
+      subscription({
+        customer: { id: CUS_ID, email: 'buyer@example.com', metadata: { uid: UID } },
+      }),
+    );
+    const { payload, signature } = signedPayload(
+      stripeEventObject({
+        type: 'checkout.session.completed',
+        object: {
+          id: 'cs_test_paid',
+          object: 'checkout.session',
+          subscription: SUB_ID,
+          customer: CUS_ID,
+          amount_total: 1500,
+          currency: 'gbp',
+          customer_details: { email: 'buyer@example.com' },
+        },
+      }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({
+        status: 'applied',
+        tier: 'premium',
+        eventId: EVENT_ID,
+      }),
+    );
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'subscribed',
+        platform: 'web',
+        provider: 'stripe',
+        providerEventId: EVENT_ID,
+        userEmail: 'buyer@example.com',
+        userId: UID,
+      }),
+    );
+  });
+
+  it('enqueues canceled when cancel_at_period_end flips to true', async () => {
+    retrieve.mockResolvedValue(
+      subscription({ cancel_at_period_end: true, status: 'active' }),
+    );
+    const { payload, signature } = signedPayload({
+      id: EVENT_ID,
+      object: 'event',
+      type: 'customer.subscription.updated',
+      created: 1_717_000_000,
+      data: {
+        object: {
+          id: SUB_ID,
+          object: 'subscription',
+          status: 'active',
+          customer: CUS_ID,
+          cancel_at_period_end: true,
+          metadata: { uid: UID },
+        },
+        previous_attributes: { cancel_at_period_end: false },
+      },
+    });
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(notifyOwner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'canceled',
+        providerEventId: EVENT_ID,
+        platform: 'web',
+      }),
+    );
+  });
+
+  it('keeps the webhook 200 when owner notify throws', async () => {
+    notifyOwner.mockRejectedValue(new Error('SQS down'));
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
+    );
+    expect(log.error).toHaveBeenCalledWith(
+      'Owner notify enqueue failed',
+      expect.objectContaining({ providerEventId: EVENT_ID }),
+    );
+  });
+});

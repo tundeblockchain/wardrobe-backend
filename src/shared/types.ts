@@ -283,6 +283,9 @@ export interface RenderItemJob {
   renderId?: string;
 }
 
+/** WARDROBE-273 — owner subscription email (SQS → SES). */
+export const OWNER_NOTIFY_JOB = 'OWNER_NOTIFY' as const;
+
 /** WARDROBE-253 — async wish Virtual Try On / render job. */
 export const RENDER_WISH_JOB = 'RENDER_WISH' as const;
 
@@ -867,6 +870,7 @@ export type EntityType =
   | 'ACCOUNT_DELETION'
   | 'STRIPE_EVENT'
   | 'STRIPE_CUSTOMER'
+  | 'OWNER_NOTIFY'
   | 'WISH';
 
 export interface DynamoItem {

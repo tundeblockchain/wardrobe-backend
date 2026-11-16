@@ -45,13 +45,16 @@ const CLEAR_STATUSES = new Set([
 export interface StripeSubscriptionLike {
   id?: string;
   status?: string;
-  customer?: string | { id?: string; metadata?: Record<string, unknown> };
+  customer?:
+    | string
+    | { id?: string; email?: string | null; metadata?: Record<string, unknown> };
   metadata?: Record<string, unknown>;
   current_period_end?: number;
   current_period_start?: number;
   trial_end?: number | null;
   ended_at?: number | null;
   deleted?: boolean;
+  cancel_at_period_end?: boolean;
   items?: {
     data?: Array<{
       current_period_end?: number;
@@ -61,6 +64,8 @@ export interface StripeSubscriptionLike {
         | {
             id?: string;
             lookup_key?: string | null;
+            unit_amount?: number | null;
+            currency?: string | null;
           };
     }>;
   };

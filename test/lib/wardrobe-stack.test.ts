@@ -379,7 +379,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     }
 
     const eventSources = template.findResources('AWS::Lambda::EventSourceMapping');
-    expect(Object.keys(eventSources).length).toBe(3);
+    expect(Object.keys(eventSources).length).toBe(4);
   });
 
   test('ProcessingFn consumes the item-processing DLQ so exhausted jobs become FAILED', () => {

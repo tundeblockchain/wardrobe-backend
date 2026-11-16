@@ -27,6 +27,7 @@ import {
   grantConversionEventSecretRead,
 } from './conversion-events';
 import { addEntitlements } from './entitlements';
+import { addOwnerNotify } from './owner-notify';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
 import { addSupportMail } from './support-mail';
 import { resolveUploadAllowedOrigins } from './upload-cors';
@@ -59,6 +60,7 @@ export class WardrobeStack extends cdk.Stack {
     //                            / EVENT#{eventId} | DEVICE#{deviceId} | WISH#{wishId}
     // STRIPE_EVENT#{eventId}     / PROCESSED (ttl)
     // STRIPE_CUSTOMER#{cus_id}   / UID
+    // NOTIFY#{provider}#{eventId} / SENT (ttl; WARDROBE-273)
     // WARDROBE#{wardrobeId}      / ITEM#{itemId} | OUTFIT#{outfitId}
     //                            | OUTFIT#{outfitId}#WORN#{YYYY-MM-DD}
     // SHARE#{token}              / SHARE
@@ -1290,6 +1292,17 @@ export class WardrobeStack extends cdk.Stack {
     const conversion = addConversionEventSecrets(this, { stage, removalPolicy });
     grantConversionEventSecretRead(stripeWebhookFn, conversion);
     grantConversionEventSecretRead(entitlements.webhookFn, conversion);
+
+    // WARDROBE-273: owner subscription emails. Webhooks enqueue to SQS;
+    // OwnerNotifyFn reads SSM and sends SES. Addresses are never in CDK.
+    addOwnerNotify(this, {
+      stage,
+      table,
+      stripeWebhookFn,
+      entitlementsWebhookFn: entitlements.webhookFn,
+      commonLambdaProps,
+      removalPolicy,
+    });
 
     new cdk.CfnOutput(this, 'StripeWebhookUrl', {
       value: `${httpApi.apiEndpoint}/billing/stripe-webhook`,

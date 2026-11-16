@@ -43,6 +43,11 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(keys.stripeEventSk).toBe('PROCESSED');
     expect(keys.stripeCustomerPk('cus_123')).toBe('STRIPE_CUSTOMER#cus_123');
     expect(keys.stripeCustomerSk).toBe('UID');
+    expect(keys.ownerNotifyPk('stripe', 'evt_1')).toBe('NOTIFY#stripe#evt_1');
+    expect(keys.ownerNotifyPk('superwall', 'sw_evt_1')).toBe(
+      'NOTIFY#superwall#sw_evt_1',
+    );
+    expect(keys.ownerNotifySk).toBe('SENT');
     expect(keys.wardrobeSk('wd_abc123')).toBe('WARDROBE#wd_abc123');
     expect(keys.wishSk('wish_abc123xyz0')).toBe('WISH#wish_abc123xyz0');
     expect(keys.wishSkPrefix).toBe('WISH#');
