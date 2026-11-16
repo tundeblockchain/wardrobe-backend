@@ -16,8 +16,8 @@ import {
 import { Errors } from '../../shared/errors';
 import {
   mapStripeOwnerNotify,
+  ownerNotifyFailureFields,
   OwnerNotifyMessage,
-  safeErrorMessage,
 } from '../../shared/owner-notify';
 import {
   notifyOwnerBestEffort,
@@ -154,22 +154,6 @@ export async function handleStripeWebhook(
     const record = deps.recordEventIfNew ?? recordStripeEventIfNew;
     const claimed = await record(eventId);
     if (!claimed) {
-      await notifyStripeOwner({
-        type: eventType,
-        eventId,
-        created:
-          typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
-        object: asRecord(stripeEvent.data?.object),
-        previousAttributes: asRecord(
-          (stripeEvent.data as { previous_attributes?: unknown } | undefined)
-            ?.previous_attributes,
-        ),
-        userId: stripeObjectUid(asRecord(stripeEvent.data?.object)),
-        lookupKeys: config.lookupKeys,
-        priceIds: config.priceIds,
-        deps,
-        log,
-      });
       return json(200, { status: 'duplicate', eventId });
     }
 
@@ -180,21 +164,6 @@ export async function handleStripeWebhook(
       const stripe = await loadClient();
       const subscriptionId = subscriptionIdFromStripeEvent(stripeEvent);
       if (!subscriptionId) {
-        await notifyStripeOwner({
-          type: eventType,
-          eventId,
-          created:
-            typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
-          object: asRecord(stripeEvent.data?.object),
-          previousAttributes: asRecord(
-            (stripeEvent.data as { previous_attributes?: unknown } | undefined)
-              ?.previous_attributes,
-          ),
-          lookupKeys: config.lookupKeys,
-          priceIds: config.priceIds,
-          deps,
-          log,
-        });
         return json(200, {
           status: 'ignored',
           reason: 'missing_subscription',
@@ -215,22 +184,6 @@ export async function handleStripeWebhook(
       if (!userId) {
         log.warn('Stripe webhook ignored; no Firebase uid', {
           stripeSubscriptionId: subscription.id ?? subscriptionId,
-        });
-        await notifyStripeOwner({
-          type: eventType,
-          eventId,
-          created:
-            typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
-          object: asRecord(stripeEvent.data?.object),
-          previousAttributes: asRecord(
-            (stripeEvent.data as { previous_attributes?: unknown } | undefined)
-              ?.previous_attributes,
-          ),
-          subscription,
-          lookupKeys: config.lookupKeys,
-          priceIds: config.priceIds,
-          deps,
-          log,
         });
         return json(200, { status: 'ignored', reason: 'unknown_user', eventId });
       }
@@ -253,23 +206,25 @@ export async function handleStripeWebhook(
         nowMs: deps.nowMs,
       });
 
-      await notifyStripeOwner({
-        type: eventType,
-        eventId,
-        created:
-          typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
-        object: asRecord(stripeEvent.data?.object),
-        previousAttributes: asRecord(
-          (stripeEvent.data as { previous_attributes?: unknown } | undefined)
-            ?.previous_attributes,
-        ),
-        subscription,
-        userId,
-        lookupKeys: config.lookupKeys,
-        priceIds: config.priceIds,
-        deps,
-        log,
-      });
+      if (result.status === 'applied' || result.status === 'cleared') {
+        await notifyStripeOwner({
+          type: eventType,
+          eventId,
+          created:
+            typeof stripeEvent.created === 'number' ? stripeEvent.created : undefined,
+          object: asRecord(stripeEvent.data?.object),
+          previousAttributes: asRecord(
+            (stripeEvent.data as { previous_attributes?: unknown } | undefined)
+              ?.previous_attributes,
+          ),
+          subscription,
+          userId,
+          lookupKeys: config.lookupKeys,
+          priceIds: config.priceIds,
+          deps,
+          log,
+        });
+      }
 
       await trackStripeConversion({
         type: eventType,
@@ -329,11 +284,10 @@ async function notifyStripeOwner(options: {
       log: options.log,
     });
   } catch (error) {
-    options.log.error('Owner notify failed', {
-      eventType: options.type,
-      providerEventId: options.eventId,
-      error: safeErrorMessage(error),
-    });
+    options.log.error(
+      'Owner notify failed',
+      ownerNotifyFailureFields(options.eventId, error),
+    );
   }
 }
 

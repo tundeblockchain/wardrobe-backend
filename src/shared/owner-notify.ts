@@ -598,3 +598,60 @@ export function safeErrorMessage(error: unknown): string {
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted]');
 }
+
+/**
+ * Failure-log fields for owner notify: event ID plus error class / HTTP
+ * status only. Never the API key, recipient, or error message text.
+ */
+export function ownerNotifyFailureFields(
+  providerEventId: string,
+  error: unknown,
+): { providerEventId: string; error: string; status?: number } {
+  const fields: { providerEventId: string; error: string; status?: number } = {
+    providerEventId,
+    error: ownerNotifyErrorClass(error),
+  };
+  const status = ownerNotifyErrorStatus(error);
+  if (status !== undefined) {
+    fields.status = status;
+  }
+  return fields;
+}
+
+function ownerNotifyErrorClass(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return 'Error';
+  }
+  const name = (error as { name?: unknown }).name;
+  const message =
+    typeof (error as { message?: unknown }).message === 'string'
+      ? (error as { message: string }).message
+      : '';
+  if (name === 'AbortError' || name === 'TimeoutError' || /timed out/i.test(message)) {
+    return 'Timeout';
+  }
+  if (typeof name === 'string' && name && name !== 'Error') {
+    return name;
+  }
+  if (/HTTP \d{3}/.test(message)) {
+    return 'ResendHttpError';
+  }
+  return 'Error';
+}
+
+function ownerNotifyErrorStatus(error: unknown): number | undefined {
+  if (
+    error &&
+    typeof error === 'object' &&
+    typeof (error as { status?: unknown }).status === 'number'
+  ) {
+    return (error as { status: number }).status;
+  }
+  if (error instanceof Error) {
+    const match = error.message.match(/HTTP (\d{3})/);
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
+}

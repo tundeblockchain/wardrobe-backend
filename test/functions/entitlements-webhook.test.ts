@@ -983,10 +983,64 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
       tier: 'PREMIUM',
     });
     expect(save).toHaveBeenCalled();
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify failed',
-      expect.objectContaining({ providerEventId: 'evt_initial_purchase_1' }),
+    expect(log.error).toHaveBeenCalledWith('Owner notify failed', {
+      providerEventId: 'evt_initial_purchase_1',
+      error: 'Error',
+    });
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('owner@example.com');
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('placeholder');
+  });
+
+  it('does not send when the Superwall signature is invalid', async () => {
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({
+          payload: payload('initial_purchase'),
+          signature: 'v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        }),
+        deps(),
+      ),
     );
+    expect(result.statusCode).toBe(403);
+    expect(save).not.toHaveBeenCalled();
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send when entitlement persist fails', async () => {
+    save.mockRejectedValue(new Error('dynamo down'));
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(500);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send on a duplicate Superwall event', async () => {
+    loadStored.mockResolvedValue({
+      userId: OWNER_ID,
+      tier: 'PREMIUM',
+      status: 'ACTIVE',
+      lastEventId: 'evt_initial_purchase_1',
+      createdAt: '2026-09-16T00:00:00.000Z',
+      updatedAt: '2026-09-16T00:00:00.000Z',
+    });
+    const result = asResult(
+      await handleSuperwallWebhook(
+        webhookEvent({ payload: payload('initial_purchase') }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({
+      status: 'duplicate',
+      eventName: 'initial_purchase',
+      tier: 'PREMIUM',
+    });
+    expect(save).not.toHaveBeenCalled();
+    expect(notifyOwner).not.toHaveBeenCalled();
   });
 
   function hangingHttp() {
@@ -1058,6 +1112,7 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
     expect(http.mock.calls[0][1].headers['Idempotency-Key']).toBe(
       'evt_initial_purchase_1',
     );
+    expect(http.mock.calls[0][1].headers.Authorization).toMatch(/^Bearer /);
   });
 
   it('keeps status 200 and the same body when Resend fails', async () => {
@@ -1074,10 +1129,14 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
       eventName: 'initial_purchase',
       tier: 'PREMIUM',
     });
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify Resend send failed',
-      expect.objectContaining({ providerEventId: 'evt_initial_purchase_1' }),
-    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: 'evt_initial_purchase_1',
+      error: 'ResendHttpError',
+      status: 500,
+    });
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain('owner@example.com');
+    expect(serialized).not.toContain('placeholder');
   });
 
   it('keeps status 200 and the same body when Resend times out', async () => {
@@ -1094,13 +1153,10 @@ describe('POST /webhooks/superwall owner notify (WARDROBE-273)', () => {
       eventName: 'initial_purchase',
       tier: 'PREMIUM',
     });
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify Resend send failed',
-      expect.objectContaining({
-        providerEventId: 'evt_initial_purchase_1',
-        error: 'Resend send timed out',
-      }),
-    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: 'evt_initial_purchase_1',
+      error: 'Timeout',
+    });
   });
 
   it('skips the send when recipient config is missing and still returns 200', async () => {

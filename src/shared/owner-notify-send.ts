@@ -11,7 +11,7 @@ import {
 } from './owner-notify-names';
 import {
   formatOwnerNotifyEmail,
-  safeErrorMessage,
+  ownerNotifyFailureFields,
   type OwnerNotifyMessage,
 } from './owner-notify';
 import { sendEmail, type FetchLike } from './resend';
@@ -82,12 +82,10 @@ export async function notifyOwnerBestEffort(
     }
     await sendOwnerNotify(message, deps);
   } catch (error) {
-    log.error('Owner notify failed', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      eventType: message.eventType,
-      error: safeErrorMessage(error),
-    });
+    log.error(
+      'Owner notify failed',
+      ownerNotifyFailureFields(message.providerEventId, error),
+    );
   }
 }
 
@@ -129,7 +127,7 @@ export async function loadOwnerNotifyConfig(
     recipient = optionalEmail(await getParameter(paramName));
   } catch (error) {
     log.warn('Owner notify skipped; failed to read recipient parameter', {
-      error: safeErrorMessage(error),
+      error: ownerNotifyErrorName(error),
     });
     return undefined;
   }
@@ -172,7 +170,7 @@ export async function loadOwnerNotifyApiKey(
     return apiKey;
   } catch (error) {
     log.warn('Owner notify skipped; failed to read Resend secret', {
-      error: safeErrorMessage(error),
+      error: ownerNotifyErrorName(error),
     });
     return undefined;
   }
@@ -240,13 +238,21 @@ export async function sendOwnerNotify(
       platform: message.platform,
     });
   } catch (error) {
-    log.error('Owner notify Resend send failed', {
-      provider: message.provider,
-      providerEventId: message.providerEventId,
-      eventType: message.eventType,
-      error: safeErrorMessage(error),
-    });
+    log.error(
+      'Owner notify Resend send failed',
+      ownerNotifyFailureFields(message.providerEventId, error),
+    );
   }
+}
+
+function ownerNotifyErrorName(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === 'string' && name.trim()) {
+      return name;
+    }
+  }
+  return 'Error';
 }
 
 async function getSsmParameter(name: string): Promise<string | undefined> {

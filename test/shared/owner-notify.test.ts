@@ -8,6 +8,7 @@ import {
   formatOwnerNotifyEmail,
   mapStripeOwnerNotify,
   mapSuperwallOwnerNotify,
+  ownerNotifyFailureFields,
   OwnerNotifyMessage,
   parseOwnerNotifyMessage,
   safeErrorMessage,
@@ -480,6 +481,34 @@ describe('safeErrorMessage', () => {
   });
 });
 
+describe('ownerNotifyFailureFields', () => {
+  it('logs event ID plus error class and status only', () => {
+    expect(
+      ownerNotifyFailureFields(
+        EVENT_ID,
+        Object.assign(new Error('Resend send HTTP 500'), { status: 500 }),
+      ),
+    ).toEqual({
+      providerEventId: EVENT_ID,
+      error: 'ResendHttpError',
+      status: 500,
+    });
+    expect(ownerNotifyFailureFields(EVENT_ID, new Error('Resend send timed out'))).toEqual({
+      providerEventId: EVENT_ID,
+      error: 'Timeout',
+    });
+    const serialized = JSON.stringify(
+      ownerNotifyFailureFields(
+        EVENT_ID,
+        new Error('Bearer placeholder owner@example.com failed'),
+      ),
+    );
+    expect(serialized).not.toContain('placeholder');
+    expect(serialized).not.toContain('owner@example.com');
+    expect(serialized).not.toContain('Bearer');
+  });
+});
+
 describe('notifyOwnerBestEffort', () => {
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
@@ -492,12 +521,13 @@ describe('notifyOwnerBestEffort', () => {
     await expect(
       notifyOwnerBestEffort(message(), { notifyOwner, log }),
     ).resolves.toBeUndefined();
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify failed',
-      expect.objectContaining({ providerEventId: EVENT_ID }),
-    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify failed', {
+      providerEventId: EVENT_ID,
+      error: 'Error',
+    });
     const serialized = JSON.stringify(log.error.mock.calls);
     expect(serialized).not.toContain('owner@example.com');
+    expect(serialized).not.toContain('Resend down');
   });
 
   it('does nothing when the mapped message is undefined', async () => {
@@ -597,13 +627,19 @@ describe('sendOwnerNotify', () => {
         log,
       }),
     ).resolves.toBeUndefined();
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify Resend send failed',
-      expect.objectContaining({ providerEventId: EVENT_ID }),
-    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: EVENT_ID,
+      error: 'ResendHttpError',
+      status: 500,
+    });
     const serialized = JSON.stringify(log.error.mock.calls);
     expect(serialized).not.toContain('placeholder');
     expect(serialized).not.toContain('owner@example.com');
+    expect(Object.keys(log.error.mock.calls[0][1]).sort()).toEqual([
+      'error',
+      'providerEventId',
+      'status',
+    ]);
   });
 
   it('times out hanging HTTP without throwing', async () => {
@@ -620,13 +656,10 @@ describe('sendOwnerNotify', () => {
         log,
       }),
     ).resolves.toBeUndefined();
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify Resend send failed',
-      expect.objectContaining({
-        providerEventId: EVENT_ID,
-        error: 'Resend send timed out',
-      }),
-    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: EVENT_ID,
+      error: 'Timeout',
+    });
   });
 
   it('skips quietly when config is missing', async () => {

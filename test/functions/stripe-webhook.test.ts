@@ -1304,10 +1304,55 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
     expect(bodyOf(result)).toEqual(
       expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
     );
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify failed',
-      expect.objectContaining({ providerEventId: EVENT_ID }),
+    expect(log.error).toHaveBeenCalledWith('Owner notify failed', {
+      providerEventId: EVENT_ID,
+      error: 'Error',
+    });
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('owner@example.com');
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain('placeholder');
+  });
+
+  it('does not send when the Stripe signature is invalid', async () => {
+    const { payload } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
     );
+    const result = asResult(
+      await handleStripeWebhook(
+        webhookEvent({ payload, signature: 't=1,v1=notavalidsignature' }),
+        deps(),
+      ),
+    );
+    expect(result.statusCode).toBe(400);
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send on a duplicate Stripe event', async () => {
+    mockPutItemIfNotExists.mockResolvedValueOnce(false);
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), deps()),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual({ status: 'duplicate', eventId: EVENT_ID });
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not send when the paid-tier write fails', async () => {
+    const { payload, signature } = signedPayload(
+      stripeEventObject({ type: 'customer.subscription.created' }),
+    );
+    const result = asResult(
+      await handleStripeWebhook(webhookEvent({ payload, signature }), {
+        ...deps(),
+        setPaidTierStatus: async () => {
+          throw new Error('dynamo down');
+        },
+      }),
+    );
+    expect(result.statusCode).toBe(500);
+    expect(notifyOwner).not.toHaveBeenCalled();
   });
 
   it('does not send on unmapped Stripe types and still returns 200', async () => {
@@ -1424,6 +1469,7 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
     expect(bodyOf(result)).toEqual(expect.objectContaining(expectedBody));
     expect(http).toHaveBeenCalledTimes(1);
     expect(http.mock.calls[0][1].headers['Idempotency-Key']).toBe(EVENT_ID);
+    expect(http.mock.calls[0][1].headers.Authorization).toMatch(/^Bearer /);
   });
 
   it('keeps status 200 and the same body when Resend fails', async () => {
@@ -1442,10 +1488,14 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
       expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
     );
     expect(http).toHaveBeenCalled();
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify Resend send failed',
-      expect.objectContaining({ providerEventId: EVENT_ID }),
-    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: EVENT_ID,
+      error: 'ResendHttpError',
+      status: 500,
+    });
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain('owner@example.com');
+    expect(serialized).not.toContain('placeholder');
   });
 
   it('keeps status 200 and the same body when Resend times out', async () => {
@@ -1463,13 +1513,10 @@ describe('POST /billing/stripe-webhook owner notify (WARDROBE-273)', () => {
     expect(bodyOf(result)).toEqual(
       expect.objectContaining({ status: 'applied', eventId: EVENT_ID }),
     );
-    expect(log.error).toHaveBeenCalledWith(
-      'Owner notify Resend send failed',
-      expect.objectContaining({
-        providerEventId: EVENT_ID,
-        error: 'Resend send timed out',
-      }),
-    );
+    expect(log.error).toHaveBeenCalledWith('Owner notify Resend send failed', {
+      providerEventId: EVENT_ID,
+      error: 'Timeout',
+    });
   });
 
   it('skips the send when recipient config is missing and still returns 200', async () => {

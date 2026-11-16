@@ -30,8 +30,8 @@ import {
 } from '../../shared/svix';
 import {
   mapSuperwallOwnerNotify,
+  ownerNotifyFailureFields,
   OwnerNotifyMessage,
-  safeErrorMessage,
 } from '../../shared/owner-notify';
 import {
   notifyOwnerBestEffort,
@@ -213,9 +213,9 @@ export async function handleSuperwallWebhook(
 
     if (!skipped) {
       await (deps.save ?? persistEntitlement)(stored);
+      await notifySuperwallOwner(inbound, userId, deps);
     }
 
-    await notifySuperwallOwner(inbound, userId, deps);
     await trackSuperwallConversion(inbound, userId, deps);
 
     return json(200, {
@@ -312,10 +312,13 @@ async function notifySuperwallOwner(
     });
   } catch (error) {
     const log = deps.log ?? logger;
-    log.error('Owner notify failed', {
-      providerEventId: stringOrUndefined(inbound.data?.id),
-      error: safeErrorMessage(error),
-    });
+    log.error(
+      'Owner notify failed',
+      ownerNotifyFailureFields(
+        stringOrUndefined(inbound.data?.id) ?? '',
+        error,
+      ),
+    );
   }
 }
 
