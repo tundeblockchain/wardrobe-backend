@@ -30,13 +30,17 @@ import {
 } from '../../src/shared/owner-notify';
 import {
   claimOwnerNotifyEvent,
+  loadOwnerNotifyApiKey,
   loadOwnerNotifyConfig,
   OWNER_NOTIFY_RECIPIENT_ENV,
   OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
+  OWNER_NOTIFY_RESEND_API_URL,
+  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
   OWNER_NOTIFY_SENDER_ENV,
   OWNER_NOTIFY_SENDER_PARAM_ENV,
   resetOwnerNotifyConfigCache,
   sendOwnerNotify,
+  sendResendEmail,
 } from '../../src/shared/owner-notify-send';
 
 const LOOKUP_KEYS: StripeLookupKeys = {
@@ -354,13 +358,14 @@ describe('owner notify mapping tables', () => {
     ]);
   });
 
-  it('keeps SES out of the webhook mapping module', () => {
+  it('keeps Resend and SES out of the webhook mapping module', () => {
     const source = fs.readFileSync(
       path.join(__dirname, '../../src/shared/owner-notify.ts'),
       'utf8',
     );
     expect(source).not.toContain('@aws-sdk/client-ses');
     expect(source).not.toContain('@aws-sdk/client-ssm');
+    expect(source).not.toContain('api.resend.com');
     expect(source).not.toContain('SendEmail');
   });
 });
@@ -541,7 +546,7 @@ describe('sendOwnerNotify', () => {
     resetOwnerNotifyConfigCache();
   });
 
-  it('sends SES on the first delivery and skips a retry with the same event ID', async () => {
+  it('sends on the first delivery and skips a retry with the same event ID', async () => {
     const sendEmail = jest.fn().mockResolvedValue(undefined);
     const claimEvent = jest
       .fn()
@@ -611,9 +616,9 @@ describe('sendOwnerNotify', () => {
     );
   });
 
-  it('releases the dedupe claim and rethrows when SES fails', async () => {
+  it('releases the dedupe claim and rethrows when Resend fails', async () => {
     const forgetEvent = jest.fn().mockResolvedValue(undefined);
-    const sendEmail = jest.fn().mockRejectedValue(new Error('SES throttled'));
+    const sendEmail = jest.fn().mockRejectedValue(new Error('Resend send HTTP 429'));
     await expect(
       sendOwnerNotify(message(), {
         claimEvent: async () => true,
@@ -625,10 +630,10 @@ describe('sendOwnerNotify', () => {
         sendEmail,
         log,
       }),
-    ).rejects.toThrow('SES throttled');
+    ).rejects.toThrow('Resend send HTTP 429');
     expect(forgetEvent).toHaveBeenCalled();
     expect(log.error).toHaveBeenCalledWith(
-      'Owner notify SES send failed',
+      'Owner notify Resend send failed',
       expect.objectContaining({ providerEventId: EVENT_ID }),
     );
     const serialized = JSON.stringify(log.error.mock.calls);
@@ -659,5 +664,156 @@ describe('sendOwnerNotify', () => {
     expect(log.warn).toHaveBeenCalledWith(
       'Owner notify skipped; sender or recipient is not configured',
     );
+  });
+
+  it('warns and skips when the Resend secret is missing', async () => {
+    const http = jest.fn();
+    const forgetEvent = jest.fn().mockResolvedValue(undefined);
+    await sendOwnerNotify(message(), {
+      claimEvent: async () => true,
+      forgetEvent,
+      loadConfig: async () => ({
+        recipient: 'owner@example.com',
+        sender: 'sender@example.com',
+      }),
+      loadApiKey: async () => undefined,
+      http,
+      log,
+    });
+    expect(http).not.toHaveBeenCalled();
+    expect(forgetEvent).toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Owner notify skipped; Resend secret is missing or invalid',
+      expect.objectContaining({ providerEventId: EVENT_ID }),
+    );
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it('loadOwnerNotifyApiKey warns when the secret ARN is not configured', async () => {
+    const key = await loadOwnerNotifyApiKey({ env: {}, log });
+    expect(key).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Owner notify skipped; Resend secret is not configured',
+    );
+  });
+
+  it('caches a successful Resend secret read for the Lambda container', async () => {
+    const getSecret = jest.fn().mockResolvedValue('test-api-key');
+    const env = {
+      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]: 'arn:aws:secretsmanager:eu-west-1:1:secret:placeholder',
+    };
+    await expect(loadOwnerNotifyApiKey({ env, getSecret, log })).resolves.toBe(
+      'test-api-key',
+    );
+    await expect(loadOwnerNotifyApiKey({ env, getSecret, log })).resolves.toBe(
+      'test-api-key',
+    );
+    expect(getSecret).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('sendResendEmail', () => {
+  const apiKey = 'test-api-key';
+
+  function okHttp(status = 200) {
+    return jest.fn().mockResolvedValue({
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => JSON.stringify({ id: 'email_test' }),
+    });
+  }
+
+  it('POSTs /emails with Bearer auth on success', async () => {
+    const http = okHttp();
+    await sendResendEmail({
+      apiKey,
+      sender: 'sender@example.com',
+      recipient: 'owner@example.com',
+      subject: 'Wardrobe subscribed: premium (web)',
+      text: 'body',
+      html: '<pre>body</pre>',
+      idempotencyKey: `stripe:${EVENT_ID}`,
+      http,
+    });
+    expect(http).toHaveBeenCalledWith(OWNER_NOTIFY_RESEND_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Idempotency-Key': `stripe:${EVENT_ID}`,
+      },
+      body: JSON.stringify({
+        from: 'sender@example.com',
+        to: ['owner@example.com'],
+        subject: 'Wardrobe subscribed: premium (web)',
+        text: 'body',
+        html: '<pre>body</pre>',
+      }),
+    });
+  });
+
+  it.each([422, 429, 500])(
+    'throws on HTTP %s so SQS retries and the message can reach the DLQ',
+    async (status) => {
+      const http = jest.fn().mockResolvedValue({
+        ok: false,
+        status,
+        text: async () => '{"message":"failed"}',
+      });
+      await expect(
+        sendResendEmail({
+          apiKey,
+          sender: 'sender@example.com',
+          recipient: 'owner@example.com',
+          subject: 'subject',
+          text: 'body',
+          html: '<pre>body</pre>',
+          http,
+        }),
+      ).rejects.toThrow(`Resend send HTTP ${status}`);
+    },
+  );
+
+  it('throws when the request times out so SQS retries', async () => {
+    const timeout = Object.assign(new Error('The operation was aborted'), {
+      name: 'AbortError',
+    });
+    const http = jest.fn().mockRejectedValue(timeout);
+    await expect(
+      sendResendEmail({
+        apiKey,
+        sender: 'sender@example.com',
+        recipient: 'owner@example.com',
+        subject: 'subject',
+        text: 'body',
+        html: '<pre>body</pre>',
+        http,
+      }),
+    ).rejects.toThrow('Resend send timed out');
+  });
+
+  it('sends via mocked HTTP from sendOwnerNotify on success', async () => {
+    const http = okHttp();
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    await sendOwnerNotify(message(), {
+      claimEvent: async () => true,
+      loadConfig: async () => ({
+        recipient: 'owner@example.com',
+        sender: 'sender@example.com',
+      }),
+      loadApiKey: async () => apiKey,
+      http,
+      log,
+    });
+    expect(http).toHaveBeenCalledTimes(1);
+    expect(http.mock.calls[0][0]).toBe(OWNER_NOTIFY_RESEND_API_URL);
+    expect(log.info).toHaveBeenCalledWith(
+      'Owner notify sent',
+      expect.objectContaining({ providerEventId: EVENT_ID }),
+    );
+    const serialized = JSON.stringify(log.info.mock.calls);
+    expect(serialized).not.toContain(apiKey);
+    expect(serialized).not.toContain('owner@example.com');
   });
 });

@@ -4,25 +4,27 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { NodejsFunction, NodejsFunctionProps } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import * as path from 'path';
 import {
   OWNER_NOTIFY_QUEUE_URL_ENV,
   OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
+  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
   OWNER_NOTIFY_SENDER_PARAM_ENV,
   ownerNotifyRecipientParamName,
+  ownerNotifyResendSecretName,
   ownerNotifySenderParamName,
 } from '../src/shared/owner-notify-names';
 
 /**
- * Isolated WARDROBE-273 wiring (owner subscription emails via SES).
+ * Isolated WARDROBE-273 wiring (owner subscription emails via Resend).
  *
  * Webhook Lambdas enqueue to SQS. A dedicated notifier reads SSM (or env)
- * for the sender / recipient, dedupes in Dynamo, and calls SES. Recipient
- * and sender values are never hardcoded. The sender parameter is resolved
- * at deploy time into the ses:SendEmail identity ARN.
+ * for the sender / recipient, reads the Resend API key from Secrets Manager,
+ * dedupes in Dynamo, and POSTs to Resend. Addresses and the API key are
+ * never hardcoded.
  */
 export const OWNER_NOTIFY_LAMBDA_TIMEOUT_SECONDS = 15;
 export const OWNER_NOTIFY_MAX_RECEIVE_COUNT = 3;
@@ -40,8 +42,10 @@ export interface OwnerNotifyResources {
   queue: sqs.Queue;
   dlq: sqs.Queue;
   fn: NodejsFunction;
+  resendSecret: secretsmanager.Secret;
   recipientParamName: string;
   senderParamName: string;
+  resendSecretName: string;
 }
 
 export function addOwnerNotify(
@@ -59,6 +63,7 @@ export function addOwnerNotify(
 
   const recipientParamName = ownerNotifyRecipientParamName(stage);
   const senderParamName = ownerNotifySenderParamName(stage);
+  const resendSecretName = ownerNotifyResendSecretName(stage);
   const timeout = cdk.Duration.seconds(OWNER_NOTIFY_LAMBDA_TIMEOUT_SECONDS);
   const visibilityTimeout = cdk.Duration.seconds(timeout.toSeconds() * 2);
 
@@ -85,6 +90,13 @@ export function addOwnerNotify(
     },
   });
 
+  const resendSecret = new secretsmanager.Secret(scope, 'OwnerNotifyResendSecret', {
+    secretName: resendSecretName,
+    description:
+      'Resend API key for owner subscription emails (WARDROBE-273). Replace the placeholder. Never commit the real key.',
+    removalPolicy,
+  });
+
   const logGroup = new logs.LogGroup(scope, 'OwnerNotifyFnLogs', {
     retention: logs.RetentionDays.ONE_WEEK,
     removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -98,6 +110,7 @@ export function addOwnerNotify(
       [OWNER_NOTIFY_QUEUE_URL_ENV]: queue.queueUrl,
       [OWNER_NOTIFY_RECIPIENT_PARAM_ENV]: recipientParamName,
       [OWNER_NOTIFY_SENDER_PARAM_ENV]: senderParamName,
+      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]: resendSecret.secretArn,
     },
     entry: path.join(__dirname, '../src/functions/owner-notify/handler.ts'),
     handler: 'handler',
@@ -136,25 +149,7 @@ export function addOwnerNotify(
     }),
   );
 
-  const stack = cdk.Stack.of(scope);
-  const senderIdentity = ssm.StringParameter.valueForStringParameter(
-    scope,
-    senderParamName,
-  );
-  fn.addToRolePolicy(
-    new iam.PolicyStatement({
-      sid: 'OwnerNotifySesSend',
-      actions: ['ses:SendEmail'],
-      resources: [
-        stack.formatArn({
-          service: 'ses',
-          resource: 'identity',
-          resourceName: senderIdentity,
-          arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
-        }),
-      ],
-    }),
-  );
+  resendSecret.grantRead(fn);
 
   queue.grantSendMessages(stripeWebhookFn);
   queue.grantSendMessages(entitlementsWebhookFn);
@@ -174,10 +169,23 @@ export function addOwnerNotify(
   new cdk.CfnOutput(scope, 'OwnerNotifySenderParamName', {
     value: senderParamName,
     description:
-      'SSM parameter name for the owner-notify SES sender identity. Must exist at deploy time so CloudFormation can scope ses:SendEmail to that identity ARN.',
+      'SSM parameter name for the owner-notify From address. Values are never stored in CDK.',
+  });
+  new cdk.CfnOutput(scope, 'OwnerNotifyResendSecretName', {
+    value: resendSecretName,
+    description:
+      'Secrets Manager name for the owner-notify Resend API key. Replace the placeholder; never put the key in source.',
   });
 
-  return { queue, dlq, fn, recipientParamName, senderParamName };
+  return {
+    queue,
+    dlq,
+    fn,
+    resendSecret,
+    recipientParamName,
+    senderParamName,
+    resendSecretName,
+  };
 }
 
 function parameterArn(scope: Construct, name: string): string {

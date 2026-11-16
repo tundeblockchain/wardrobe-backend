@@ -114,7 +114,7 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
     );
   });
 
-  it('reports a batch item failure when SES throws so SQS retries', async () => {
+  it('reports a batch item failure when Resend throws so SQS retries', async () => {
     const result = await handleOwnerNotifyQueue(eventOf(JSON.stringify(payload())), {
       claimEvent: async () => true,
       forgetEvent: async () => undefined,
@@ -123,7 +123,7 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
         sender: 'sender@example.com',
       }),
       sendEmail: async () => {
-        throw new Error('SES throttled');
+        throw new Error('Resend send HTTP 500');
       },
       log,
     });
@@ -132,7 +132,7 @@ describe('OwnerNotifyFn (WARDROBE-273)', () => {
       batchItemFailures: [{ itemIdentifier: 'msg-1' }],
     });
     expect(log.error).toHaveBeenCalledWith(
-      'Owner notify SES send failed',
+      'Owner notify Resend send failed',
       expect.objectContaining({ providerEventId: 'evt_test_123' }),
     );
   });

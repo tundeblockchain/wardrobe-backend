@@ -81,7 +81,7 @@ export interface OwnerNotifyEnqueueDeps {
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
   /**
    * Test seam that replaces SQS send. Production webhooks never pass this;
-   * they enqueue and return. There is no inline SES path.
+   * they enqueue and return. There is no inline send path.
    */
   notifyOwner?: (message: OwnerNotifyMessage) => Promise<void>;
 }
@@ -264,7 +264,7 @@ export function parseOwnerNotifyMessage(
 }
 
 /**
- * Best-effort enqueue onto SQS. Never throws and never waits on SES.
+ * Best-effort enqueue onto SQS. Never throws and never waits on Resend.
  * Missing queue URL logs a warning and returns so webhook tests and
  * undeployed stages stay quiet.
  */

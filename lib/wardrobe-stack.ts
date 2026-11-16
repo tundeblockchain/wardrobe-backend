@@ -1294,7 +1294,7 @@ export class WardrobeStack extends cdk.Stack {
     grantConversionEventSecretRead(entitlements.webhookFn, conversion);
 
     // WARDROBE-273: owner subscription emails. Webhooks enqueue to SQS;
-    // OwnerNotifyFn reads SSM and sends SES. Addresses are never in CDK.
+    // OwnerNotifyFn reads SSM + Secrets Manager and POSTs to Resend.
     addOwnerNotify(this, {
       stage,
       table,

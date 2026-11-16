@@ -11,7 +11,7 @@ export interface OwnerNotifyHandlerDeps extends OwnerNotifySendDeps {}
 /**
  * SQS worker for OWNER_NOTIFY (WARDROBE-273).
  *
- * Webhook Lambdas enqueue after Stripe / Superwall handling so SES never
+ * Webhook Lambdas enqueue after Stripe / Superwall handling so Resend never
  * sits on the webhook timeout. Failures are logged and retried via SQS;
  * poison payloads are acked. Dedupe lives in sendOwnerNotify.
  */

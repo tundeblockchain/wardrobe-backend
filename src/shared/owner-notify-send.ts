@@ -1,4 +1,3 @@
-import { SendEmailCommand, SESClient } from '@aws-sdk/client-ses';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { deleteItem, keys, putItemIfNotExists } from './dynamodb';
 import { nowIso } from './ids';
@@ -7,6 +6,9 @@ import {
   OWNER_NOTIFY_EVENT_TTL_SECONDS,
   OWNER_NOTIFY_RECIPIENT_ENV,
   OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
+  OWNER_NOTIFY_RESEND_API_URL,
+  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
+  OWNER_NOTIFY_RESEND_TIMEOUT_MS,
   OWNER_NOTIFY_SENDER_ENV,
   OWNER_NOTIFY_SENDER_PARAM_ENV,
 } from './owner-notify-names';
@@ -15,11 +17,15 @@ import {
   safeErrorMessage,
   type OwnerNotifyMessage,
 } from './owner-notify';
+import { getSecretString, parseJsonObjectOrString } from './secrets';
 
 export {
   OWNER_NOTIFY_EVENT_TTL_SECONDS,
   OWNER_NOTIFY_RECIPIENT_ENV,
   OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
+  OWNER_NOTIFY_RESEND_API_URL,
+  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
+  OWNER_NOTIFY_RESEND_TIMEOUT_MS,
   OWNER_NOTIFY_SENDER_ENV,
   OWNER_NOTIFY_SENDER_PARAM_ENV,
 } from './owner-notify-names';
@@ -31,6 +37,20 @@ export interface OwnerNotifyConfig {
   sender: string;
 }
 
+export type OwnerNotifyFetch = (
+  url: string,
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+  },
+) => Promise<{
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+}>;
+
 export interface OwnerNotifySendDeps {
   env?: NodeJS.ProcessEnv;
   nowSeconds?: number;
@@ -38,6 +58,10 @@ export interface OwnerNotifySendDeps {
   claimEvent?: (message: OwnerNotifyMessage) => Promise<boolean>;
   forgetEvent?: (message: OwnerNotifyMessage) => Promise<void>;
   loadConfig?: () => Promise<OwnerNotifyConfig | undefined>;
+  loadApiKey?: () => Promise<string | undefined>;
+  getSecret?: (secretId: string) => Promise<string | undefined>;
+  http?: OwnerNotifyFetch;
+  timeoutMs?: number;
   sendEmail?: (input: {
     sender: string;
     recipient: string;
@@ -54,13 +78,20 @@ export interface OwnerNotifySsmDeps {
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
+export interface OwnerNotifySecretDeps {
+  env?: NodeJS.ProcessEnv;
+  getSecret?: (secretId: string) => Promise<string | undefined>;
+  log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
+}
+
 const ssm = new SSMClient({});
-const ses = new SESClient({});
 
 let cachedConfig: { cacheKey: string; config: OwnerNotifyConfig } | undefined;
+let cachedApiKey: string | undefined;
 
 export function resetOwnerNotifyConfigCache(): void {
   cachedConfig = undefined;
+  cachedApiKey = undefined;
 }
 
 export async function claimOwnerNotifyEvent(
@@ -147,9 +178,42 @@ export async function loadOwnerNotifyConfig(
   return config;
 }
 
+export async function loadOwnerNotifyApiKey(
+  deps: OwnerNotifySecretDeps = {},
+): Promise<string | undefined> {
+  if (cachedApiKey) {
+    return cachedApiKey;
+  }
+  const log = deps.log ?? logger;
+  const env = deps.env ?? process.env;
+  const secretId = env[OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]?.trim();
+  if (!secretId) {
+    log.warn('Owner notify skipped; Resend secret is not configured');
+    return undefined;
+  }
+
+  const getSecret = deps.getSecret ?? getSecretString;
+  try {
+    const raw = await getSecret(secretId);
+    const apiKey = parseResendApiKey(raw);
+    if (!apiKey) {
+      log.warn('Owner notify skipped; Resend secret is missing or invalid');
+      return undefined;
+    }
+    cachedApiKey = apiKey;
+    return apiKey;
+  } catch (error) {
+    log.warn('Owner notify skipped; failed to read Resend secret', {
+      error: safeErrorMessage(error),
+    });
+    return undefined;
+  }
+}
+
 /**
- * Dedupe, load SSM/env, send SES. Throws only after forgetting a claim so
- * SQS can retry SES failures. Missing config is a quiet skip (acked).
+ * Dedupe, load SSM/env + Resend secret, POST to Resend. Throws only after
+ * forgetting a claim so SQS can retry send failures. Missing config or
+ * secret is a quiet skip (acked).
  */
 export async function sendOwnerNotify(
   message: OwnerNotifyMessage,
@@ -193,13 +257,41 @@ export async function sendOwnerNotify(
   const email = formatOwnerNotifyEmail(message);
   const send =
     deps.sendEmail ??
-    ((input: {
+    (async (input: {
       sender: string;
       recipient: string;
       subject: string;
       text: string;
       html: string;
-    }) => sendSesEmail(input));
+    }) => {
+      const loadApiKey =
+        deps.loadApiKey ??
+        (() =>
+          loadOwnerNotifyApiKey({
+            env: deps.env,
+            getSecret: deps.getSecret,
+            log,
+          }));
+      const apiKey = await loadApiKey();
+      if (!apiKey) {
+        log.warn('Owner notify skipped; Resend secret is missing or invalid', {
+          provider: message.provider,
+          providerEventId: message.providerEventId,
+        });
+        throw new SkipOwnerNotifyError('missing_resend_secret');
+      }
+      await sendResendEmail({
+        apiKey,
+        sender: input.sender,
+        recipient: input.recipient,
+        subject: input.subject,
+        text: input.text,
+        html: input.html,
+        idempotencyKey: `${message.provider}:${message.providerEventId}`,
+        http: deps.http,
+        timeoutMs: deps.timeoutMs,
+      });
+    });
   try {
     await send({
       sender: config.sender,
@@ -215,7 +307,11 @@ export async function sendOwnerNotify(
       platform: message.platform,
     });
   } catch (error) {
-    log.error('Owner notify SES send failed', {
+    if (error instanceof SkipOwnerNotifyError) {
+      await forget(message);
+      return;
+    }
+    log.error('Owner notify Resend send failed', {
       provider: message.provider,
       providerEventId: message.providerEventId,
       eventType: message.eventType,
@@ -234,11 +330,94 @@ export async function sendOwnerNotify(
   }
 }
 
+export async function sendResendEmail(input: {
+  apiKey: string;
+  sender: string;
+  recipient: string;
+  subject: string;
+  text: string;
+  html: string;
+  idempotencyKey?: string;
+  http?: OwnerNotifyFetch;
+  timeoutMs?: number;
+}): Promise<void> {
+  const timeoutMs = input.timeoutMs ?? OWNER_NOTIFY_RESEND_TIMEOUT_MS;
+  const http = input.http ?? timedFetch(timeoutMs);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${input.apiKey}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (input.idempotencyKey) {
+    headers['Idempotency-Key'] = input.idempotencyKey;
+  }
+
+  let response: { ok: boolean; status: number; text(): Promise<string> };
+  try {
+    response = await http(OWNER_NOTIFY_RESEND_API_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        from: input.sender,
+        to: [input.recipient],
+        subject: input.subject,
+        text: input.text,
+        html: input.html,
+      }),
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error('Resend send timed out');
+    }
+    throw error;
+  }
+
+  try {
+    await response.text();
+  } catch {
+    // Body is unused; never log it.
+  }
+  if (!response.ok) {
+    throw new Error(`Resend send HTTP ${response.status}`);
+  }
+}
+
+class SkipOwnerNotifyError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'SkipOwnerNotifyError';
+  }
+}
+
 function envOwnerNotifyConfig(env: NodeJS.ProcessEnv): OwnerNotifyConfig | undefined {
   const recipient = env[OWNER_NOTIFY_RECIPIENT_ENV]?.trim();
   const sender = env[OWNER_NOTIFY_SENDER_ENV]?.trim();
   if (isNotifyEmail(recipient) && isNotifyEmail(sender)) {
     return { recipient, sender };
+  }
+  return undefined;
+}
+
+function parseResendApiKey(secretString: string | undefined): string | undefined {
+  if (!secretString || !secretString.trim()) {
+    return undefined;
+  }
+  const parsed = parseJsonObjectOrString(secretString);
+  if (typeof parsed === 'string') {
+    return parsed.trim() || undefined;
+  }
+  return firstString(parsed, ['apiKey', 'api_key', 'key']);
+}
+
+function firstString(
+  record: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
   }
   return undefined;
 }
@@ -257,26 +436,33 @@ async function getSsmParameter(name: string): Promise<string | undefined> {
   }
 }
 
-async function sendSesEmail(input: {
-  sender: string;
-  recipient: string;
-  subject: string;
-  text: string;
-  html: string;
-}): Promise<void> {
-  await ses.send(
-    new SendEmailCommand({
-      Source: input.sender,
-      Destination: { ToAddresses: [input.recipient] },
-      Message: {
-        Subject: { Data: input.subject, Charset: 'UTF-8' },
-        Body: {
-          Text: { Data: input.text, Charset: 'UTF-8' },
-          Html: { Data: input.html, Charset: 'UTF-8' },
-        },
-      },
-    }),
-  );
+function timedFetch(timeoutMs: number): OwnerNotifyFetch {
+  return async (url, init) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (init?.signal) {
+      if (init.signal.aborted) {
+        controller.abort();
+      } else {
+        init.signal.addEventListener('abort', () => controller.abort(), {
+          once: true,
+        });
+      }
+    }
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const name = (error as { name?: unknown }).name;
+  return name === 'AbortError' || name === 'TimeoutError';
 }
 
 function isSsmMissing(error: unknown): boolean {

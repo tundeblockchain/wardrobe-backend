@@ -112,7 +112,7 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     });
   });
 
-  test('webhook Lambdas enqueue; only OwnerNotifyFn may send SES', () => {
+  test('webhook Lambdas enqueue; only OwnerNotifyFn reads the Resend secret', () => {
     const stripeEnv = functionEnvById(template, 'StripeWebhookFn');
     const superwallEnv = functionEnvById(template, 'EntitlementsWebhookFn');
     const notifyEnv = functionEnvById(template, 'OwnerNotifyFn');
@@ -133,9 +133,12 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
         OWNER_NOTIFY_QUEUE_URL: expect.anything(),
         OWNER_NOTIFY_RECIPIENT_PARAM: '/wardrobe/dev/owner-notify/recipient',
         OWNER_NOTIFY_SENDER_PARAM: '/wardrobe/dev/owner-notify/sender',
+        OWNER_NOTIFY_RESEND_SECRET_ARN: expect.anything(),
       }),
     );
     expect(billingEnv).not.toHaveProperty('OWNER_NOTIFY_QUEUE_URL');
+    expect(stripeEnv).not.toHaveProperty('OWNER_NOTIFY_RESEND_SECRET_ARN');
+    expect(superwallEnv).not.toHaveProperty('OWNER_NOTIFY_RESEND_SECRET_ARN');
 
     expect(actionsFor(template, 'StripeWebhookFn', 'sqs:')).toEqual(
       expect.arrayContaining(['sqs:SendMessage']),
@@ -146,22 +149,22 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(actionsFor(template, 'StripeWebhookFn', 'ses:')).toEqual([]);
     expect(actionsFor(template, 'EntitlementsWebhookFn', 'ses:')).toEqual([]);
     expect(actionsFor(template, 'BillingFn', 'ses:')).toEqual([]);
-    expect(actionsFor(template, 'OwnerNotifyFn', 'ses:')).toEqual(['ses:SendEmail']);
-    expect(actionsFor(template, 'OwnerNotifyFn', 'ses:')).not.toEqual(
-      expect.arrayContaining(['ses:SendRawEmail']),
-    );
+    expect(actionsFor(template, 'OwnerNotifyFn', 'ses:')).toEqual([]);
     expect(actionsFor(template, 'OwnerNotifyFn', 'ssm:')).toEqual(
       expect.arrayContaining(['ssm:GetParameter', 'ssm:GetParameters']),
     );
     expect(actionsFor(template, 'OwnerNotifyFn', 'dynamodb:')).toEqual(
       expect.arrayContaining(['dynamodb:PutItem', 'dynamodb:DeleteItem']),
     );
+    expect(actionsFor(template, 'OwnerNotifyFn', 'secretsmanager:')).toEqual(
+      expect.arrayContaining(['secretsmanager:GetSecretValue']),
+    );
 
     const notifyTimeout = functionById(template, 'OwnerNotifyFn')?.Timeout;
     expect(notifyTimeout).toBe(OWNER_NOTIFY_LAMBDA_TIMEOUT_SECONDS);
   });
 
-  test('SES is scoped to the sender identity ARN and SSM is scoped to owner-notify params', () => {
+  test('Resend secret grant is scoped and SES permissions are absent', () => {
     const policies = Object.values(
       template.findResources('AWS::IAM::Policy'),
     ) as PolicyResource[];
@@ -169,25 +172,27 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
       JSON.stringify(policy).includes('OwnerNotifyFn'),
     );
     const serialized = JSON.stringify(ownerPolicies);
-    expect(serialized).toContain('ses:SendEmail');
-    expect(serialized).not.toContain('ses:SendRawEmail');
-    expect(serialized).not.toContain(':identity/*');
-    expect(serialized).toContain(':identity/');
-    expect(serialized).toMatch(
-      /SsmParameterValue.*ownernotifysender.*Parameter/,
-    );
-    expect(serialized).toContain('/wardrobe/dev/owner-notify/sender');
+    expect(serialized).toContain('secretsmanager:GetSecretValue');
+    expect(serialized).not.toContain('ses:');
+    expect(serialized).not.toContain('ses:SendEmail');
+    expect(serialized).not.toContain(':identity/');
     expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/recipient');
     expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/sender');
     expect(serialized).toContain('NOTIFY#*');
+
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/dev/resend-api-key',
+    });
   });
 
   test('does not hardcode mailbox addresses in the template', () => {
     const synthesized = JSON.stringify(template.toJSON());
     expect(synthesized).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
     expect(synthesized).not.toContain('owner@');
+    expect(synthesized).not.toMatch(/\bre_[A-Za-z0-9]+/);
     expect(synthesized).toContain('/wardrobe/dev/owner-notify/recipient');
     expect(synthesized).toContain('/wardrobe/dev/owner-notify/sender');
+    expect(synthesized).toContain('wardrobe/dev/resend-api-key');
   });
 
   test('stage suffix is applied to queue and SSM parameter names', () => {
@@ -202,6 +207,9 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
         OWNER_NOTIFY_SENDER_PARAM: '/wardrobe/staging/owner-notify/sender',
       }),
     );
+    staging.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'wardrobe/staging/resend-api-key',
+    });
   });
 
   test('exposes queue and SSM parameter name outputs', () => {
@@ -213,6 +221,9 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     });
     template.hasOutput('OwnerNotifySenderParamName', {
       Value: '/wardrobe/dev/owner-notify/sender',
+    });
+    template.hasOutput('OwnerNotifyResendSecretName', {
+      Value: 'wardrobe/dev/resend-api-key',
     });
   });
 });
