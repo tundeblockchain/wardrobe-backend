@@ -1,5 +1,6 @@
 import {
   fetchReceivedEmail,
+  PermanentResendError,
   RESEND_API_BASE,
   sendEmail,
 } from '../../src/functions/support/resend';
@@ -66,6 +67,71 @@ describe('Resend HTTP client (WARDROBE-38)', () => {
         http,
       ),
     ).rejects.toThrow('Resend send HTTP 429');
+  });
+
+  it.each([429, 500, 503])(
+    'throws a retryable error on HTTP %s',
+    async (status) => {
+      const http = jest.fn().mockResolvedValue({
+        ok: false,
+        status,
+        text: async () => '{"message":"failed"}',
+      });
+      await expect(
+        sendEmail(
+          {
+            apiKey: 're_test',
+            from: 'support@example.test',
+            to: 'tunde@example.test',
+            subject: 'Hello',
+            text: 'Body',
+          },
+          http,
+        ),
+      ).rejects.toThrow(`Resend send HTTP ${status}`);
+    },
+  );
+
+  it.each([400, 403, 422])(
+    'throws a permanent error on HTTP %s so owner-notify can drop',
+    async (status) => {
+      const http = jest.fn().mockResolvedValue({
+        ok: false,
+        status,
+        text: async () => '{"message":"failed"}',
+      });
+      await expect(
+        sendEmail(
+          {
+            apiKey: 're_test',
+            from: 'support@example.test',
+            to: 'tunde@example.test',
+            subject: 'Hello',
+            text: 'Body',
+          },
+          http,
+        ),
+      ).rejects.toBeInstanceOf(PermanentResendError);
+    },
+  );
+
+  it('throws when the request times out so callers can retry', async () => {
+    const timeout = Object.assign(new Error('The operation was aborted'), {
+      name: 'AbortError',
+    });
+    const http = jest.fn().mockRejectedValue(timeout);
+    await expect(
+      sendEmail(
+        {
+          apiKey: 're_test',
+          from: 'support@example.test',
+          to: 'tunde@example.test',
+          subject: 'Hello',
+          text: 'Body',
+        },
+        http,
+      ),
+    ).rejects.toThrow('Resend send timed out');
   });
 
   it('GETs /emails/receiving/{id} and returns undefined on failure', async () => {

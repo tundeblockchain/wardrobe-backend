@@ -128,17 +128,24 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
         OWNER_NOTIFY_QUEUE_URL: expect.anything(),
       }),
     );
+    const supportEnv = functionEnvById(template, 'SupportFn');
     expect(notifyEnv).toEqual(
       expect.objectContaining({
         OWNER_NOTIFY_QUEUE_URL: expect.anything(),
-        OWNER_NOTIFY_RECIPIENT_PARAM: '/wardrobe/dev/owner-notify/recipient',
-        OWNER_NOTIFY_SENDER_PARAM: '/wardrobe/dev/owner-notify/sender',
-        OWNER_NOTIFY_RESEND_SECRET_ARN: expect.anything(),
+        RESEND_SECRET_ARN: expect.anything(),
+        SUPPORT_MAIL_SECRET_ARN: expect.anything(),
       }),
     );
+    expect(notifyEnv?.RESEND_SECRET_ARN).toEqual(supportEnv?.RESEND_SECRET_ARN);
+    expect(notifyEnv?.SUPPORT_MAIL_SECRET_ARN).toEqual(
+      supportEnv?.SUPPORT_MAIL_SECRET_ARN,
+    );
+    expect(notifyEnv).not.toHaveProperty('OWNER_NOTIFY_RESEND_SECRET_ARN');
+    expect(notifyEnv).not.toHaveProperty('OWNER_NOTIFY_RECIPIENT_PARAM');
+    expect(notifyEnv).not.toHaveProperty('OWNER_NOTIFY_SENDER_PARAM');
     expect(billingEnv).not.toHaveProperty('OWNER_NOTIFY_QUEUE_URL');
-    expect(stripeEnv).not.toHaveProperty('OWNER_NOTIFY_RESEND_SECRET_ARN');
-    expect(superwallEnv).not.toHaveProperty('OWNER_NOTIFY_RESEND_SECRET_ARN');
+    expect(stripeEnv).not.toHaveProperty('RESEND_SECRET_ARN');
+    expect(superwallEnv).not.toHaveProperty('RESEND_SECRET_ARN');
 
     expect(actionsFor(template, 'StripeWebhookFn', 'sqs:')).toEqual(
       expect.arrayContaining(['sqs:SendMessage']),
@@ -150,9 +157,7 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(actionsFor(template, 'EntitlementsWebhookFn', 'ses:')).toEqual([]);
     expect(actionsFor(template, 'BillingFn', 'ses:')).toEqual([]);
     expect(actionsFor(template, 'OwnerNotifyFn', 'ses:')).toEqual([]);
-    expect(actionsFor(template, 'OwnerNotifyFn', 'ssm:')).toEqual(
-      expect.arrayContaining(['ssm:GetParameter', 'ssm:GetParameters']),
-    );
+    expect(actionsFor(template, 'OwnerNotifyFn', 'ssm:')).toEqual([]);
     expect(actionsFor(template, 'OwnerNotifyFn', 'dynamodb:')).toEqual(
       expect.arrayContaining(['dynamodb:PutItem', 'dynamodb:DeleteItem']),
     );
@@ -177,28 +182,20 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(serialized).not.toContain('ses:');
     expect(serialized).not.toContain('ses:SendEmail');
     expect(serialized).not.toContain(':identity/');
-    expect(serialized).toContain('OwnerNotifyResendSecret');
-    expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/recipient');
-    expect(serialized).toContain('parameter/wardrobe/dev/owner-notify/sender');
+    expect(serialized).toContain('ResendSecret');
+    expect(serialized).toContain('SupportMailSecret');
+    expect(serialized).toContain('OwnerNotifyExistingSecretRead');
+    expect(serialized).not.toContain('"Ref":"OwnerNotifyResendSecret');
+    expect(serialized).not.toContain('parameter/wardrobe/dev/owner-notify/recipient');
+    expect(serialized).not.toContain('parameter/wardrobe/dev/owner-notify/sender');
     expect(serialized).toContain('NOTIFY#*');
 
-    template.hasResourceProperties('AWS::SecretsManager::Secret', {
-      Name: 'wardrobe/dev/resend-api-key',
-    });
     const secrets = Object.values(
       template.findResources('AWS::SecretsManager::Secret'),
-    ) as Array<{
-      Properties: {
-        Name?: string;
-        SecretString?: unknown;
-        GenerateSecretString?: unknown;
-      };
-    }>;
-    const ownerSecret = secrets.find(
-      (secret) => secret.Properties.Name === 'wardrobe/dev/resend-api-key',
-    );
-    expect(ownerSecret?.Properties.SecretString).toBeUndefined();
-    expect(ownerSecret?.Properties.GenerateSecretString).toBeUndefined();
+    ) as Array<{ Properties: { Name?: string } }>;
+    const secretNames = secrets.map((secret) => secret.Properties.Name);
+    expect(secretNames).toEqual(expect.arrayContaining(['wardrobe/dev/resend']));
+    expect(secretNames).not.toContain('wardrobe/dev/resend-api-key');
 
     const secretStatements = ownerPolicies.flatMap((policy) =>
       policy.Properties.PolicyDocument.Statement.filter((statement) => {
@@ -212,10 +209,10 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(
       Array.isArray(secretActions) ? secretActions : [secretActions],
     ).toEqual(['secretsmanager:GetSecretValue']);
-    expect(JSON.stringify(secretStatements[0].Resource)).toContain(
-      'OwnerNotifyResendSecret',
-    );
-    expect(JSON.stringify(secretStatements[0].Resource)).not.toContain('*');
+    const secretResources = JSON.stringify(secretStatements[0].Resource);
+    expect(secretResources).toContain('ResendSecret');
+    expect(secretResources).toContain('SupportMailSecret');
+    expect(secretResources).not.toContain('*');
   });
 
   test('does not hardcode mailbox addresses in the template', () => {
@@ -223,12 +220,14 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     expect(synthesized).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
     expect(synthesized).not.toContain('owner@');
     expect(synthesized).not.toMatch(/\bre_[A-Za-z0-9]+/);
-    expect(synthesized).toContain('/wardrobe/dev/owner-notify/recipient');
-    expect(synthesized).toContain('/wardrobe/dev/owner-notify/sender');
-    expect(synthesized).toContain('wardrobe/dev/resend-api-key');
+    expect(synthesized).toContain('wardrobe/dev/resend');
+    expect(synthesized).toContain('wardrobe/dev/support-mail');
+    expect(synthesized).not.toContain('resend-api-key');
+    expect(synthesized).not.toContain('/wardrobe/dev/owner-notify/recipient');
+    expect(synthesized).not.toContain('/wardrobe/dev/owner-notify/sender');
   });
 
-  test('stage suffix is applied to queue and SSM parameter names', () => {
+  test('stage suffix is applied to the owner-notify queue', () => {
     const staging = synthTemplate('staging');
     staging.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'wardrobe-owner-notify-staging',
@@ -236,27 +235,22 @@ describe('owner notify stack wiring (WARDROBE-273)', () => {
     const notifyEnv = functionEnvById(staging, 'OwnerNotifyFn');
     expect(notifyEnv).toEqual(
       expect.objectContaining({
-        OWNER_NOTIFY_RECIPIENT_PARAM: '/wardrobe/staging/owner-notify/recipient',
-        OWNER_NOTIFY_SENDER_PARAM: '/wardrobe/staging/owner-notify/sender',
+        RESEND_SECRET_ARN: expect.anything(),
+        SUPPORT_MAIL_SECRET_ARN: expect.anything(),
       }),
     );
     staging.hasResourceProperties('AWS::SecretsManager::Secret', {
-      Name: 'wardrobe/staging/resend-api-key',
+      Name: 'wardrobe/staging/resend',
     });
   });
 
-  test('exposes queue and SSM parameter name outputs', () => {
+  test('exposes the owner-notify queue URL', () => {
     template.hasOutput('OwnerNotifyQueueUrl', {
       Description: Match.stringLikeRegexp('owner subscription emails'),
     });
-    template.hasOutput('OwnerNotifyRecipientParamName', {
-      Value: '/wardrobe/dev/owner-notify/recipient',
-    });
-    template.hasOutput('OwnerNotifySenderParamName', {
-      Value: '/wardrobe/dev/owner-notify/sender',
-    });
-    template.hasOutput('OwnerNotifyResendSecretName', {
-      Value: 'wardrobe/dev/resend-api-key',
-    });
+    const outputIds = Object.keys(template.toJSON().Outputs ?? {});
+    expect(outputIds).not.toContain('OwnerNotifyRecipientParamName');
+    expect(outputIds).not.toContain('OwnerNotifySenderParamName');
+    expect(outputIds).not.toContain('OwnerNotifyResendSecretName');
   });
 });

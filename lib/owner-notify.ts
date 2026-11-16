@@ -10,21 +10,16 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 import {
   OWNER_NOTIFY_QUEUE_URL_ENV,
-  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
-  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
-  OWNER_NOTIFY_SENDER_PARAM_ENV,
-  ownerNotifyRecipientParamName,
-  ownerNotifyResendSecretName,
-  ownerNotifySenderParamName,
+  RESEND_SECRET_ARN_ENV,
+  SUPPORT_MAIL_SECRET_ARN_ENV,
 } from '../src/shared/owner-notify-names';
 
 /**
  * Isolated WARDROBE-273 wiring (owner subscription emails via Resend).
  *
- * Webhook Lambdas enqueue to SQS. A dedicated notifier reads SSM (or env)
- * for the sender / recipient, reads the Resend API key from Secrets Manager,
- * dedupes in Dynamo, and POSTs to Resend. Addresses and the API key are
- * never hardcoded.
+ * Webhook Lambdas enqueue to SQS. A dedicated notifier reuses the
+ * WARDROBE-38 Resend API key and support-mail from/forwardTo secrets,
+ * dedupes in Dynamo, and POSTs through the shared Resend helper.
  */
 export const OWNER_NOTIFY_LAMBDA_TIMEOUT_SECONDS = 15;
 export const OWNER_NOTIFY_MAX_RECEIVE_COUNT = 3;
@@ -34,6 +29,8 @@ export interface OwnerNotifyProps {
   table: dynamodb.ITable;
   stripeWebhookFn: NodejsFunction;
   entitlementsWebhookFn: NodejsFunction;
+  resendSecret: secretsmanager.ISecret;
+  supportMailSecret: secretsmanager.ISecret;
   commonLambdaProps: Partial<NodejsFunctionProps>;
   removalPolicy: cdk.RemovalPolicy;
 }
@@ -42,10 +39,6 @@ export interface OwnerNotifyResources {
   queue: sqs.Queue;
   dlq: sqs.Queue;
   fn: NodejsFunction;
-  resendSecret: secretsmanager.CfnSecret;
-  recipientParamName: string;
-  senderParamName: string;
-  resendSecretName: string;
 }
 
 export function addOwnerNotify(
@@ -57,13 +50,12 @@ export function addOwnerNotify(
     table,
     stripeWebhookFn,
     entitlementsWebhookFn,
+    resendSecret,
+    supportMailSecret,
     commonLambdaProps,
     removalPolicy,
   } = props;
 
-  const recipientParamName = ownerNotifyRecipientParamName(stage);
-  const senderParamName = ownerNotifySenderParamName(stage);
-  const resendSecretName = ownerNotifyResendSecretName(stage);
   const timeout = cdk.Duration.seconds(OWNER_NOTIFY_LAMBDA_TIMEOUT_SECONDS);
   const visibilityTimeout = cdk.Duration.seconds(timeout.toSeconds() * 2);
 
@@ -90,16 +82,6 @@ export function addOwnerNotify(
     },
   });
 
-  // Named secret with no SecretString / GenerateSecretString. Operators put
-  // the Resend key in after deploy. A generated placeholder would 401 Resend
-  // and be dropped as a permanent 4xx until TTL.
-  const resendSecret = new secretsmanager.CfnSecret(scope, 'OwnerNotifyResendSecret', {
-    name: resendSecretName,
-    description:
-      'Resend API key for owner subscription emails (WARDROBE-273). Set the value after deploy. Never commit the real key.',
-  });
-  resendSecret.applyRemovalPolicy(removalPolicy);
-
   const logGroup = new logs.LogGroup(scope, 'OwnerNotifyFnLogs', {
     retention: logs.RetentionDays.ONE_WEEK,
     removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -111,9 +93,8 @@ export function addOwnerNotify(
     environment: {
       ...commonLambdaProps.environment,
       [OWNER_NOTIFY_QUEUE_URL_ENV]: queue.queueUrl,
-      [OWNER_NOTIFY_RECIPIENT_PARAM_ENV]: recipientParamName,
-      [OWNER_NOTIFY_SENDER_PARAM_ENV]: senderParamName,
-      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]: resendSecret.ref,
+      [RESEND_SECRET_ARN_ENV]: resendSecret.secretArn,
+      [SUPPORT_MAIL_SECRET_ARN_ENV]: supportMailSecret.secretArn,
     },
     entry: path.join(__dirname, '../src/functions/owner-notify/handler.ts'),
     handler: 'handler',
@@ -140,23 +121,11 @@ export function addOwnerNotify(
     }),
   );
 
-  const parameterArns = [
-    parameterArn(scope, recipientParamName),
-    parameterArn(scope, senderParamName),
-  ];
   fn.addToRolePolicy(
     new iam.PolicyStatement({
-      sid: 'OwnerNotifySsmRead',
-      actions: ['ssm:GetParameter', 'ssm:GetParameters'],
-      resources: parameterArns,
-    }),
-  );
-
-  fn.addToRolePolicy(
-    new iam.PolicyStatement({
-      sid: 'OwnerNotifyResendSecretRead',
+      sid: 'OwnerNotifyExistingSecretRead',
       actions: ['secretsmanager:GetSecretValue'],
-      resources: [resendSecret.ref],
+      resources: [resendSecret.secretArn, supportMailSecret.secretArn],
     }),
   );
 
@@ -170,35 +139,10 @@ export function addOwnerNotify(
     description:
       'SQS queue for owner subscription emails (WARDROBE-273). Stripe and Superwall webhooks enqueue here.',
   });
-  new cdk.CfnOutput(scope, 'OwnerNotifyRecipientParamName', {
-    value: recipientParamName,
-    description:
-      'SSM parameter name for the owner-notify recipient address. Values are never stored in CDK.',
-  });
-  new cdk.CfnOutput(scope, 'OwnerNotifySenderParamName', {
-    value: senderParamName,
-    description:
-      'SSM parameter name for the owner-notify From address. Values are never stored in CDK.',
-  });
-  new cdk.CfnOutput(scope, 'OwnerNotifyResendSecretName', {
-    value: resendSecretName,
-    description:
-      'Secrets Manager name for the owner-notify Resend API key. Replace the placeholder; never put the key in source.',
-  });
 
   return {
     queue,
     dlq,
     fn,
-    resendSecret,
-    recipientParamName,
-    senderParamName,
-    resendSecretName,
   };
-}
-
-function parameterArn(scope: Construct, name: string): string {
-  const stack = cdk.Stack.of(scope);
-  const trimmed = name.startsWith('/') ? name.slice(1) : name;
-  return `arn:${stack.partition}:ssm:${stack.region}:${stack.account}:parameter/${trimmed}`;
 }

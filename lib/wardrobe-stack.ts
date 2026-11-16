@@ -1241,7 +1241,7 @@ export class WardrobeStack extends cdk.Stack {
     });
 
     // Isolated WARDROBE-38 module — see lib/support-mail.ts.
-    addSupportMail(this, {
+    const supportMail = addSupportMail(this, {
       stage,
       httpApi,
       authorizer: firebaseAuthorizer,
@@ -1294,12 +1294,14 @@ export class WardrobeStack extends cdk.Stack {
     grantConversionEventSecretRead(entitlements.webhookFn, conversion);
 
     // WARDROBE-273: owner subscription emails. Webhooks enqueue to SQS;
-    // OwnerNotifyFn reads SSM + Secrets Manager and POSTs to Resend.
+    // OwnerNotifyFn reuses the WARDROBE-38 Resend + support-mail secrets.
     addOwnerNotify(this, {
       stage,
       table,
       stripeWebhookFn,
       entitlementsWebhookFn: entitlements.webhookFn,
+      resendSecret: supportMail.resendSecret,
+      supportMailSecret: supportMail.supportMailSecret,
       commonLambdaProps,
       removalPolicy,
     });

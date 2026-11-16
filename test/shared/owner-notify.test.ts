@@ -34,15 +34,13 @@ import {
   loadOwnerNotifyApiKey,
   loadOwnerNotifyConfig,
   OWNER_NOTIFY_RECIPIENT_ENV,
-  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
-  OWNER_NOTIFY_RESEND_API_URL,
-  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
   OWNER_NOTIFY_SENDER_ENV,
-  OWNER_NOTIFY_SENDER_PARAM_ENV,
+  RESEND_SECRET_ARN_ENV,
   resetOwnerNotifyConfigCache,
   sendOwnerNotify,
-  sendResendEmail,
+  SUPPORT_MAIL_SECRET_ARN_ENV,
 } from '../../src/shared/owner-notify-send';
+import { RESEND_API_BASE } from '../../src/shared/resend';
 
 const LOOKUP_KEYS: StripeLookupKeys = {
   basicMonthly: 'wardrobe_basic_monthly',
@@ -547,9 +545,8 @@ describe('sendOwnerNotify', () => {
     resetOwnerNotifyConfigCache();
     mockPutItemIfNotExists.mockResolvedValue(true);
     mockDeleteItem.mockResolvedValue(undefined);
-    process.env[OWNER_NOTIFY_RECIPIENT_PARAM_ENV] =
-      '/wardrobe/dev/owner-notify/recipient';
-    process.env[OWNER_NOTIFY_SENDER_PARAM_ENV] = '/wardrobe/dev/owner-notify/sender';
+    delete process.env.OWNER_NOTIFY_RECIPIENT_PARAM;
+    delete process.env.OWNER_NOTIFY_SENDER_PARAM;
   });
 
   afterEach(() => {
@@ -615,10 +612,10 @@ describe('sendOwnerNotify', () => {
   it('loadOwnerNotifyConfig warns and skips invalid or missing addresses', async () => {
     const config = await loadOwnerNotifyConfig({
       env: {
-        [OWNER_NOTIFY_RECIPIENT_PARAM_ENV]: '/wardrobe/dev/owner-notify/recipient',
-        [OWNER_NOTIFY_SENDER_PARAM_ENV]: '/wardrobe/dev/owner-notify/sender',
+        [SUPPORT_MAIL_SECRET_ARN_ENV]:
+          'arn:aws:secretsmanager:eu-west-1:1:secret:wardrobe/dev/support-mail',
       },
-      getParameter: async () => 'not-an-email',
+      getSecret: async () => JSON.stringify({ fromEmail: 'not-an-email' }),
       log,
     });
     expect(config).toBeUndefined();
@@ -652,21 +649,43 @@ describe('sendOwnerNotify', () => {
     expect(serialized).not.toContain('sender@example.com');
   });
 
-  it('reads sender and recipient from env without calling SSM', async () => {
-    const getParameter = jest.fn();
+  it('reads sender and recipient from env without calling Secrets Manager', async () => {
+    const getSecret = jest.fn();
     const config = await loadOwnerNotifyConfig({
       env: {
         [OWNER_NOTIFY_RECIPIENT_ENV]: 'owner@example.com',
         [OWNER_NOTIFY_SENDER_ENV]: 'sender@example.com',
       },
-      getParameter,
+      getSecret,
       log,
     });
     expect(config).toEqual({
       recipient: 'owner@example.com',
       sender: 'sender@example.com',
     });
-    expect(getParameter).not.toHaveBeenCalled();
+    expect(getSecret).not.toHaveBeenCalled();
+  });
+
+  it('reuses support-mail fromEmail and forwardTo from the WARDROBE-38 secret', async () => {
+    const getSecret = jest.fn().mockResolvedValue(
+      JSON.stringify({
+        fromEmail: 'Wardrobe Support <sender@example.com>',
+        forwardTo: 'owner@example.com',
+      }),
+    );
+    const config = await loadOwnerNotifyConfig({
+      env: {
+        [SUPPORT_MAIL_SECRET_ARN_ENV]:
+          'arn:aws:secretsmanager:eu-west-1:1:secret:wardrobe/dev/support-mail',
+      },
+      getSecret,
+      log,
+    });
+    expect(config).toEqual({
+      recipient: 'owner@example.com',
+      sender: 'Wardrobe Support <sender@example.com>',
+    });
+    expect(getSecret).toHaveBeenCalledTimes(1);
   });
 
   it('warns and skips when env and SSM config are both missing', async () => {
@@ -711,8 +730,8 @@ describe('sendOwnerNotify', () => {
   it('caches a successful Resend secret read for the Lambda container', async () => {
     const getSecret = jest.fn().mockResolvedValueOnce('placeholder');
     const env = {
-      [OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]:
-        'arn:aws:secretsmanager:eu-west-1:1:secret:wardrobe/dev/resend-api-key',
+      [RESEND_SECRET_ARN_ENV]:
+        'arn:aws:secretsmanager:eu-west-1:1:secret:wardrobe/dev/resend',
     };
     const first = await loadOwnerNotifyApiKey({ env, getSecret, log });
     const second = await loadOwnerNotifyApiKey({ env, getSecret, log });
@@ -723,7 +742,7 @@ describe('sendOwnerNotify', () => {
   });
 });
 
-describe('sendResendEmail', () => {
+describe('sendOwnerNotify via shared Resend client', () => {
   function okHttp(status = 200) {
     return jest.fn().mockResolvedValue({
       ok: status >= 200 && status < 300,
@@ -740,71 +759,6 @@ describe('sendResendEmail', () => {
     });
   }
 
-  const sendInput = {
-    apiKey: 'placeholder',
-    sender: 'sender@example.com',
-    recipient: 'owner@example.com',
-    subject: 'Wardrobe subscribed: premium (web)',
-    text: 'body',
-    html: '<pre>body</pre>',
-  };
-
-  it('POSTs /emails with Idempotency-Key set to the provider event ID', async () => {
-    const http = okHttp();
-    await sendResendEmail({
-      ...sendInput,
-      idempotencyKey: EVENT_ID,
-      http,
-    });
-    expect(http).toHaveBeenCalledWith(
-      OWNER_NOTIFY_RESEND_API_URL,
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: expect.stringMatching(/^Bearer /),
-          'Idempotency-Key': EVENT_ID,
-        }),
-      }),
-    );
-    const headers = http.mock.calls[0][1].headers as Record<string, string>;
-    expect(headers.Authorization).not.toMatch(/^Bearer re_/);
-  });
-
-  it.each([429, 500, 503])(
-    'throws on HTTP %s so SQS retries and the message can reach the DLQ',
-    async (status) => {
-      await expect(
-        sendResendEmail({ ...sendInput, http: failHttp(status) }),
-      ).rejects.toThrow(`Resend send HTTP ${status}`);
-    },
-  );
-
-  it.each([400, 403, 422])(
-    'throws a permanent error on HTTP %s so the notifier can drop the message',
-    async (status) => {
-      await expect(
-        sendResendEmail({ ...sendInput, http: failHttp(status) }),
-      ).rejects.toMatchObject({ name: 'PermanentResendError', status });
-    },
-  );
-
-  it('throws when the request times out so SQS retries', async () => {
-    const timeout = Object.assign(new Error('The operation was aborted'), {
-      name: 'AbortError',
-    });
-    const http = jest.fn().mockRejectedValue(timeout);
-    await expect(sendResendEmail({ ...sendInput, http })).rejects.toThrow(
-      'Resend send timed out',
-    );
-  });
-
-  it('throws on a network error so SQS retries', async () => {
-    const http = jest.fn().mockRejectedValue(new Error('fetch failed'));
-    await expect(sendResendEmail({ ...sendInput, http })).rejects.toThrow(
-      'fetch failed',
-    );
-  });
-
   it('sends via mocked HTTP from sendOwnerNotify on success', async () => {
     const http = okHttp();
     const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -819,7 +773,7 @@ describe('sendResendEmail', () => {
       log,
     });
     expect(http).toHaveBeenCalledTimes(1);
-    expect(http.mock.calls[0][0]).toBe(OWNER_NOTIFY_RESEND_API_URL);
+    expect(http.mock.calls[0][0]).toBe(`${RESEND_API_BASE}/emails`);
     expect(http.mock.calls[0][1].headers['Idempotency-Key']).toBe(EVENT_ID);
     expect(log.info).toHaveBeenCalledWith(
       'Owner notify sent',

@@ -20,10 +20,6 @@ import { OWNER_NOTIFY_JOB } from './types';
 export {
   OWNER_NOTIFY_EVENT_TTL_SECONDS,
   OWNER_NOTIFY_QUEUE_URL_ENV,
-  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
-  OWNER_NOTIFY_SENDER_PARAM_ENV,
-  ownerNotifyRecipientParamName,
-  ownerNotifySenderParamName,
 } from './owner-notify-names';
 
 export type OwnerNotifyEventType =

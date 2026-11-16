@@ -1,55 +1,42 @@
-import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { deleteItem, keys, putItemIfNotExists } from './dynamodb';
 import { nowIso } from './ids';
 import { logger } from './logger';
 import {
   OWNER_NOTIFY_EVENT_TTL_SECONDS,
   OWNER_NOTIFY_RECIPIENT_ENV,
-  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
-  OWNER_NOTIFY_RESEND_API_URL,
-  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
-  OWNER_NOTIFY_RESEND_TIMEOUT_MS,
   OWNER_NOTIFY_SENDER_ENV,
-  OWNER_NOTIFY_SENDER_PARAM_ENV,
+  RESEND_API_KEY_ENV,
+  RESEND_SECRET_ARN_ENV,
+  SUPPORT_FORWARD_TO_ENV,
+  SUPPORT_FROM_EMAIL_ENV,
+  SUPPORT_MAIL_SECRET_ARN_ENV,
 } from './owner-notify-names';
 import {
   formatOwnerNotifyEmail,
   safeErrorMessage,
   type OwnerNotifyMessage,
 } from './owner-notify';
+import {
+  PermanentResendError,
+  sendEmail,
+  type FetchLike,
+} from './resend';
 import { getSecretString, parseJsonObjectOrString } from './secrets';
 
 export {
   OWNER_NOTIFY_EVENT_TTL_SECONDS,
   OWNER_NOTIFY_RECIPIENT_ENV,
-  OWNER_NOTIFY_RECIPIENT_PARAM_ENV,
-  OWNER_NOTIFY_RESEND_API_URL,
-  OWNER_NOTIFY_RESEND_SECRET_ARN_ENV,
-  OWNER_NOTIFY_RESEND_TIMEOUT_MS,
   OWNER_NOTIFY_SENDER_ENV,
-  OWNER_NOTIFY_SENDER_PARAM_ENV,
+  RESEND_SECRET_ARN_ENV,
+  SUPPORT_MAIL_SECRET_ARN_ENV,
 } from './owner-notify-names';
 
-const EMAIL_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export { PermanentResendError } from './resend';
 
 export interface OwnerNotifyConfig {
   recipient: string;
   sender: string;
 }
-
-export type OwnerNotifyFetch = (
-  url: string,
-  init?: {
-    method?: string;
-    headers?: Record<string, string>;
-    body?: string;
-    signal?: AbortSignal;
-  },
-) => Promise<{
-  ok: boolean;
-  status: number;
-  text(): Promise<string>;
-}>;
 
 export interface OwnerNotifySendDeps {
   env?: NodeJS.ProcessEnv;
@@ -60,8 +47,7 @@ export interface OwnerNotifySendDeps {
   loadConfig?: () => Promise<OwnerNotifyConfig | undefined>;
   loadApiKey?: () => Promise<string | undefined>;
   getSecret?: (secretId: string) => Promise<string | undefined>;
-  http?: OwnerNotifyFetch;
-  timeoutMs?: number;
+  http?: FetchLike;
   sendEmail?: (input: {
     sender: string;
     recipient: string;
@@ -72,19 +58,11 @@ export interface OwnerNotifySendDeps {
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
-export interface OwnerNotifySsmDeps {
-  env?: NodeJS.ProcessEnv;
-  getParameter?: (name: string) => Promise<string | undefined>;
-  log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
-}
-
-export interface OwnerNotifySecretDeps {
+export interface OwnerNotifyMailDeps {
   env?: NodeJS.ProcessEnv;
   getSecret?: (secretId: string) => Promise<string | undefined>;
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
-
-const ssm = new SSMClient({});
 
 let cachedConfig: { cacheKey: string; config: OwnerNotifyConfig } | undefined;
 let cachedApiKey: string | undefined;
@@ -131,8 +109,12 @@ export async function forgetOwnerNotifyEvent(
   );
 }
 
+/**
+ * From-address and recipient from the WARDROBE-38 support-mail secret
+ * (`fromEmail` / `forwardTo`), with env overrides for tests.
+ */
 export async function loadOwnerNotifyConfig(
-  deps: OwnerNotifySsmDeps = {},
+  deps: OwnerNotifyMailDeps = {},
 ): Promise<OwnerNotifyConfig | undefined> {
   const log = deps.log ?? logger;
   const env = deps.env ?? process.env;
@@ -141,52 +123,52 @@ export async function loadOwnerNotifyConfig(
     return fromEnv;
   }
 
-  const recipientParam = env[OWNER_NOTIFY_RECIPIENT_PARAM_ENV]?.trim();
-  const senderParam = env[OWNER_NOTIFY_SENDER_PARAM_ENV]?.trim();
-  if (!recipientParam || !senderParam) {
+  const secretId = env[SUPPORT_MAIL_SECRET_ARN_ENV]?.trim();
+  if (!secretId) {
     log.warn('Owner notify skipped; sender or recipient is not configured');
     return undefined;
   }
 
-  const cacheKey = `${recipientParam}\0${senderParam}`;
-  if (cachedConfig && cachedConfig.cacheKey === cacheKey) {
+  if (cachedConfig && cachedConfig.cacheKey === secretId) {
     return cachedConfig.config;
   }
 
-  const getParameter = deps.getParameter ?? getSsmParameter;
-  let recipient: string | undefined;
-  let sender: string | undefined;
+  const getSecret = deps.getSecret ?? getSecretString;
+  let parsed: Partial<OwnerNotifyConfig> = {};
   try {
-    [recipient, sender] = await Promise.all([
-      getParameter(recipientParam),
-      getParameter(senderParam),
-    ]);
+    parsed = parseMailAddresses(await getSecret(secretId));
   } catch (error) {
-    log.warn('Owner notify skipped; failed to read SSM parameters', {
+    log.warn('Owner notify skipped; failed to read support-mail secret', {
       error: safeErrorMessage(error),
     });
     return undefined;
   }
 
-  if (!isNotifyEmail(recipient) || !isNotifyEmail(sender)) {
+  const sender = parsed.sender;
+  const recipient = parsed.recipient;
+  if (!sender || !recipient) {
     log.warn('Owner notify skipped; sender or recipient is missing or invalid');
     return undefined;
   }
 
   const config = { recipient, sender };
-  cachedConfig = { cacheKey, config };
+  cachedConfig = { cacheKey: secretId, config };
   return config;
 }
 
 export async function loadOwnerNotifyApiKey(
-  deps: OwnerNotifySecretDeps = {},
+  deps: OwnerNotifyMailDeps = {},
 ): Promise<string | undefined> {
+  const env = deps.env ?? process.env;
+  const fromEnv = env[RESEND_API_KEY_ENV]?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
   if (cachedApiKey) {
     return cachedApiKey;
   }
   const log = deps.log ?? logger;
-  const env = deps.env ?? process.env;
-  const secretId = env[OWNER_NOTIFY_RESEND_SECRET_ARN_ENV]?.trim();
+  const secretId = env[RESEND_SECRET_ARN_ENV]?.trim();
   if (!secretId) {
     log.warn('Owner notify skipped; Resend secret is not configured');
     return undefined;
@@ -194,8 +176,7 @@ export async function loadOwnerNotifyApiKey(
 
   const getSecret = deps.getSecret ?? getSecretString;
   try {
-    const raw = await getSecret(secretId);
-    const apiKey = parseResendApiKey(raw);
+    const apiKey = parseResendApiKey(await getSecret(secretId));
     if (!apiKey) {
       log.warn('Owner notify skipped; Resend secret is missing or invalid');
       return undefined;
@@ -211,7 +192,8 @@ export async function loadOwnerNotifyApiKey(
 }
 
 /**
- * Dedupe, load SSM/env + Resend secret, POST to Resend.
+ * Dedupe, load the WARDROBE-38 Resend + support-mail secrets, POST via the
+ * shared Resend helper.
  * 429 / 5xx / timeout / network errors forget the claim and throw so SQS
  * retries (then DLQ). Other 4xx are logged with the event ID and dropped.
  * Missing config or secret is a quiet skip (acked).
@@ -237,7 +219,13 @@ export async function sendOwnerNotify(
   }
 
   const loadConfig =
-    deps.loadConfig ?? (() => loadOwnerNotifyConfig({ env: deps.env, log }));
+    deps.loadConfig ??
+    (() =>
+      loadOwnerNotifyConfig({
+        env: deps.env,
+        getSecret: deps.getSecret,
+        log,
+      }));
   let config: OwnerNotifyConfig | undefined;
   try {
     config = await loadConfig();
@@ -281,17 +269,18 @@ export async function sendOwnerNotify(
         });
         throw new SkipOwnerNotifyError('missing_resend_secret');
       }
-      await sendResendEmail({
-        apiKey,
-        sender: input.sender,
-        recipient: input.recipient,
-        subject: input.subject,
-        text: input.text,
-        html: input.html,
-        idempotencyKey: message.providerEventId,
-        http: deps.http,
-        timeoutMs: deps.timeoutMs,
-      });
+      await sendEmail(
+        {
+          apiKey,
+          from: input.sender,
+          to: input.recipient,
+          subject: input.subject,
+          text: input.text,
+          html: input.html,
+          idempotencyKey: message.providerEventId,
+        },
+        deps.http,
+      );
     });
   try {
     await send({
@@ -340,71 +329,6 @@ export async function sendOwnerNotify(
   }
 }
 
-export async function sendResendEmail(input: {
-  apiKey: string;
-  sender: string;
-  recipient: string;
-  subject: string;
-  text: string;
-  html: string;
-  idempotencyKey?: string;
-  http?: OwnerNotifyFetch;
-  timeoutMs?: number;
-}): Promise<void> {
-  const timeoutMs = input.timeoutMs ?? OWNER_NOTIFY_RESEND_TIMEOUT_MS;
-  const http = input.http ?? timedFetch(timeoutMs);
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${input.apiKey}`,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-  if (input.idempotencyKey) {
-    headers['Idempotency-Key'] = input.idempotencyKey;
-  }
-
-  let response: { ok: boolean; status: number; text(): Promise<string> };
-  try {
-    response = await http(OWNER_NOTIFY_RESEND_API_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        from: input.sender,
-        to: [input.recipient],
-        subject: input.subject,
-        text: input.text,
-        html: input.html,
-      }),
-    });
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw new Error('Resend send timed out');
-    }
-    throw error;
-  }
-
-  try {
-    await response.text();
-  } catch {
-    // Body is unused; never log it.
-  }
-  if (!response.ok) {
-    if (isRetryableResendStatus(response.status)) {
-      throw new Error(`Resend send HTTP ${response.status}`);
-    }
-    throw new PermanentResendError(response.status);
-  }
-}
-
-export class PermanentResendError extends Error {
-  readonly status: number;
-
-  constructor(status: number) {
-    super(`Resend send HTTP ${status}`);
-    this.name = 'PermanentResendError';
-    this.status = status;
-  }
-}
-
 class SkipOwnerNotifyError extends Error {
   constructor(reason: string) {
     super(reason);
@@ -412,17 +336,37 @@ class SkipOwnerNotifyError extends Error {
   }
 }
 
-function isRetryableResendStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
 function envOwnerNotifyConfig(env: NodeJS.ProcessEnv): OwnerNotifyConfig | undefined {
-  const recipient = env[OWNER_NOTIFY_RECIPIENT_ENV]?.trim();
-  const sender = env[OWNER_NOTIFY_SENDER_ENV]?.trim();
-  if (isNotifyEmail(recipient) && isNotifyEmail(sender)) {
+  const recipient =
+    env[OWNER_NOTIFY_RECIPIENT_ENV]?.trim() || env[SUPPORT_FORWARD_TO_ENV]?.trim();
+  const sender =
+    env[OWNER_NOTIFY_SENDER_ENV]?.trim() || env[SUPPORT_FROM_EMAIL_ENV]?.trim();
+  if (recipient && sender) {
     return { recipient, sender };
   }
   return undefined;
+}
+
+function parseMailAddresses(
+  secretString: string | undefined,
+): Partial<OwnerNotifyConfig> {
+  if (!secretString || !secretString.trim()) {
+    return {};
+  }
+  const parsed = parseJsonObjectOrString(secretString);
+  if (typeof parsed === 'string') {
+    return {};
+  }
+  const sender = firstString(parsed, ['fromEmail', 'from', SUPPORT_FROM_EMAIL_ENV]);
+  const recipient = firstString(parsed, [
+    'forwardTo',
+    'to',
+    SUPPORT_FORWARD_TO_ENV,
+  ]);
+  return {
+    ...(sender ? { sender } : {}),
+    ...(recipient ? { recipient } : {}),
+  };
 }
 
 function parseResendApiKey(secretString: string | undefined): string | undefined {
@@ -433,73 +377,18 @@ function parseResendApiKey(secretString: string | undefined): string | undefined
   if (typeof parsed === 'string') {
     return parsed.trim() || undefined;
   }
-  return firstString(parsed, ['apiKey', 'api_key', 'key']);
+  return firstString(parsed, ['apiKey', 'api_key', 'key', RESEND_API_KEY_ENV]);
 }
 
 function firstString(
   record: Record<string, unknown>,
-  keys: string[],
+  keysToTry: string[],
 ): string | undefined {
-  for (const key of keys) {
+  for (const key of keysToTry) {
     const value = record[key];
     if (typeof value === 'string' && value.trim()) {
       return value.trim();
     }
   }
   return undefined;
-}
-
-async function getSsmParameter(name: string): Promise<string | undefined> {
-  try {
-    const result = await ssm.send(
-      new GetParameterCommand({ Name: name, WithDecryption: true }),
-    );
-    return result.Parameter?.Value?.trim() || undefined;
-  } catch (error) {
-    if (isSsmMissing(error)) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function timedFetch(timeoutMs: number): OwnerNotifyFetch {
-  return async (url, init) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    if (init?.signal) {
-      if (init.signal.aborted) {
-        controller.abort();
-      } else {
-        init.signal.addEventListener('abort', () => controller.abort(), {
-          once: true,
-        });
-      }
-    }
-    try {
-      return await fetch(url, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-}
-
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const name = (error as { name?: unknown }).name;
-  return name === 'AbortError' || name === 'TimeoutError';
-}
-
-function isSsmMissing(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const name = (error as { name?: unknown }).name;
-  return name === 'ParameterNotFound' || name === 'ParameterNotFoundException';
-}
-
-function isNotifyEmail(value: string | undefined): value is string {
-  return Boolean(value && EMAIL_ADDRESS.test(value));
 }
