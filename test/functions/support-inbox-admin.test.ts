@@ -36,6 +36,7 @@ import {
   formatSupportInboxReply,
   loadSupportInboxAppLink,
   sendSupportInboxReplyBestEffort,
+  supportConversationAppUrl,
 } from '../../src/functions/support-inbox/reply';
 import { transactPutAdminReply } from '../../src/functions/support-inbox/table';
 import {
@@ -239,6 +240,18 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
       'wrong key shape',
       Buffer.from(JSON.stringify({ foo: 1 }), 'utf8').toString('base64'),
     ],
+    [
+      'uid index key',
+      Buffer.from(
+        JSON.stringify({
+          PK: 'CONV#conv_1',
+          SK: 'META',
+          uid: 'firebase-uid-owner',
+          lastMessageAt: '2026-01-01T00:00:00.000Z',
+        }),
+        'utf8',
+      ).toString('base64'),
+    ],
   ])('rejects a %s list cursor', (_name, cursor) => {
     expect(() => parseAdminListQuery({ cursor })).toThrow(SupportValidationError);
     try {
@@ -263,6 +276,7 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
       lastMessageAt: '2026-01-02T00:00:00.000Z',
       lastMessagePreview: 'x'.repeat(140),
       lastMessageAuthor: 'admin',
+      lastAdminMessageAt: '2026-01-02T00:00:00.000Z',
     });
     expect(statusAfterUserFollowUp()).toBe('open');
     expect(
@@ -379,6 +393,20 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
     expect(withoutLink.text).toBe('Thanks for writing in.');
     expect(escapeHtml(`&<>"'`)).toBe('&amp;&lt;&gt;&quot;&#39;');
   });
+
+  it('builds Open in Pocket Closet as <app-link>/support/{conversationId} and trims a trailing slash', () => {
+    expect(
+      supportConversationAppUrl('https://example.invalid/app', 'conv_1'),
+    ).toBe('https://example.invalid/app/support/conv_1');
+    expect(
+      supportConversationAppUrl('https://example.invalid/app/', 'conv_1'),
+    ).toBe('https://example.invalid/app/support/conv_1');
+    expect(
+      supportConversationAppUrl('https://example.invalid/app///', 'conv_1'),
+    ).toBe('https://example.invalid/app/support/conv_1');
+    expect(supportConversationAppUrl(undefined, 'conv_1')).toBeUndefined();
+    expect(supportConversationAppUrl('  ', 'conv_1')).toBeUndefined();
+  });
 });
 
 describe('support inbox admin handler (WARDROBE-284)', () => {
@@ -460,6 +488,10 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
   }));
   const claimRetry = jest.fn(async () => undefined);
   const setMessageEmailStatus = jest.fn(async () => undefined);
+  const setMessagePushStatus = jest.fn(async () => undefined);
+  const sendPush = jest.fn(
+    async (): Promise<'sent' | 'failed' | 'skipped'> => 'skipped',
+  );
   const presignGet = jest.fn(async () => 'https://s3.example/signed');
   const sendReply = jest.fn(async () => undefined);
   const verifyIdToken = jest.fn(async (token: string) => {
@@ -482,6 +514,8 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     requireMessage,
     claimRetry,
     setMessageEmailStatus,
+    setMessagePushStatus,
+    sendPush,
     presignGet,
     reply: { sendReply },
   };
@@ -891,6 +925,19 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       messageSk: 'MSG#2026-01-03T00:00:00.000Z#msg_admin',
       emailStatus: 'sent',
     });
+    expect(sendPush).toHaveBeenCalledWith(
+      {
+        conversationId: 'conv_1',
+        messageId: 'msg_admin',
+        uid: 'firebase-uid-1',
+      },
+      undefined,
+    );
+    expect(setMessagePushStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_1',
+      messageSk: 'MSG#2026-01-03T00:00:00.000Z#msg_admin',
+      pushStatus: 'skipped',
+    });
   });
 
   it('returns 201, sets status replied, and records emailStatus failed when Resend throws', async () => {
@@ -927,6 +974,61 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     expect(sendReply).toHaveBeenCalled();
     expect(setMessageEmailStatus).toHaveBeenCalledWith(
       expect.objectContaining({ emailStatus: 'failed' }),
+    );
+    expect(result.statusCode).toBe(201);
+  });
+
+  it('sends FCM after the reply write, stores pushStatus, and keeps 201 when push throws', async () => {
+    sendPush.mockResolvedValueOnce('sent');
+    const sent = asResult(
+      await handleSupportInboxAdmin(
+        event({
+          method: 'POST',
+          path: '/admin/support/conversations/conv_1/replies',
+          routeKey: 'POST /admin/support/conversations/{conversationId}/replies',
+          pathParameters: { conversationId: 'conv_1' },
+          body: { message: 'Thanks for writing in.' },
+        }),
+        deps,
+      ),
+    );
+    expect(sent.statusCode).toBe(201);
+    expect(bodyOf(sent)).toEqual({
+      messageId: 'msg_admin',
+      emailStatus: 'sent',
+    });
+    expect(sendPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv_1',
+        messageId: 'msg_admin',
+        uid: 'firebase-uid-1',
+      }),
+      undefined,
+    );
+    expect(setMessagePushStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ pushStatus: 'sent' }),
+    );
+
+    sendPush.mockRejectedValueOnce(new Error('FCM exploded'));
+    const thrown = asResult(
+      await handleSupportInboxAdmin(
+        event({
+          method: 'POST',
+          path: '/admin/support/conversations/conv_1/replies',
+          routeKey: 'POST /admin/support/conversations/{conversationId}/replies',
+          pathParameters: { conversationId: 'conv_1' },
+          body: { message: 'Thanks for writing in.' },
+        }),
+        deps,
+      ),
+    );
+    expect(thrown.statusCode).toBe(201);
+    expect(bodyOf(thrown)).toEqual({
+      messageId: 'msg_admin',
+      emailStatus: 'sent',
+    });
+    expect(setMessagePushStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ pushStatus: 'failed' }),
     );
   });
 
@@ -1263,7 +1365,7 @@ describe('support inbox admin reply email (WARDROBE-284)', () => {
         env: {
           SUPPORT_FROM_EMAIL: 'Wardrobe Support <support@example.com>',
           SUPPORT_INBOX_RECIPIENT: 'inbox@example.com',
-          SUPPORT_INBOX_APP_LINK: 'https://example.invalid/app',
+          SUPPORT_INBOX_APP_LINK: 'https://example.invalid/app/',
           RESEND_API_KEY: 're_test_placeholder',
         },
         http,
@@ -1286,7 +1388,13 @@ describe('support inbox admin reply email (WARDROBE-284)', () => {
     expect(payload.to).toEqual(['user@example.com']);
     expect(payload.reply_to).toBe('inbox@example.com');
     expect(payload.html).toContain('Open in Pocket Closet');
-    expect(payload.text).toContain('https://example.invalid/app');
+    expect(payload.html).toContain(
+      'https://example.invalid/app/support/conv_1',
+    );
+    expect(payload.text).toContain(
+      'https://example.invalid/app/support/conv_1',
+    );
+    expect(payload.text).not.toContain('https://example.invalid/app/support/conv_1/');
   });
 
   it('omits Reply-To and the app link when those params are missing and still sends', async () => {
@@ -1373,8 +1481,8 @@ describe('support inbox admin reply email (WARDROBE-284)', () => {
       { body?: string },
     ];
     const payload = JSON.parse(init.body ?? '{}') as { html: string; text: string };
-    expect(payload.html).toContain('https://runtime.example/app');
-    expect(payload.text).toContain('https://runtime.example/app');
+    expect(payload.html).toContain('https://runtime.example/app/support/conv_1');
+    expect(payload.text).toContain('https://runtime.example/app/support/conv_1');
   });
 
   it('times out Resend and records failed without leaking PII', async () => {

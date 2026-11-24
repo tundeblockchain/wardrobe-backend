@@ -1,7 +1,9 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   QueryCommand,
   TransactWriteCommand,
   UpdateCommand,
@@ -12,17 +14,27 @@ import { nowIso } from '../../shared/ids';
 import {
   SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
   SUPPORT_TABLE_NAME_ENV,
+  SUPPORT_UNREAD_COUNT_MAX,
   supportEmailRetryClaimStaleBefore,
   type SupportConversationStatus,
   type SupportEmailStatus,
   type SupportMessageAuthor,
+  type SupportPushStatus,
 } from '../../shared/support-inbox-names';
 import {
   SupportNotFoundError,
   SupportNotRetryableError,
   SupportValidationError,
 } from './http';
-import { keys, STATUS_LAST_MESSAGE_INDEX } from './keys';
+import { keys, STATUS_LAST_MESSAGE_INDEX, UID_LAST_MESSAGE_INDEX } from './keys';
+import { conversationUnread } from './status';
+
+/**
+ * Minimal UidLastMessageIndex projection for unreadCount: conversation
+ * key, lastAdminMessageAt (or lastMessageAuthor/lastMessageAt), lastReadAt.
+ */
+export const SUPPORT_UNREAD_COUNT_PROJECTION =
+  'PK, SK, #uid, #lastAdminMessageAt, #lastReadAt, #lastMessageAuthor, #lastMessageAt';
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -149,7 +161,8 @@ export async function updateMessageEmailStatus(input: {
   /**
    * Reply path omits this and always writes META lastEmailStatus.
    * Retry of the latest admin message passes `{ createdAt }` (conditional).
-   * Retry of an older admin message passes `false` (META untouched).
+   * Retry of an older admin message, and user follow-up operator alerts,
+   * pass `false` (META untouched).
    */
   conversationLastEmailStatus?: false | { createdAt: string };
   tableName?: string;
@@ -358,6 +371,8 @@ export async function transactPutAdminReply(input: {
   lastMessagePreview: string;
   lastMessageAuthor: SupportMessageAuthor;
   lastAdminMessageId?: string;
+  lastAdminMessageAt?: string;
+  expectedUid?: string;
   tableName?: string;
 }): Promise<void> {
   const tableName = input.tableName ?? supportInboxTableName();
@@ -367,6 +382,28 @@ export async function transactPutAdminReply(input: {
     (typeof input.message.messageId === 'string'
       ? input.message.messageId
       : undefined);
+  const expressionAttributeValues: Record<string, unknown> = {
+    ':status': input.status,
+    ':lastMessageAt': input.lastMessageAt,
+    ':preview': input.lastMessagePreview,
+    ':author': input.lastMessageAuthor,
+    ':now': now,
+  };
+  let updateExpression =
+    'SET #status = :status, lastMessageAt = :lastMessageAt, lastMessagePreview = :preview, lastMessageAuthor = :author, #updatedAt = :now';
+  if (lastAdminMessageId) {
+    updateExpression += ', lastAdminMessageId = :lastAdminMessageId';
+    expressionAttributeValues[':lastAdminMessageId'] = lastAdminMessageId;
+  }
+  if (input.lastAdminMessageAt) {
+    updateExpression += ', lastAdminMessageAt = :lastAdminMessageAt';
+    expressionAttributeValues[':lastAdminMessageAt'] = input.lastAdminMessageAt;
+  }
+  const conditionParts = ['attribute_exists(PK)'];
+  if (input.expectedUid) {
+    conditionParts.push('#uid = :expectedUid');
+    expressionAttributeValues[':expectedUid'] = input.expectedUid;
+  }
   try {
     await client.send(
       new TransactWriteCommand({
@@ -385,26 +422,14 @@ export async function transactPutAdminReply(input: {
                 PK: keys.conversationPk(input.conversationId),
                 SK: keys.metaSk,
               },
-              UpdateExpression:
-                'SET #status = :status, lastMessageAt = :lastMessageAt, lastMessagePreview = :preview, lastMessageAuthor = :author, #updatedAt = :now' +
-                (lastAdminMessageId
-                  ? ', lastAdminMessageId = :lastAdminMessageId'
-                  : ''),
+              UpdateExpression: updateExpression,
               ExpressionAttributeNames: {
                 '#status': 'status',
                 '#updatedAt': 'updatedAt',
+                ...(input.expectedUid ? { '#uid': 'uid' } : {}),
               },
-              ExpressionAttributeValues: {
-                ':status': input.status,
-                ':lastMessageAt': input.lastMessageAt,
-                ':preview': input.lastMessagePreview,
-                ':author': input.lastMessageAuthor,
-                ':now': now,
-                ...(lastAdminMessageId
-                  ? { ':lastAdminMessageId': lastAdminMessageId }
-                  : {}),
-              },
-              ConditionExpression: 'attribute_exists(PK)',
+              ExpressionAttributeValues: expressionAttributeValues,
+              ConditionExpression: conditionParts.join(' AND '),
             },
           },
         ],
@@ -416,6 +441,271 @@ export async function transactPutAdminReply(input: {
     }
     throw error;
   }
+}
+
+export async function updateConversationLastReadAt(input: {
+  conversationId: string;
+  uid: string;
+  lastReadAt?: string;
+  tableName?: string;
+}): Promise<void> {
+  const lastReadAt = input.lastReadAt ?? nowIso();
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: input.tableName ?? supportInboxTableName(),
+        Key: {
+          PK: keys.conversationPk(input.conversationId),
+          SK: keys.metaSk,
+        },
+        UpdateExpression: 'SET lastReadAt = :lastReadAt, #updatedAt = :lastReadAt',
+        ExpressionAttributeNames: {
+          '#updatedAt': 'updatedAt',
+          '#uid': 'uid',
+        },
+        ExpressionAttributeValues: {
+          ':lastReadAt': lastReadAt,
+          ':uid': input.uid,
+        },
+        ConditionExpression: 'attribute_exists(PK) AND #uid = :uid',
+      }),
+    );
+  } catch (error) {
+    if (isConditionalCheckFailed(error)) {
+      throw new SupportNotFoundError();
+    }
+    throw error;
+  }
+}
+
+export async function updateMessagePushStatus(input: {
+  conversationId: string;
+  messageSk: string;
+  pushStatus: SupportPushStatus;
+  tableName?: string;
+}): Promise<void> {
+  await client.send(
+    new UpdateCommand({
+      TableName: input.tableName ?? supportInboxTableName(),
+      Key: {
+        PK: keys.conversationPk(input.conversationId),
+        SK: input.messageSk,
+      },
+      UpdateExpression: 'SET pushStatus = :status, #updatedAt = :now',
+      ExpressionAttributeNames: {
+        '#updatedAt': 'updatedAt',
+      },
+      ExpressionAttributeValues: {
+        ':status': input.pushStatus,
+        ':now': nowIso(),
+      },
+    }),
+  );
+}
+
+export async function listConversationsByUid(input: {
+  uid: string;
+  limit: number;
+  exclusiveStartKey?: Record<string, unknown>;
+  tableName?: string;
+}): Promise<ListConversationsByStatusResult> {
+  return queryConversationsByUid({
+    uid: input.uid,
+    limit: input.limit,
+    exclusiveStartKey: input.exclusiveStartKey,
+    tableName: input.tableName,
+  });
+}
+
+export type QueryUidConversationsPageFn = (input: {
+  uid: string;
+  limit: number;
+  exclusiveStartKey?: Record<string, unknown>;
+  tableName?: string;
+  projectionExpression?: string;
+}) => Promise<ListConversationsByStatusResult>;
+
+/**
+ * Approximate unread conversations for `uid`, paging UidLastMessageIndex
+ * with a minimal projection. Examines at most SUPPORT_UNREAD_COUNT_MAX
+ * conversations (not unread hits) and returns how many of those are unread.
+ */
+export async function countUnreadConversationsByUid(
+  input: {
+    uid: string;
+    tableName?: string;
+    pageSize?: number;
+  },
+  queryPage: QueryUidConversationsPageFn = queryUnreadConversationsByUidPage,
+): Promise<number> {
+  const maxItems = SUPPORT_UNREAD_COUNT_MAX;
+  const pageSize = Math.min(input.pageSize ?? maxItems, maxItems);
+  let unreadCount = 0;
+  let scanned = 0;
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  do {
+    const remaining = maxItems - scanned;
+    if (remaining <= 0) {
+      break;
+    }
+    const page = await queryPage({
+      uid: input.uid,
+      limit: Math.min(pageSize, remaining),
+      exclusiveStartKey,
+      tableName: input.tableName,
+      projectionExpression: SUPPORT_UNREAD_COUNT_PROJECTION,
+    });
+    for (const item of page.items) {
+      scanned += 1;
+      if (conversationUnread(item)) {
+        unreadCount += 1;
+      }
+      if (scanned >= maxItems) {
+        return Math.min(unreadCount, maxItems);
+      }
+    }
+    exclusiveStartKey = page.lastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return Math.min(unreadCount, maxItems);
+}
+
+async function queryUnreadConversationsByUidPage(input: {
+  uid: string;
+  limit: number;
+  exclusiveStartKey?: Record<string, unknown>;
+  tableName?: string;
+}): Promise<ListConversationsByStatusResult> {
+  return queryConversationsByUid({
+    ...input,
+    unreadProjection: true,
+  });
+}
+
+async function queryConversationsByUid(input: {
+  uid: string;
+  limit: number;
+  exclusiveStartKey?: Record<string, unknown>;
+  tableName?: string;
+  unreadProjection?: boolean;
+}): Promise<ListConversationsByStatusResult> {
+  try {
+    const expressionAttributeNames: Record<string, string> = {
+      '#uid': 'uid',
+    };
+    if (input.unreadProjection) {
+      expressionAttributeNames['#lastAdminMessageAt'] = 'lastAdminMessageAt';
+      expressionAttributeNames['#lastReadAt'] = 'lastReadAt';
+      expressionAttributeNames['#lastMessageAuthor'] = 'lastMessageAuthor';
+      expressionAttributeNames['#lastMessageAt'] = 'lastMessageAt';
+    }
+    const result = await client.send(
+      new QueryCommand({
+        TableName: input.tableName ?? supportInboxTableName(),
+        IndexName: UID_LAST_MESSAGE_INDEX,
+        KeyConditionExpression: '#uid = :uid',
+        ExpressionAttributeNames: expressionAttributeNames,
+        ExpressionAttributeValues: {
+          ':uid': input.uid,
+        },
+        ScanIndexForward: false,
+        Limit: input.limit,
+        ...(input.unreadProjection
+          ? { ProjectionExpression: SUPPORT_UNREAD_COUNT_PROJECTION }
+          : {}),
+        ...(input.exclusiveStartKey
+          ? { ExclusiveStartKey: input.exclusiveStartKey }
+          : {}),
+      }),
+    );
+
+    return {
+      items: (result.Items ?? []) as Array<Record<string, unknown>>,
+      lastEvaluatedKey: result.LastEvaluatedKey as
+        | Record<string, unknown>
+        | undefined,
+    };
+  } catch (error) {
+    if (
+      input.exclusiveStartKey &&
+      isDynamoValidationException(error)
+    ) {
+      throw new SupportValidationError({ cursor: 'must be a valid cursor' });
+    }
+    throw error;
+  }
+}
+
+export async function getSupportItem(
+  pk: string,
+  sk: string,
+  tableName?: string,
+): Promise<Record<string, unknown> | undefined> {
+  const result = await client.send(
+    new GetCommand({
+      TableName: tableName ?? supportInboxTableName(),
+      Key: { PK: pk, SK: sk },
+    }),
+  );
+  return result.Item;
+}
+
+export async function putSupportItem(
+  item: Record<string, unknown>,
+  tableName?: string,
+): Promise<void> {
+  await client.send(
+    new PutCommand({
+      TableName: tableName ?? supportInboxTableName(),
+      Item: item,
+    }),
+  );
+}
+
+export async function deleteSupportItem(
+  pk: string,
+  sk: string,
+  tableName?: string,
+): Promise<void> {
+  await client.send(
+    new DeleteCommand({
+      TableName: tableName ?? supportInboxTableName(),
+      Key: { PK: pk, SK: sk },
+    }),
+  );
+}
+
+export async function queryDevicesByUid(
+  uid: string,
+  tableName?: string,
+): Promise<Array<Record<string, unknown>>> {
+  const items: Array<Record<string, unknown>> = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await client.send(
+      new QueryCommand({
+        TableName: tableName ?? supportInboxTableName(),
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: {
+          ':pk': keys.devicePk(uid),
+          ':sk': keys.deviceSkPrefix,
+        },
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    );
+    items.push(...((result.Items ?? []) as Array<Record<string, unknown>>));
+    exclusiveStartKey = result.LastEvaluatedKey as
+      | Record<string, unknown>
+      | undefined;
+  } while (exclusiveStartKey);
+
+  return items;
+}
+
+function isDynamoValidationException(error: unknown): boolean {
+  return error instanceof Error && error.name === 'ValidationException';
 }
 
 export async function closeConversation(

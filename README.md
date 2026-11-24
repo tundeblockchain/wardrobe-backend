@@ -3518,10 +3518,42 @@ POST /admin/support/conversations/{conversationId}/messages/{messageId}/retry-em
 
 Missing/invalid token: `401 { "error": "unauthorized" }`. Valid token without `admin === true`: `403 { "error": "forbidden" }`. Validation: `400 { "error": "validation", "fields": { <name>: <reason> } }`. A malformed or undecodable list `cursor` (bad base64, bad JSON, or wrong key shape) is `400 { "error": "validation", "fields": { "cursor": ... } }`, not 500. Unknown conversation/message: `404 { "error": "not_found" }`. Retry of a non-failed / non-admin message, or a lost retry-email race: `409 { "error": "not_retryable" }`.
 
-Status: new feedback => `open`; admin reply => `replied` (any previous status); close => `closed` (idempotent). A later user follow-up reopening the thread is WARDROBE-286 (`statusAfterUserFollowUp` / `conversationPatchAfterMessage`) and is not exposed as a user endpoint here.
+Status: new feedback => `open`; admin reply => `replied` (any previous status); close => `closed` (idempotent). A user follow-up (WARDROBE-286) sets `open` again via `statusAfterUserFollowUp` / `conversationPatchAfterMessage`.
 
-Reply email: From = existing verified sender; To = conversation email; Reply-To = SSM `/wardrobe/<stage>/support/recipient` when set (omitted if missing). Body is the reply text plus an "Open in Pocket Closet" link from CDK context `supportInboxAppLink` or SSM `/wardrobe/<stage>/support/app-link`. If the link is missing, the email is still sent without it. HTML escapes the reply text. Write the MSG item first, then best-effort Resend (`SUPPORT_EMAIL_TIMEOUT_MS`, try/catch, never throws). Always `201` once stored. Failure logs include only `conversationId`, `messageId`, and error class/code.
+Reply email: From = existing verified sender; To = conversation email; Reply-To = SSM `/wardrobe/<stage>/support/recipient` when set (omitted if missing). Body is the reply text plus an "Open in Pocket Closet" link `<app-link>/support/{conversationId}` from CDK context `supportInboxAppLink` or SSM `/wardrobe/<stage>/support/app-link` (trailing slash on the base trimmed). If the link is missing, the email is still sent without it. HTML escapes the reply text. Write the MSG item first, then best-effort Resend (`SUPPORT_EMAIL_TIMEOUT_MS`, try/catch, never throws). Always `201` once stored. Failure logs include only `conversationId`, `messageId`, and error class/code.
 
 `POST .../retry-email` atomically claims the message first (`author=admin` and `emailStatus=failed`, or `emailStatus=sending` with `updatedAt` older than `SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS` (2 × `SUPPORT_EMAIL_TIMEOUT_MS`) → `sending`). A lost or still-fresh claim is `409 { "error": "not_retryable" }`. After the send it writes `emailStatus` `sent` or `failed`. Conversation META `lastEmailStatus` is updated only when the retried message is the latest admin message (`lastAdminMessageId` or `lastMessageAt` / `createdAt`); retrying an older admin message leaves META untouched.
 
 Granting the admin claim (operator machine, credentials not in the repo): see `docs/support-admin.md` and `npm run support:grant-admin`. The operator must sign out/in or refresh the ID token after a claim change.
+
+## Support inbox user threads and FCM (WARDROBE-286)
+
+Authenticated Flutter routes. Same SupportTable. Firebase ID token required (API Gateway authorizer plus in-Lambda verification). The uid comes from the token.
+
+```http
+POST   /support/devices
+DELETE /support/devices
+GET    /support/my/conversations
+GET    /support/my/conversations/{id}
+POST   /support/my/conversations/{id}/messages
+```
+
+Missing/invalid token: `401 { "error": "unauthorized" }`. Unknown conversation or a thread owned by someone else: `404 { "error": "not_found" }` (same body). Malformed cursor: `400 { "error": "validation" }`.
+
+1. `POST /support/devices` body `{ token: 1..4096, platform: "ios"|"android" }` → `204`. Upsert keyed per uid+token (idempotent).
+2. `DELETE /support/devices` body `{ token: 1..4096 }` → `204`. Idempotent. Only the caller's own row is deleted. A missing token returns `400 { "error": "validation" }`.
+3. `GET /support/my/conversations?limit=1..100&cursor=` (limit default 50, newest first by `lastMessageAt`) → `200 { items, unreadCount, nextCursor }`. Only conversations whose `uid` equals the caller. `unread` is true when the latest admin message is newer than `lastReadAt`. `unreadCount` is an approximate count of the caller's unread conversations, independent of the current list page. It is computed by paging GSI `UidLastMessageIndex` newest-first with a minimal `ProjectionExpression` (conversation key, `lastAdminMessageAt` / equivalent, `lastReadAt`), examining at most `SUPPORT_UNREAD_COUNT_MAX` (200) conversations. The scan stops after that many conversations, not after that many unread hits, so a caller with more than 200 conversations may be undercounted.
+4. `GET /support/my/conversations/{id}` → conversation + messages oldest first. `screenshotUrl` is a presigned GET valid 900s. Sets `lastReadAt=now`.
+5. `POST /support/my/conversations/{id}/messages` body `{ message: 1..5000 }` → `201 { messageId, status: "open" }`. Allowed in any status; reopens closed or replied. Updates META last-message fields. Best-effort support email to the support recipient (same as 281).
+
+Admin reply push: after the reply write succeeds, if the conversation has a uid, FCM HTTP v1 is sent to all of that uid's tokens. Notification `{ title: "Pocket Closet Support", body: "You have a new reply" }`, data `{ type: "support_reply", conversationId }`, plus `android` / `apns` fields so a tap opens the app when it is backgrounded or terminated. No message text or PII. Best-effort (`SUPPORT_PUSH_TIMEOUT_MS`, try/catch, never throws, never changes the 201). `pushStatus: sent|failed|skipped` is stored on the admin message (`skipped` when there is no uid, no tokens, or no credential). Tokens FCM rejects as `UNREGISTERED` or `INVALID_ARGUMENT` are deleted. No PII in logs.
+
+Admin reply email "Open in Pocket Closet" href is `<app-link>/support/{conversationId}` from SSM `/wardrobe/<stage>/support/app-link` (trailing slash trimmed). Omitted when the param is missing.
+
+The FCM service-account JSON is read at runtime from Secrets Manager `wardrobe/<stage>/fcm-service-account` and cached. Missing or invalid JSON skips push. The admin Lambda uses a lightweight Google OAuth JWT flow (`jose`); `firebase-admin` is not added to this Lambda bundle.
+
+### Operator setup
+
+1. Create (or replace the placeholder in) Secrets Manager `wardrobe/<stage>/fcm-service-account` with the Firebase service-account JSON (`project_id`, `client_email`, `private_key`). Leave the placeholder to skip push.
+2. Upload the APNs key in the Firebase console (operator). This repo does not store APNs keys.
+

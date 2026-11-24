@@ -1,8 +1,10 @@
+import { createHash } from 'crypto';
 import { nanoid } from 'nanoid';
 import { nowIso } from '../../shared/ids';
 import {
   SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
   supportEmailRetryClaimStaleBefore,
+  type SupportDevicePlatform,
   type SupportEmailStatus,
 } from '../../shared/support-inbox-names';
 import type { FeedbackInput } from './validation';
@@ -10,6 +12,9 @@ import { keys } from './keys';
 import { conversationPatchAfterMessage } from './status';
 import {
   closeConversation as closeConversationItem,
+  deleteSupportItem,
+  getSupportItem,
+  putSupportItem,
   transactPutAdminReply,
   transactPutSupportItems,
 } from './table';
@@ -164,6 +169,152 @@ export async function persistAdminReply(
     messageSk: String(message.SK),
     body: input.body,
   };
+}
+
+export interface PersistUserFollowUpInput {
+  conversationId: string;
+  uid: string;
+  body: string;
+  messageId?: string;
+  createdAt?: string;
+}
+
+export function userFollowUpMessageItem(
+  input: PersistUserFollowUpInput,
+): Record<string, unknown> {
+  const createdAt = input.createdAt ?? nowIso();
+  const messageId = input.messageId ?? newMessageId();
+  return {
+    PK: keys.conversationPk(input.conversationId),
+    SK: keys.messageSk(createdAt, messageId),
+    entityType: 'MESSAGE',
+    conversationId: input.conversationId,
+    messageId,
+    author: 'user',
+    body: input.body,
+    createdAt,
+  };
+}
+
+/**
+ * Store a user follow-up. Allowed in any status; META status becomes `open`
+ * via `conversationPatchAfterMessage({ author: 'user' })`.
+ */
+export async function persistUserFollowUp(
+  input: PersistUserFollowUpInput,
+): Promise<PersistAdminReplyResult> {
+  const createdAt = input.createdAt ?? nowIso();
+  const messageId = input.messageId ?? newMessageId();
+  const message = userFollowUpMessageItem({
+    ...input,
+    createdAt,
+    messageId,
+  });
+  const patch = conversationPatchAfterMessage({
+    author: 'user',
+    body: input.body,
+    createdAt,
+  });
+  await transactPutAdminReply({
+    conversationId: input.conversationId,
+    message,
+    expectedUid: input.uid,
+    ...patch,
+  });
+  return {
+    conversationId: input.conversationId,
+    messageId,
+    messageSk: String(message.SK),
+    body: input.body,
+  };
+}
+
+export function isConversationOwnedBy(
+  item: Record<string, unknown> | undefined,
+  uid: string,
+): item is Record<string, unknown> {
+  return (
+    !!item &&
+    item.entityType === 'CONVERSATION' &&
+    typeof item.uid === 'string' &&
+    item.uid === uid
+  );
+}
+
+export function hashDeviceToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+export function deviceItem(input: {
+  uid: string;
+  token: string;
+  platform: SupportDevicePlatform;
+  createdAt?: string;
+  updatedAt?: string;
+}): Record<string, unknown> {
+  const updatedAt = input.updatedAt ?? nowIso();
+  const tokenHash = hashDeviceToken(input.token);
+  return {
+    PK: keys.devicePk(input.uid),
+    SK: keys.deviceSk(tokenHash),
+    entityType: 'SUPPORT_DEVICE',
+    uid: input.uid,
+    token: input.token,
+    tokenHash,
+    platform: input.platform,
+    createdAt: input.createdAt ?? updatedAt,
+    updatedAt,
+  };
+}
+
+export async function upsertDeviceToken(input: {
+  uid: string;
+  token: string;
+  platform: SupportDevicePlatform;
+}): Promise<void> {
+  const tokenHash = hashDeviceToken(input.token);
+  const existing = await getSupportItem(
+    keys.devicePk(input.uid),
+    keys.deviceSk(tokenHash),
+  );
+  const createdAt =
+    existing &&
+    existing.entityType === 'SUPPORT_DEVICE' &&
+    existing.uid === input.uid &&
+    typeof existing.createdAt === 'string'
+      ? existing.createdAt
+      : undefined;
+  await putSupportItem(
+    deviceItem({
+      uid: input.uid,
+      token: input.token,
+      platform: input.platform,
+      createdAt,
+    }),
+  );
+}
+
+/**
+ * Idempotent. Only deletes the caller's own DEVICE#{uid} row. A token
+ * registered to a different uid is left untouched.
+ */
+export async function deleteDeviceToken(input: {
+  uid: string;
+  token: string;
+}): Promise<void> {
+  const tokenHash = hashDeviceToken(input.token);
+  const existing = await getSupportItem(
+    keys.devicePk(input.uid),
+    keys.deviceSk(tokenHash),
+  );
+  if (
+    !existing ||
+    existing.entityType !== 'SUPPORT_DEVICE' ||
+    existing.uid !== input.uid
+  ) {
+    return;
+  }
+  await deleteSupportItem(keys.devicePk(input.uid), keys.deviceSk(tokenHash));
 }
 
 export async function persistConversationClose(

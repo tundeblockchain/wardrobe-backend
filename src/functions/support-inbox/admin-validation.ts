@@ -5,7 +5,7 @@ import {
   SUPPORT_CONVERSATION_STATUSES,
   type SupportConversationStatus,
 } from '../../shared/support-inbox-names';
-import { decodeExclusiveStartKey } from './cursor';
+import { decodeExclusiveStartKey, STATUS_INDEX_CURSOR_KEYS } from './cursor';
 import { SupportValidationError } from './http';
 
 export interface AdminListQuery {
@@ -23,7 +23,10 @@ export function parseAdminListQuery(
   let exclusiveStartKey: Record<string, unknown> | undefined;
   if (params?.cursor !== undefined && params.cursor !== '') {
     try {
-      exclusiveStartKey = decodeExclusiveStartKey(params.cursor);
+      exclusiveStartKey = decodeExclusiveStartKey(
+        params.cursor,
+        STATUS_INDEX_CURSOR_KEYS,
+      );
     } catch (error) {
       if (error instanceof SupportValidationError) {
         Object.assign(fields, error.fields);

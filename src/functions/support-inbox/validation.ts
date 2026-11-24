@@ -1,8 +1,12 @@
 import {
+  DEVICE_TOKEN_MAX_CHARS,
+  DEVICE_TOKEN_MIN_CHARS,
+  SUPPORT_DEVICE_PLATFORMS,
   SUPPORT_FEEDBACK_TYPES,
   SUPPORT_KEY_PREFIX,
   SUPPORT_PLATFORMS,
   SUPPORT_UPLOAD_CONTENT_TYPES,
+  type SupportDevicePlatform,
   type SupportFeedbackType,
   type SupportPlatform,
   type SupportUploadContentType,
@@ -92,6 +96,45 @@ export function parseFeedbackBody(body: unknown): ParsedFeedback {
       ...(device ? { device } : {}),
     },
   };
+}
+
+export function parseDeviceBody(body: unknown): {
+  token: string;
+  platform: SupportDevicePlatform;
+} {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new SupportValidationError({ body: 'must be an object' });
+  }
+
+  const fields: Record<string, string> = {};
+  const raw = body as { token?: unknown; platform?: unknown };
+  const token = parseDeviceToken(raw.token, fields);
+  const platform = parseDevicePlatform(raw.platform, fields);
+  if (Object.keys(fields).length > 0 || !token || !platform) {
+    throw new SupportValidationError(
+      Object.keys(fields).length > 0
+        ? fields
+        : { token: 'must be 1-4096 characters' },
+    );
+  }
+  return { token, platform };
+}
+
+export function parseDeviceTokenBody(body: unknown): { token: string } {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new SupportValidationError({ body: 'must be an object' });
+  }
+
+  const fields: Record<string, string> = {};
+  const token = parseDeviceToken((body as { token?: unknown }).token, fields);
+  if (Object.keys(fields).length > 0 || !token) {
+    throw new SupportValidationError(
+      Object.keys(fields).length > 0
+        ? fields
+        : { token: 'must be 1-4096 characters' },
+    );
+  }
+  return { token };
 }
 
 export function parseReplyBody(body: unknown): { message: string } {
@@ -219,6 +262,43 @@ function parseEmail(
     return undefined;
   }
   return trimmed;
+}
+
+function parseDeviceToken(
+  value: unknown,
+  fields: Record<string, string>,
+): string | undefined {
+  if (typeof value !== 'string') {
+    fields.token = 'must be 1-4096 characters';
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (
+    trimmed.length < DEVICE_TOKEN_MIN_CHARS ||
+    trimmed.length > DEVICE_TOKEN_MAX_CHARS
+  ) {
+    fields.token = 'must be 1-4096 characters';
+    return undefined;
+  }
+  return trimmed;
+}
+
+function parseDevicePlatform(
+  value: unknown,
+  fields: Record<string, string>,
+): SupportDevicePlatform | undefined {
+  if (typeof value !== 'string') {
+    fields.platform = 'must be ios or android';
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (
+    !SUPPORT_DEVICE_PLATFORMS.includes(normalized as SupportDevicePlatform)
+  ) {
+    fields.platform = 'must be ios or android';
+    return undefined;
+  }
+  return normalized as SupportDevicePlatform;
 }
 
 function parsePlatform(

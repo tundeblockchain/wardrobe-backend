@@ -13,6 +13,7 @@ import {
   SUPPORT_PRESIGN_EXPIRES_SECONDS,
   type SupportEmailStatus,
   type SupportMessageAuthor,
+  type SupportPushStatus,
 } from '../../shared/support-inbox-names';
 import { requireSupportAdmin, type VerifyAdminTokenFn } from './admin-auth';
 import { parseAdminListQuery } from './admin-validation';
@@ -39,6 +40,10 @@ import {
   type PersistAdminReplyResult,
 } from './model';
 import {
+  sendSupportReplyPushBestEffort,
+  type SupportReplyPushDeps,
+} from './fcm';
+import {
   sendSupportInboxReplyBestEffort,
   type SupportInboxReplyDeps,
 } from './reply';
@@ -49,6 +54,7 @@ import {
   requireConversationMessage,
   requireConversationMeta,
   updateMessageEmailStatus,
+  updateMessagePushStatus,
   type ListConversationsByStatusResult,
 } from './table';
 import { parseReplyBody } from './validation';
@@ -70,8 +76,11 @@ export interface SupportInboxAdminHandlerDeps {
   requireMessage?: typeof requireConversationMessage;
   claimRetry?: typeof claimFailedAdminEmailRetry;
   setMessageEmailStatus?: typeof updateMessageEmailStatus;
+  setMessagePushStatus?: typeof updateMessagePushStatus;
   presignGet?: (objectKey: string) => Promise<string>;
   reply?: SupportInboxReplyDeps;
+  push?: SupportReplyPushDeps;
+  sendPush?: typeof sendSupportReplyPushBestEffort;
 }
 
 export async function handler(
@@ -229,6 +238,24 @@ async function handleReply(
     deps,
   );
 
+  const pushStatus = await sendPushBestEffort(
+    {
+      conversationId,
+      messageId: stored.messageId,
+      uid: optionalString(conversation.uid),
+    },
+    deps,
+  );
+  await setStoredPushStatus(
+    {
+      conversationId,
+      messageId: stored.messageId,
+      messageSk: stored.messageSk,
+      pushStatus,
+    },
+    deps,
+  );
+
   return created({
     messageId: stored.messageId,
     emailStatus,
@@ -320,6 +347,50 @@ async function sendReplyBestEffort(
       safeReplyFailureFields(input.conversationId, input.messageId, error),
     );
     return 'failed';
+  }
+}
+
+async function sendPushBestEffort(
+  input: {
+    conversationId: string;
+    messageId: string;
+    uid?: string;
+  },
+  deps: SupportInboxAdminHandlerDeps,
+): Promise<SupportPushStatus> {
+  try {
+    const send = deps.sendPush ?? sendSupportReplyPushBestEffort;
+    return await send(input, deps.push);
+  } catch (error) {
+    logger.error(
+      'Support inbox push failed',
+      safeReplyFailureFields(input.conversationId, input.messageId, error),
+    );
+    return 'failed';
+  }
+}
+
+async function setStoredPushStatus(
+  input: {
+    conversationId: string;
+    messageId: string;
+    messageSk: string;
+    pushStatus: SupportPushStatus;
+  },
+  deps: SupportInboxAdminHandlerDeps,
+): Promise<void> {
+  const setStatus = deps.setMessagePushStatus ?? updateMessagePushStatus;
+  try {
+    await setStatus({
+      conversationId: input.conversationId,
+      messageSk: input.messageSk,
+      pushStatus: input.pushStatus,
+    });
+  } catch (error) {
+    logger.error(
+      'Support inbox push failed',
+      safeReplyFailureFields(input.conversationId, input.messageId, error),
+    );
   }
 }
 
