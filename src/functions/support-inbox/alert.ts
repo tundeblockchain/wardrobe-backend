@@ -180,6 +180,45 @@ export function safeAlertFailureFields(
   return fields;
 }
 
+/**
+ * Reply / retry failure logs: conversationId + messageId + error class/code.
+ * Never include email, message text, keys, or tokens.
+ */
+export function safeReplyFailureFields(
+  conversationId: string,
+  messageId: string,
+  error: unknown,
+): SupportAlertFailureFields & { messageId: string } {
+  return {
+    ...safeAlertFailureFields(conversationId, error),
+    messageId,
+  };
+}
+
+/**
+ * Support inbox recipient for Reply-To (admin replies) and To (alerts).
+ * Missing/unset is undefined — callers omit Reply-To and still send.
+ */
+export async function loadSupportInboxRecipient(
+  deps: SupportInboxAlertDeps = {},
+): Promise<string | undefined> {
+  const env = deps.env ?? process.env;
+  const fromEnv = env[SUPPORT_INBOX_RECIPIENT_ENV]?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const paramName = env[SUPPORT_INBOX_RECIPIENT_PARAM_ENV]?.trim();
+  if (!paramName) {
+    return undefined;
+  }
+  const getParameter = deps.getParameter ?? getSsmParameter;
+  try {
+    return optionalNonEmpty(await getParameter(paramName));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function loadSupportInboxMailConfig(
   deps: SupportInboxAlertDeps = {},
 ): Promise<SupportInboxMailConfig | undefined> {
@@ -270,7 +309,7 @@ export function formatSupportInboxAlert(alert: SupportInboxAlert): {
   return { subject, text: lines.join('\n') };
 }
 
-async function getSsmParameter(name: string): Promise<string | undefined> {
+export async function getSsmParameter(name: string): Promise<string | undefined> {
   const result = await ssm.send(
     new GetParameterCommand({
       Name: name,

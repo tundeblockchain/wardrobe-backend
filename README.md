@@ -2135,7 +2135,7 @@ Unit tests inject `fetchSecret` / HTTP clients / cache / S3 image loader — no 
 
 Identity always comes from the validated Firebase token (`sub` = Firebase UID). Clients must not send `userId` as proof of ownership.
 
-Unauthenticated routes: `GET /health`, `GET /public/shares/{token}` (WARDROBE-126 — token is the capability), Superwall / support webhooks, `POST /support/upload-url` and `POST /support/feedback` (WARDROBE-281; optional Firebase token is verified in-Lambda on feedback).
+Unauthenticated routes: `GET /health`, `GET /public/shares/{token}` (WARDROBE-126 — token is the capability), Superwall / support webhooks, `POST /support/upload-url` and `POST /support/feedback` (WARDROBE-281; optional Firebase token is verified in-Lambda on feedback). Admin support inbox routes (WARDROBE-284) require a Firebase Bearer token with custom claim `admin === true` (API Gateway authorizer plus in-Lambda claim check).
 
 A Lambda authorizer reads the Firebase project ID from Secrets Manager and validates the ID token:
 
@@ -2716,7 +2716,7 @@ lib/entitlements.ts    isolated WARDROBE-91 Superwall webhook wiring
 lib/conversion-events.ts isolated WARDROBE-249 Meta CAPI + TikTok Events API secrets
 lib/stripe.ts          isolated WARDROBE-187 Stripe secrets + grantStripeSecretRead
 lib/support-mail.ts    isolated WARDROBE-38 / WARDROBE-143 Resend wiring (rebase-friendly)
-lib/support-inbox.ts   isolated WARDROBE-281 public feedback + SupportTable + S3 POST CORS
+lib/support-inbox.ts   isolated WARDROBE-281 public feedback + WARDROBE-284 admin inbox + SupportTable + S3 POST CORS
 lib/wardrobe-pipeline-stack.ts
 lib/wardrobe-stage.ts
 cdk.json.example
@@ -2724,6 +2724,7 @@ scripts/ensure-cdk-json.js
 scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDROBE-45)
 scripts/seed-stripe.ts           idempotent Stripe Basic/Premium monthly prices (WARDROBE-187)
 scripts/backfill-paid-tier.ts    idempotent ENTITLEMENT source backfill (WARDROBE-188)
+scripts/grant-support-admin.ts   set/remove Firebase `admin` custom claim (WARDROBE-284)
 src/functions/
   health/
   me/                  owner-only entitlement GET + clear-content + delete-account (WARDROBE-36 / WARDROBE-91 / WARDROBE-103 / WARDROBE-154 / WARDROBE-188)
@@ -2743,7 +2744,7 @@ src/functions/
   processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline
   outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47) + RENDER_ITEM (WARDROBE-150) + RENDER_WISH (WARDROBE-253)
   support/             WARDROBE-38 outbound contact/bug + WARDROBE-143 public website contact + Resend client + Svix verify
-  support-inbox/       WARDROBE-281 public POST /support/upload-url + /support/feedback
+  support-inbox/       WARDROBE-281 public POST /support/upload-url + /support/feedback + WARDROBE-284 admin routes
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
 src/shared/
   auth.ts
@@ -3486,8 +3487,9 @@ PK CONV#<id> / SK MSG#<isoTs>#<messageId>   (emailStatus sent|failed|skipped aft
 PK RATE#<scope>#<sha256> / SK WINDOW#<unixWindowStart>   (TTL on ttl)
 
 META: status=open, type, email, uid?, platform, appVersion?, device?,
-      screenshotKey?, createdAt, updatedAt, lastMessageAt
-MSG:  author=user, body, createdAt, emailStatus? (sent|failed|skipped; written after Resend)
+      screenshotKey?, createdAt, updatedAt, lastMessageAt,
+      lastMessagePreview, lastMessageAuthor, lastEmailStatus?
+MSG:  author=user|admin, body, createdAt, screenshotKey?, emailStatus? (sent|failed|skipped; written after Resend)
 GSI StatusLastMessageIndex: status + lastMessageAt   (Stage 2 admin list)
 GSI UidLastMessageIndex:    uid + lastMessageAt      (Stage 3 my conversations)
 ```
@@ -3501,3 +3503,23 @@ Alert: From = existing verified sender; Reply-To = user's email. Best-effort (`S
 1. Set SSM `/wardrobe/<stage>/support/recipient` to the support inbox address (placeholder until replaced).
 2. Confirm `supportInboxAllowedOrigins` / `SUPPORT_INBOX_ALLOWED_ORIGINS` includes the Netlify site origin and local web origins.
 3. Confirm `wardrobe/<stage>/resend` and `wardrobe/<stage>/support-mail` `fromEmail` are already set (WARDROBE-38).
+
+## Support inbox admin (WARDROBE-284)
+
+Operator UI routes. Same SupportTable. Firebase ID token required; the handler checks custom claim `admin === true` on every route (in addition to the API Gateway Firebase authorizer).
+
+```http
+GET  /admin/support/conversations
+GET  /admin/support/conversations/{conversationId}
+POST /admin/support/conversations/{conversationId}/replies
+POST /admin/support/conversations/{conversationId}/close
+POST /admin/support/conversations/{conversationId}/messages/{messageId}/retry-email
+```
+
+Missing/invalid token: `401 { "error": "unauthorized" }`. Valid token without `admin === true`: `403 { "error": "forbidden" }`. Validation: `400 { "error": "validation", "fields": { <name>: <reason> } }`. Unknown conversation/message: `404 { "error": "not_found" }`.
+
+Status: new feedback => `open`; admin reply => `replied` (any previous status); close => `closed` (idempotent). A later user follow-up reopening the thread is WARDROBE-286 (`statusAfterUserFollowUp` / `conversationPatchAfterMessage`) and is not exposed as a user endpoint here.
+
+Reply email: From = existing verified sender; To = conversation email; Reply-To = SSM `/wardrobe/<stage>/support/recipient` when set (omitted if missing). Body is the reply text plus an "Open in Pocket Closet" link from CDK context `supportInboxAppLink` or SSM `/wardrobe/<stage>/support/app-link`. If the link is missing, the email is still sent without it. HTML escapes the reply text. Write the MSG item first, then best-effort Resend (`SUPPORT_EMAIL_TIMEOUT_MS`, try/catch, never throws). Always `201` once stored. Failure logs include only `conversationId`, `messageId`, and error class/code.
+
+Granting the admin claim (operator machine, credentials not in the repo): see `docs/support-admin.md` and `npm run support:grant-admin`. The operator must sign out/in or refresh the ID token after a claim change.

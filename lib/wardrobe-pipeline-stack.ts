@@ -60,6 +60,9 @@ export class WardrobePipelineStack extends cdk.Stack {
       synthEnv.SUPPORT_INBOX_ALLOWED_ORIGINS =
         config.supportInboxAllowedOrigins;
     }
+    if (config.supportInboxAppLink) {
+      synthEnv.SUPPORT_INBOX_APP_LINK = config.supportInboxAppLink;
+    }
     if (config.stripeMode) {
       synthEnv.STRIPE_MODE = config.stripeMode;
     }

@@ -36,6 +36,7 @@ const envToContext = {
   SUPPORT_CONTACT_RATE_WINDOW_SECONDS: 'supportContactRateWindowSeconds',
   UPLOAD_ALLOWED_ORIGINS: 'uploadAllowedOrigins',
   SUPPORT_INBOX_ALLOWED_ORIGINS: 'supportInboxAllowedOrigins',
+  SUPPORT_INBOX_APP_LINK: 'supportInboxAppLink',
   STRIPE_MODE: 'stripeMode',
   STRIPE_LOOKUP_KEY_BASIC_MONTHLY: 'stripeLookupKeyBasicMonthly',
   STRIPE_LOOKUP_KEY_PREMIUM_MONTHLY: 'stripeLookupKeyPremiumMonthly',

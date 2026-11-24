@@ -187,6 +187,26 @@ describe('WardrobePipelineStack support inbox CORS synth env (WARDROBE-281)', ()
       expect(vars).not.toHaveProperty('SUPPORT_INBOX_ALLOWED_ORIGINS');
     }
   });
+
+  test('bakes non-empty supportInboxAppLink into the Synth project', () => {
+    const template = synthPipeline({
+      ...pipelineSource,
+      supportInboxAppLink: 'https://example.invalid/app',
+    });
+
+    const env = synthStepEnv(template);
+    expect(env.SUPPORT_INBOX_APP_LINK).toBe('https://example.invalid/app');
+  });
+
+  test('omits SUPPORT_INBOX_APP_LINK when config does not set it', () => {
+    const template = synthPipeline(pipelineSource);
+    const env = synthStepEnv(template);
+
+    expect(env).not.toHaveProperty('SUPPORT_INBOX_APP_LINK');
+    for (const vars of codeBuildEnvMaps(template)) {
+      expect(vars).not.toHaveProperty('SUPPORT_INBOX_APP_LINK');
+    }
+  });
 });
 
 describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {

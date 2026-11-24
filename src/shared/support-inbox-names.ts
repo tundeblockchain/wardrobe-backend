@@ -19,6 +19,10 @@ export const SUPPORT_TABLE_NAME_ENV = 'SUPPORT_TABLE_NAME';
 export const SUPPORT_INBOX_RECIPIENT_ENV = 'SUPPORT_INBOX_RECIPIENT';
 export const SUPPORT_INBOX_RECIPIENT_PARAM_ENV = 'SUPPORT_INBOX_RECIPIENT_PARAM';
 
+/** Optional "Open in Pocket Closet" URL override (tests / CDK context). */
+export const SUPPORT_INBOX_APP_LINK_ENV = 'SUPPORT_INBOX_APP_LINK';
+export const SUPPORT_INBOX_APP_LINK_PARAM_ENV = 'SUPPORT_INBOX_APP_LINK_PARAM';
+
 export const SUPPORT_INBOX_ALLOWED_ORIGINS_ENV = 'SUPPORT_INBOX_ALLOWED_ORIGINS';
 export const SUPPORT_FEEDBACK_IP_RATE_LIMIT_ENV = 'SUPPORT_FEEDBACK_IP_RATE_LIMIT';
 export const SUPPORT_FEEDBACK_EMAIL_RATE_LIMIT_ENV =
@@ -83,8 +87,20 @@ export const SUPPORT_CONVERSATION_STATUSES = [
 export type SupportConversationStatus =
   (typeof SUPPORT_CONVERSATION_STATUSES)[number];
 
+export const SUPPORT_MESSAGE_AUTHORS = ['user', 'admin'] as const;
+export type SupportMessageAuthor = (typeof SUPPORT_MESSAGE_AUTHORS)[number];
+
+export const LAST_MESSAGE_PREVIEW_CHARS = 140;
+export const DEFAULT_ADMIN_LIST_LIMIT = 50;
+export const ADMIN_LIST_LIMIT_MIN = 1;
+export const ADMIN_LIST_LIMIT_MAX = 100;
+
 export function supportInboxRecipientParamName(stage: string): string {
   return `/wardrobe/${stage}/support/recipient`;
+}
+
+export function supportInboxAppLinkParamName(stage: string): string {
+  return `/wardrobe/${stage}/support/app-link`;
 }
 
 export function supportTableName(stage: string): string {

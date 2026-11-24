@@ -25,6 +25,7 @@
     "supportContactRateWindowSeconds": "3600",
     "uploadAllowedOrigins": "",
     "supportInboxAllowedOrigins": "",
+    "supportInboxAppLink": "",
     "stripeMode": "test",
     "stripeLookupKeyBasicMonthly": "wardrobe_basic_monthly",
     "stripeLookupKeyPremiumMonthly": "wardrobe_premium_monthly",

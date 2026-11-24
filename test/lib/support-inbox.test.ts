@@ -2,7 +2,10 @@ import * as cdk from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { DEFAULT_SUPPORT_INBOX_ALLOWED_ORIGINS } from '../../lib/support-inbox-cors';
 import { WardrobeStack } from '../../lib/wardrobe-stack';
-import { supportInboxRecipientParamName } from '../../src/shared/support-inbox-names';
+import {
+  supportInboxAppLinkParamName,
+  supportInboxRecipientParamName,
+} from '../../src/shared/support-inbox-names';
 
 jest.setTimeout(180_000);
 
@@ -166,5 +169,144 @@ describe('support inbox stack wiring (WARDROBE-281)', () => {
     );
     expect(env).not.toHaveProperty('RESEND_API_KEY');
     expect(JSON.stringify(template.toJSON())).not.toMatch(/re_[A-Za-z0-9]{10,}/);
+  });
+});
+
+describe('support inbox admin stack wiring (WARDROBE-284)', () => {
+  const template = synthTemplate('dev');
+
+  type PolicyResource = {
+    Properties: {
+      PolicyDocument: {
+        Statement: Array<{
+          Sid?: string;
+          Action?: string | string[];
+          Resource?: unknown;
+        }>;
+      };
+    };
+  };
+
+  function policiesFor(fnId: string): PolicyResource[] {
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    return policies.filter((policy) => JSON.stringify(policy).includes(fnId));
+  }
+
+  function actionsFor(fnId: string, prefix: string): string[] {
+    return policiesFor(fnId).flatMap((policy) =>
+      policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+        const actions = statement.Action;
+        const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+        return list.filter((action) => action.startsWith(prefix));
+      }),
+    );
+  }
+
+  function statementsFor(
+    fnId: string,
+    action: string,
+  ): PolicyResource['Properties']['PolicyDocument']['Statement'] {
+    return policiesFor(fnId).flatMap((policy) =>
+      policy.Properties.PolicyDocument.Statement.filter((statement) => {
+        const actions = statement.Action;
+        const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+        return list.includes(action);
+      }),
+    );
+  }
+
+  test('admin routes exist with the Firebase authorizer and API CORS covers GET/POST + Authorization', () => {
+    const routes = routesOf(template);
+    for (const routeKey of [
+      'GET /admin/support/conversations',
+      'GET /admin/support/conversations/{conversationId}',
+      'POST /admin/support/conversations/{conversationId}/replies',
+      'POST /admin/support/conversations/{conversationId}/close',
+      'POST /admin/support/conversations/{conversationId}/messages/{messageId}/retry-email',
+    ]) {
+      const route = routes.find(
+        (candidate) => candidate.Properties.RouteKey === routeKey,
+      );
+      expect(route).toBeDefined();
+      expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+    }
+
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: Match.objectLike({
+        AllowOrigins: ['*'],
+        AllowMethods: Match.arrayWith(['GET', 'POST', 'OPTIONS']),
+        AllowHeaders: Match.arrayWith(['Authorization']),
+      }),
+    });
+  });
+
+  test('admin Lambda has least-privilege SupportTable, S3 GetObject on support/, and SSM params', () => {
+    const dynamo = actionsFor('SupportInboxAdminFn', 'dynamodb:');
+    expect(dynamo.sort()).toEqual(
+      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:UpdateItem'].sort(),
+    );
+    expect(dynamo).not.toContain('dynamodb:Scan');
+    expect(dynamo).not.toContain('dynamodb:DeleteItem');
+
+    const tableStatements = statementsFor('SupportInboxAdminFn', 'dynamodb:Query');
+    const tableResources = JSON.stringify(tableStatements);
+    expect(tableResources).toContain('SupportTable');
+    expect(tableResources).toContain('StatusLastMessageIndex');
+    expect(tableResources).not.toContain('UidLastMessageIndex');
+
+    const s3 = actionsFor('SupportInboxAdminFn', 's3:');
+    expect(s3).toEqual(['s3:GetObject']);
+    expect(s3).not.toContain('s3:PutObject');
+    const getObject = statementsFor('SupportInboxAdminFn', 's3:GetObject');
+    expect(JSON.stringify(getObject)).toContain('support/*');
+
+    expect(actionsFor('SupportInboxAdminFn', 'ssm:')).toEqual(['ssm:GetParameter']);
+    const ssm = JSON.stringify(statementsFor('SupportInboxAdminFn', 'ssm:GetParameter'));
+    expect(ssm).toContain('parameter/wardrobe/dev/support/recipient');
+    expect(ssm).toContain('parameter/wardrobe/dev/support/app-link');
+
+    const env = functionEnvById(template, 'SupportInboxAdminFn');
+    expect(env).toEqual(
+      expect.objectContaining({
+        SUPPORT_TABLE_NAME: expect.anything(),
+        RESEND_SECRET_ARN: expect.anything(),
+        SUPPORT_FROM_EMAIL: expect.anything(),
+        SUPPORT_INBOX_RECIPIENT_PARAM: '/wardrobe/dev/support/recipient',
+        SUPPORT_INBOX_APP_LINK_PARAM: '/wardrobe/dev/support/app-link',
+        FIREBASE_PROJECT_ID_SECRET_ARN: expect.anything(),
+        SUPPORT_INBOX_ALLOWED_ORIGINS: DEFAULT_SUPPORT_INBOX_ALLOWED_ORIGINS.join(
+          ',',
+        ),
+        SUPPORT_EMAIL_TIMEOUT_MS: '3000',
+        MEDIA_BUCKET_NAME: expect.anything(),
+      }),
+    );
+    expect(env).not.toHaveProperty('RESEND_API_KEY');
+    expect(env).not.toHaveProperty('SUPPORT_INBOX_APP_LINK');
+
+    expect(template.findResources('AWS::SSM::Parameter')).toEqual({});
+    template.hasOutput('SupportInboxAppLinkParamName', {
+      Value: supportInboxAppLinkParamName('dev'),
+    });
+  });
+
+  test('app-link SSM param is read at runtime, not baked in at synth', () => {
+    const env = functionEnvById(template, 'SupportInboxAdminFn');
+    expect(env?.SUPPORT_INBOX_APP_LINK_PARAM).toBe(
+      '/wardrobe/dev/support/app-link',
+    );
+    expect(env).not.toHaveProperty('SUPPORT_INBOX_APP_LINK');
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).toContain('/wardrobe/dev/support/app-link');
+    expect(synthesized).not.toMatch(
+      /"SUPPORT_INBOX_APP_LINK"\s*:\s*"https?:\/\//,
+    );
+    expect(actionsFor('SupportInboxAdminFn', 'ssm:')).toEqual(['ssm:GetParameter']);
+    expect(
+      JSON.stringify(statementsFor('SupportInboxAdminFn', 'ssm:GetParameter')),
+    ).toContain('parameter/wardrobe/dev/support/app-link');
   });
 });

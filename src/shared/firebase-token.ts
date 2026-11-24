@@ -7,6 +7,8 @@ export interface FirebaseTokenClaims {
   sub?: unknown;
   uid?: unknown;
   user_id?: unknown;
+  /** Firebase custom claim. Support admin routes require `admin === true`. */
+  admin?: unknown;
 }
 
 export function extractBearerToken(event: {
@@ -44,4 +46,12 @@ export function firebaseUidFromPayload(
     }
   }
   return undefined;
+}
+
+/**
+ * Custom claim used by support-inbox admin routes (WARDROBE-284).
+ * Strict boolean `true` only — not `"true"`, `1`, or any other truthy value.
+ */
+export function isFirebaseAdminClaim(payload: FirebaseTokenClaims): boolean {
+  return payload.admin === true;
 }

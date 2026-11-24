@@ -124,6 +124,21 @@ describe('resolveAppConfig', () => {
     );
   });
 
+  it('prefers CDK context over env for supportInboxAppLink', () => {
+    process.env.SUPPORT_INBOX_APP_LINK = 'https://env.example/app';
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'supportInboxAppLink' ? 'https://ctx.example/app' : undefined,
+    });
+    expect(config.supportInboxAppLink).toBe('https://ctx.example/app');
+  });
+
+  it('reads supportInboxAppLink from env when context is empty', () => {
+    process.env.SUPPORT_INBOX_APP_LINK = 'https://env.example/app';
+    const config = resolveAppConfig({ tryGetContext: () => undefined });
+    expect(config.supportInboxAppLink).toBe('https://env.example/app');
+  });
+
   it('prefers CDK context over env for billingWebOrigin', () => {
     process.env.BILLING_WEB_ORIGIN = 'https://env.example';
     const config = resolveAppConfig({
