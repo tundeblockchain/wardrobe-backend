@@ -122,6 +122,12 @@ export const DEFAULT_USER_LIST_LIMIT = DEFAULT_ADMIN_LIST_LIMIT;
 export const USER_LIST_LIMIT_MIN = ADMIN_LIST_LIMIT_MIN;
 export const USER_LIST_LIMIT_MAX = ADMIN_LIST_LIMIT_MAX;
 
+/**
+ * Max conversations scanned when totaling `unreadCount` on
+ * GET /support/my/conversations. The returned count is capped at this.
+ */
+export const SUPPORT_UNREAD_COUNT_MAX = 200;
+
 export const SUPPORT_DEVICE_PLATFORMS = ['ios', 'android'] as const;
 export type SupportDevicePlatform = (typeof SUPPORT_DEVICE_PLATFORMS)[number];
 export const DEVICE_TOKEN_MIN_CHARS = 1;

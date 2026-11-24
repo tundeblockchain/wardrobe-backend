@@ -20,9 +20,15 @@ import {
   isConversationOwnedBy,
 } from '../../src/functions/support-inbox/model';
 import { parseDeviceBody, parseDeviceTokenBody } from '../../src/functions/support-inbox/validation';
-import { countUnreadConversationsByUid } from '../../src/functions/support-inbox/table';
+import {
+  countUnreadConversationsByUid,
+  SUPPORT_UNREAD_COUNT_PROJECTION,
+} from '../../src/functions/support-inbox/table';
 import { keys } from '../../src/functions/support-inbox/keys';
-import { SUPPORT_PRESIGN_EXPIRES_SECONDS } from '../../src/shared/support-inbox-names';
+import {
+  SUPPORT_PRESIGN_EXPIRES_SECONDS,
+  SUPPORT_UNREAD_COUNT_MAX,
+} from '../../src/shared/support-inbox-names';
 
 const OWNER_TOKEN = 'owner-token';
 const OTHER_TOKEN = 'other-token';
@@ -666,6 +672,7 @@ describe('support inbox user handler (WARDROBE-286)', () => {
       { uid: OWNER_UID, pageSize },
       async (input) => {
         queryCalls += 1;
+        expect(input.projectionExpression).toBe(SUPPORT_UNREAD_COUNT_PROJECTION);
         const start = input.exclusiveStartKey
           ? Number(input.exclusiveStartKey.start)
           : 0;
@@ -709,6 +716,48 @@ describe('support inbox user handler (WARDROBE-286)', () => {
     expect(
       (bodyOf(result) as { items: unknown[] }).items,
     ).toHaveLength(1);
+  });
+
+  it('caps unreadCount at SUPPORT_UNREAD_COUNT_MAX and uses the unread projection', async () => {
+    expect(SUPPORT_UNREAD_COUNT_MAX).toBe(200);
+    expect(SUPPORT_UNREAD_COUNT_PROJECTION).toContain('PK');
+    expect(SUPPORT_UNREAD_COUNT_PROJECTION).toContain('SK');
+    expect(SUPPORT_UNREAD_COUNT_PROJECTION).toContain('lastAdminMessageAt');
+    expect(SUPPORT_UNREAD_COUNT_PROJECTION).toContain('lastReadAt');
+
+    const extra = 50;
+    const items = Array.from(
+      { length: SUPPORT_UNREAD_COUNT_MAX + extra },
+      (_, index) => ({
+        PK: `CONV#conv_${index}`,
+        SK: 'META',
+        uid: OWNER_UID,
+        lastMessageAuthor: 'admin' as const,
+        lastMessageAt: '2026-01-02T00:00:00.000Z',
+        lastAdminMessageAt: '2026-01-02T00:00:00.000Z',
+      }),
+    );
+    let scanned = 0;
+    let queryCalls = 0;
+    const unread = await countUnreadConversationsByUid(
+      { uid: OWNER_UID },
+      async (input) => {
+        queryCalls += 1;
+        expect(input.projectionExpression).toBe(SUPPORT_UNREAD_COUNT_PROJECTION);
+        expect(input.limit).toBeLessThanOrEqual(SUPPORT_UNREAD_COUNT_MAX - scanned);
+        const slice = items.slice(scanned, scanned + input.limit);
+        scanned += slice.length;
+        return {
+          items: slice,
+          lastEvaluatedKey:
+            scanned < items.length ? { start: scanned } : undefined,
+        };
+      },
+    );
+    expect(unread).toBe(SUPPORT_UNREAD_COUNT_MAX);
+    expect(scanned).toBe(SUPPORT_UNREAD_COUNT_MAX);
+    expect(scanned).toBeLessThan(items.length);
+    expect(queryCalls).toBe(1);
   });
 
   it('returns 400 validation for a malformed cursor', async () => {

@@ -14,6 +14,7 @@ import { nowIso } from '../../shared/ids';
 import {
   SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
   SUPPORT_TABLE_NAME_ENV,
+  SUPPORT_UNREAD_COUNT_MAX,
   supportEmailRetryClaimStaleBefore,
   type SupportConversationStatus,
   type SupportEmailStatus,
@@ -28,8 +29,12 @@ import {
 import { keys, STATUS_LAST_MESSAGE_INDEX, UID_LAST_MESSAGE_INDEX } from './keys';
 import { conversationUnread } from './status';
 
-/** Page size when totaling unread across UidLastMessageIndex. */
-export const UNREAD_COUNT_PAGE_SIZE = 100;
+/**
+ * Minimal UidLastMessageIndex projection for unreadCount: conversation
+ * key, lastAdminMessageAt (or lastMessageAuthor/lastMessageAt), lastReadAt.
+ */
+export const SUPPORT_UNREAD_COUNT_PROJECTION =
+  'PK, SK, #uid, #lastAdminMessageAt, #lastReadAt, #lastMessageAuthor, #lastMessageAt';
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -517,11 +522,13 @@ export type QueryUidConversationsPageFn = (input: {
   limit: number;
   exclusiveStartKey?: Record<string, unknown>;
   tableName?: string;
+  projectionExpression?: string;
 }) => Promise<ListConversationsByStatusResult>;
 
 /**
- * Total unread conversations for `uid` across every UidLastMessageIndex
- * page. Uses a minimal projection so list `limit` does not cap the count.
+ * Total unread conversations for `uid`, paging UidLastMessageIndex with
+ * a minimal projection. Scans at most SUPPORT_UNREAD_COUNT_MAX items and
+ * returns a count capped at that value.
  */
 export async function countUnreadConversationsByUid(
   input: {
@@ -531,26 +538,37 @@ export async function countUnreadConversationsByUid(
   },
   queryPage: QueryUidConversationsPageFn = queryUnreadConversationsByUidPage,
 ): Promise<number> {
-  const pageSize = input.pageSize ?? UNREAD_COUNT_PAGE_SIZE;
+  const maxItems = SUPPORT_UNREAD_COUNT_MAX;
+  const pageSize = Math.min(input.pageSize ?? maxItems, maxItems);
   let unreadCount = 0;
+  let scanned = 0;
   let exclusiveStartKey: Record<string, unknown> | undefined;
 
   do {
+    const remaining = maxItems - scanned;
+    if (remaining <= 0) {
+      break;
+    }
     const page = await queryPage({
       uid: input.uid,
-      limit: pageSize,
+      limit: Math.min(pageSize, remaining),
       exclusiveStartKey,
       tableName: input.tableName,
+      projectionExpression: SUPPORT_UNREAD_COUNT_PROJECTION,
     });
     for (const item of page.items) {
+      scanned += 1;
       if (conversationUnread(item)) {
         unreadCount += 1;
+      }
+      if (scanned >= maxItems) {
+        return Math.min(unreadCount, maxItems);
       }
     }
     exclusiveStartKey = page.lastEvaluatedKey;
   } while (exclusiveStartKey);
 
-  return unreadCount;
+  return Math.min(unreadCount, maxItems);
 }
 
 async function queryUnreadConversationsByUidPage(input: {
@@ -577,7 +595,6 @@ async function queryConversationsByUid(input: {
       '#uid': 'uid',
     };
     if (input.unreadProjection) {
-      expressionAttributeNames['#conversationId'] = 'conversationId';
       expressionAttributeNames['#lastAdminMessageAt'] = 'lastAdminMessageAt';
       expressionAttributeNames['#lastReadAt'] = 'lastReadAt';
       expressionAttributeNames['#lastMessageAuthor'] = 'lastMessageAuthor';
@@ -595,10 +612,7 @@ async function queryConversationsByUid(input: {
         ScanIndexForward: false,
         Limit: input.limit,
         ...(input.unreadProjection
-          ? {
-              ProjectionExpression:
-                '#uid, #conversationId, #lastAdminMessageAt, #lastReadAt, #lastMessageAuthor, #lastMessageAt',
-            }
+          ? { ProjectionExpression: SUPPORT_UNREAD_COUNT_PROJECTION }
           : {}),
         ...(input.exclusiveStartKey
           ? { ExclusiveStartKey: input.exclusiveStartKey }
