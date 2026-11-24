@@ -39,7 +39,7 @@ export const DEFAULT_RATE_WINDOW_SECONDS = 3600;
 export const SUPPORT_EMAIL_TIMEOUT_MS = 3_000;
 export const SUPPORT_EMAIL_TIMEOUT_MS_ENV = 'SUPPORT_EMAIL_TIMEOUT_MS';
 
-export const SUPPORT_EMAIL_STATUSES = ['sent', 'failed'] as const;
+export const SUPPORT_EMAIL_STATUSES = ['sent', 'failed', 'skipped'] as const;
 export type SupportEmailStatus = (typeof SUPPORT_EMAIL_STATUSES)[number];
 
 export function readSupportEmailTimeoutMs(

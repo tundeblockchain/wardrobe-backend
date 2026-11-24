@@ -209,8 +209,16 @@ describe('support inbox validation (WARDROBE-281)', () => {
     expect(isHoneypotTripped('  bots  ')).toBe(true);
     expect(isHoneypotTripped('')).toBe(false);
     expect(isHoneypotTripped('   ')).toBe(false);
+    expect(isHoneypotTripped(undefined)).toBe(false);
     expect(parseFeedbackBody({ website: 'x', type: 'nope' })).toEqual({
       honeypot: true,
+    });
+    expect(parseFeedbackBody({ ...validFeedback, website: '' })).toEqual({
+      honeypot: false,
+      value: expect.objectContaining({
+        type: 'bug',
+        email: 'user@example.com',
+      }),
     });
   });
 });
@@ -406,7 +414,36 @@ describe('support inbox handler (WARDROBE-281)', () => {
     );
   });
 
-  it('returns a fake 201 on honeypot without storing or emailing', async () => {
+  it('treats website: "" as a real submission', async () => {
+    const result = asResult(
+      await handleSupportInbox(
+        event({
+          path: '/support/feedback',
+          authorization: null,
+          body: { ...validFeedback, website: '' },
+        }),
+        deps,
+      ),
+    );
+
+    expect(result.statusCode).toBe(201);
+    expect(bodyOf(result)).toEqual({ conversationId: 'conv_testhoneypot01' });
+    expect(persistConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv_testhoneypot01',
+        email: 'user@example.com',
+        type: 'bug',
+      }),
+    );
+    expect(sendAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv_testhoneypot01',
+        email: 'user@example.com',
+      }),
+    );
+  });
+
+  it('returns a silent 201 on a non-empty website without storing or emailing', async () => {
     const result = asResult(
       await handleSupportInbox(
         event({
@@ -422,6 +459,7 @@ describe('support inbox handler (WARDROBE-281)', () => {
     expect(bodyOf(result)).toEqual({ conversationId: 'conv_testhoneypot01' });
     expect(persistConversation).not.toHaveBeenCalled();
     expect(sendAlert).not.toHaveBeenCalled();
+    expect(setMessageEmailStatus).not.toHaveBeenCalled();
     expect(consumeFeedbackRateLimitFn).not.toHaveBeenCalled();
   });
 
@@ -825,7 +863,7 @@ describe('support inbox alert email (WARDROBE-281)', () => {
   });
 
   it('stores the conversation path: missing recipient still 201 and does not throw', async () => {
-    const logError = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const logWarn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
     const persistConversation = jest.fn(async (input: { conversationId: string }) => ({
       conversationId: input.conversationId,
       messageSk: MESSAGE_SK,
@@ -870,14 +908,14 @@ describe('support inbox alert email (WARDROBE-281)', () => {
     expect(setMessageEmailStatus).toHaveBeenCalledWith({
       conversationId: 'conv_missingrecipient',
       messageSk: MESSAGE_SK,
-      emailStatus: 'failed',
+      emailStatus: 'skipped',
     });
-    const failureLog = logError.mock.calls.find(
-      ([message]) => message === 'Support inbox alert failed',
+    const skippedLog = logWarn.mock.calls.find(
+      ([message]) => message === 'Support inbox alert skipped',
     );
-    expect(failureLog).toBeDefined();
-    assertSafeFailureLog(failureLog?.[1]);
-    logError.mockRestore();
+    expect(skippedLog).toBeDefined();
+    assertSafeFailureLog(skippedLog?.[1]);
+    logWarn.mockRestore();
   });
 
   it('times out Resend and records emailStatus failed without leaking PII', async () => {

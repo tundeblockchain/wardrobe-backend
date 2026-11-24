@@ -113,11 +113,11 @@ export async function sendSupportInboxAlert(
       }));
   const config = await loadConfig();
   if (!config) {
-    log.error(
-      'Support inbox alert failed',
+    log.warn(
+      'Support inbox alert skipped',
       safeAlertFailureFields(alert.conversationId, 'RecipientMissing'),
     );
-    return 'failed';
+    return 'skipped';
   }
 
   const loadApiKey =
