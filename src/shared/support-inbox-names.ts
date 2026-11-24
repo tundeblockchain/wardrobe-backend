@@ -123,8 +123,10 @@ export const USER_LIST_LIMIT_MIN = ADMIN_LIST_LIMIT_MIN;
 export const USER_LIST_LIMIT_MAX = ADMIN_LIST_LIMIT_MAX;
 
 /**
- * Max conversations scanned when totaling `unreadCount` on
- * GET /support/my/conversations. The returned count is capped at this.
+ * Max conversations examined when approximating `unreadCount` on
+ * GET /support/my/conversations. The scan stops after this many
+ * conversations, not after this many unread ones. The returned
+ * value is an approximate count, not an exact total.
  */
 export const SUPPORT_UNREAD_COUNT_MAX = 200;
 

@@ -526,9 +526,9 @@ export type QueryUidConversationsPageFn = (input: {
 }) => Promise<ListConversationsByStatusResult>;
 
 /**
- * Total unread conversations for `uid`, paging UidLastMessageIndex with
- * a minimal projection. Scans at most SUPPORT_UNREAD_COUNT_MAX items and
- * returns a count capped at that value.
+ * Approximate unread conversations for `uid`, paging UidLastMessageIndex
+ * with a minimal projection. Examines at most SUPPORT_UNREAD_COUNT_MAX
+ * conversations (not unread hits) and returns how many of those are unread.
  */
 export async function countUnreadConversationsByUid(
   input: {

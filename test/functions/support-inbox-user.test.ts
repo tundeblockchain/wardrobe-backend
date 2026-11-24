@@ -718,7 +718,7 @@ describe('support inbox user handler (WARDROBE-286)', () => {
     ).toHaveLength(1);
   });
 
-  it('caps unreadCount at SUPPORT_UNREAD_COUNT_MAX and uses the unread projection', async () => {
+  it('stops after scanning SUPPORT_UNREAD_COUNT_MAX conversations and uses the unread projection', async () => {
     expect(SUPPORT_UNREAD_COUNT_MAX).toBe(200);
     expect(SUPPORT_UNREAD_COUNT_PROJECTION).toContain('PK');
     expect(SUPPORT_UNREAD_COUNT_PROJECTION).toContain('SK');

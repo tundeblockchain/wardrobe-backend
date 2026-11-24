@@ -68,7 +68,7 @@ describe('support inbox unreadCount GSI query (WARDROBE-286)', () => {
     }
   });
 
-  it('pages UidLastMessageIndex with the unread projection and caps at SUPPORT_UNREAD_COUNT_MAX', async () => {
+  it('pages UidLastMessageIndex with the unread projection and stops after scanning SUPPORT_UNREAD_COUNT_MAX', async () => {
     mockDynamoSend.mockResolvedValueOnce({
       Items: Array.from({ length: SUPPORT_UNREAD_COUNT_MAX }, (_, index) =>
         unreadItem(index),
