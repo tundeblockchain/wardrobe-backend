@@ -101,7 +101,10 @@ export async function sendSupportInboxReply(
     log,
   });
   const loadAppLink = deps.loadAppLink ?? (() => loadSupportInboxAppLink(deps));
-  const appLink = await loadAppLink();
+  const appLink = supportConversationAppUrl(
+    await loadAppLink(),
+    reply.conversationId,
+  );
   const formatted = formatSupportInboxReply(reply.body, appLink);
   const timeoutMs = deps.timeoutMs ?? readSupportEmailTimeoutMs(env);
 
@@ -126,6 +129,23 @@ export async function sendSupportInboxReply(
     hasReplyTo: Boolean(replyTo),
   });
   return 'sent';
+}
+
+/**
+ * "Open in Pocket Closet" href: `<app-link>/support/{conversationId}`.
+ * Trailing slashes on the SSM / env base are trimmed. Missing base omits
+ * the link.
+ */
+export function supportConversationAppUrl(
+  appLink: string | undefined,
+  conversationId: string,
+): string | undefined {
+  const base = appLink?.trim().replace(/\/+$/, '');
+  const id = conversationId.trim();
+  if (!base || !id) {
+    return undefined;
+  }
+  return `${base}/support/${id}`;
 }
 
 export function formatSupportInboxReply(

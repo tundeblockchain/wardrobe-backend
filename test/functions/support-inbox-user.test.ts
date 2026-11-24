@@ -18,7 +18,8 @@ import {
   hashDeviceToken,
   isConversationOwnedBy,
 } from '../../src/functions/support-inbox/model';
-import { parseDeviceBody, parseDeviceTokenPath } from '../../src/functions/support-inbox/validation';
+import { parseDeviceBody, parseDeviceTokenBody } from '../../src/functions/support-inbox/validation';
+import { countUnreadConversationsByUid } from '../../src/functions/support-inbox/table';
 import { keys } from '../../src/functions/support-inbox/keys';
 import { SUPPORT_PRESIGN_EXPIRES_SECONDS } from '../../src/shared/support-inbox-names';
 
@@ -118,9 +119,9 @@ const USER_ROUTES: Array<{
   {
     name: 'delete-device',
     method: 'DELETE',
-    path: '/support/devices/fcm-token',
-    routeKey: 'DELETE /support/devices/{token}',
-    pathParameters: { token: 'fcm-token' },
+    path: '/support/devices',
+    routeKey: 'DELETE /support/devices',
+    body: { token: 'fcm-token' },
   },
   {
     name: 'list',
@@ -268,7 +269,13 @@ describe('support inbox user helpers (WARDROBE-286)', () => {
     expect(() => parseDeviceBody({ token: 'abc', platform: 'web' })).toThrow(
       SupportValidationError,
     );
-    expect(parseDeviceTokenPath('tok+plus')).toBe('tok+plus');
+    expect(parseDeviceTokenBody({ token: 'tok+plus' })).toEqual({
+      token: 'tok+plus',
+    });
+    expect(() => parseDeviceTokenBody({})).toThrow(SupportValidationError);
+    expect(() => parseDeviceTokenBody({ token: '' })).toThrow(
+      SupportValidationError,
+    );
   });
 
   it('scopes device keys per uid+token hash so another user cannot be targeted', () => {
@@ -291,6 +298,7 @@ describe('support inbox user handler (WARDROBE-286)', () => {
     items: [ownedMeta()],
     lastEvaluatedKey: undefined as Record<string, unknown> | undefined,
   }));
+  const countUnread = jest.fn(async () => 1);
   const requireConversation = jest.fn(
     async (_conversationId: string) => ownedMeta(),
   );
@@ -336,6 +344,7 @@ describe('support inbox user handler (WARDROBE-286)', () => {
     upsertDevice,
     deleteDevice,
     listConversations,
+    countUnread,
     requireConversation,
     listMessages,
     markRead,
@@ -358,6 +367,7 @@ describe('support inbox user handler (WARDROBE-286)', () => {
       items: [ownedMeta()],
       lastEvaluatedKey: undefined,
     });
+    countUnread.mockResolvedValue(1);
   });
 
   it.each(USER_ROUTES)(
@@ -414,14 +424,14 @@ describe('support inbox user handler (WARDROBE-286)', () => {
     });
   });
 
-  it('deletes only the caller token and returns 204 when another user owns it', async () => {
+  it('deletes only the caller token from JSON body and returns 204 when another user owns it', async () => {
     const own = asResult(
       await handleSupportInboxUser(
         event({
           method: 'DELETE',
-          path: '/support/devices/fcm-token',
-          routeKey: 'DELETE /support/devices/{token}',
-          pathParameters: { token: 'fcm-token' },
+          path: '/support/devices',
+          routeKey: 'DELETE /support/devices',
+          body: { token: 'fcm-token' },
         }),
         deps,
       ),
@@ -437,9 +447,9 @@ describe('support inbox user handler (WARDROBE-286)', () => {
       await handleSupportInboxUser(
         event({
           method: 'DELETE',
-          path: '/support/devices/fcm-token',
-          routeKey: 'DELETE /support/devices/{token}',
-          pathParameters: { token: 'fcm-token' },
+          path: '/support/devices',
+          routeKey: 'DELETE /support/devices',
+          body: { token: 'fcm-token' },
           authorization: OTHER_TOKEN,
         }),
         deps,
@@ -454,6 +464,25 @@ describe('support inbox user handler (WARDROBE-286)', () => {
       uid: OWNER_UID,
       token: 'fcm-token',
     });
+  });
+
+  it('returns 400 validation when DELETE /support/devices is missing a token', async () => {
+    const result = asResult(
+      await handleSupportInboxUser(
+        event({
+          method: 'DELETE',
+          path: '/support/devices',
+          routeKey: 'DELETE /support/devices',
+          body: {},
+        }),
+        deps,
+      ),
+    );
+    expect(result.statusCode).toBe(400);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({ error: 'validation' }),
+    );
+    expect(deleteDevice).not.toHaveBeenCalled();
   });
 
   it('lists only the caller conversations newest first with unread and a round-tripped cursor', async () => {
@@ -498,6 +527,7 @@ describe('support inbox user handler (WARDROBE-286)', () => {
           unread: true,
         },
       ],
+      unreadCount: 1,
       nextCursor: encodeExclusiveStartKey(lastEvaluatedKey),
     });
     expect(listConversations).toHaveBeenCalledWith({
@@ -521,6 +551,66 @@ describe('support inbox user handler (WARDROBE-286)', () => {
       limit: 50,
       exclusiveStartKey: lastEvaluatedKey,
     });
+  });
+
+  it('returns unreadCount across every GSI page, not just the current list page', async () => {
+    const pageSize = 50;
+    const items = Array.from({ length: pageSize + 25 }, (_, index) => ({
+      uid: OWNER_UID,
+      conversationId: `conv_${index}`,
+      lastMessageAuthor: index < 12 ? 'admin' : 'user',
+      lastMessageAt: `2026-01-02T${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      lastAdminMessageAt:
+        index < 12 ? '2026-01-02T00:00:00.000Z' : undefined,
+    }));
+    let queryCalls = 0;
+    const unread = await countUnreadConversationsByUid(
+      { uid: OWNER_UID, pageSize },
+      async (input) => {
+        queryCalls += 1;
+        const start = input.exclusiveStartKey
+          ? Number(input.exclusiveStartKey.start)
+          : 0;
+        const slice = items.slice(start, start + input.limit);
+        return {
+          items: slice,
+          lastEvaluatedKey:
+            start + input.limit < items.length
+              ? { start: start + input.limit }
+              : undefined,
+        };
+      },
+    );
+    expect(unread).toBe(12);
+    expect(queryCalls).toBe(2);
+    expect(items.length).toBeGreaterThan(pageSize);
+
+    listConversations.mockResolvedValueOnce({
+      items: [ownedMeta()],
+      lastEvaluatedKey: undefined,
+    });
+    countUnread.mockResolvedValueOnce(12);
+    const result = asResult(
+      await handleSupportInboxUser(
+        event({
+          method: 'GET',
+          path: '/support/my/conversations',
+          routeKey: 'GET /support/my/conversations',
+          query: { limit: '1' },
+        }),
+        deps,
+      ),
+    );
+    expect(result.statusCode).toBe(200);
+    expect(bodyOf(result)).toEqual(
+      expect.objectContaining({
+        unreadCount: 12,
+        items: [expect.objectContaining({ conversationId: 'conv_1' })],
+      }),
+    );
+    expect(
+      (bodyOf(result) as { items: unknown[] }).items,
+    ).toHaveLength(1);
   });
 
   it('returns 400 validation for a malformed cursor', async () => {

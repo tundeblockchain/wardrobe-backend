@@ -7,7 +7,7 @@ Operator setup for the Stage 2 admin API. Do not commit secrets, Firebase privat
 Set these per stage. The stack does not create the parameters; it only grants `ssm:GetParameter`.
 
 1. `/wardrobe/<stage>/support/recipient` — support inbox address. Used as Reply-To on admin reply email. If unset, replies are still sent without Reply-To.
-2. `/wardrobe/<stage>/support/app-link` — "Open in Pocket Closet" URL included in reply email. If unset, the email is still sent without the link.
+2. `/wardrobe/<stage>/support/app-link` — base URL for the "Open in Pocket Closet" link in reply email. The href is `<app-link>/support/{conversationId}` (trailing slash on the base is trimmed). If unset, the email is still sent without the link.
 
 Optional CDK context / env overlay: `supportInboxAppLink` / `SUPPORT_INBOX_APP_LINK`. When set, that URL is injected as Lambda env and SSM is not required for the link.
 

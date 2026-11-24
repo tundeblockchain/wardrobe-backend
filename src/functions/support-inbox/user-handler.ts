@@ -40,6 +40,7 @@ import {
   type PersistAdminReplyResult,
 } from './model';
 import {
+  countUnreadConversationsByUid,
   listConversationsByUid,
   queryConversationMessages,
   requireConversationMeta,
@@ -50,11 +51,7 @@ import {
 import { conversationUnread } from './status';
 import { requireSupportUser, type VerifyUserTokenFn } from './user-auth';
 import { parseUserListQuery } from './user-validation';
-import {
-  parseDeviceBody,
-  parseDeviceTokenPath,
-  parseReplyBody,
-} from './validation';
+import { parseDeviceBody, parseDeviceTokenBody, parseReplyBody } from './validation';
 
 export type SupportInboxUserRoute =
   | 'register-device'
@@ -68,6 +65,7 @@ export interface SupportInboxUserHandlerDeps {
   upsertDevice?: typeof upsertDeviceToken;
   deleteDevice?: typeof deleteDeviceToken;
   listConversations?: typeof listConversationsByUid;
+  countUnread?: typeof countUnreadConversationsByUid;
   requireConversation?: typeof requireConversationMeta;
   listMessages?: typeof queryConversationMessages;
   markRead?: typeof updateConversationLastReadAt;
@@ -113,11 +111,11 @@ export function resolveSupportInboxUserRoute(
   const method = event.requestContext.http.method.toUpperCase();
   const path = `${event.routeKey ?? ''} ${event.rawPath ?? ''}`.toLowerCase();
 
-  if (path.includes('/support/devices')) {
-    if (method === 'POST' && !hasPathToken(event, path)) {
+  if (path.includes('/support/devices') && !hasPathToken(event, path)) {
+    if (method === 'POST') {
       return 'register-device';
     }
-    if (method === 'DELETE' && hasPathToken(event, path)) {
+    if (method === 'DELETE') {
       return 'delete-device';
     }
   }
@@ -159,7 +157,8 @@ async function handleDeleteDevice(
   uid: string,
   deps: SupportInboxUserHandlerDeps,
 ): Promise<APIGatewayProxyResultV2> {
-  const token = parseDeviceTokenPath(requirePathParam(event, 'token'));
+  assertBodyWithinLimit(event);
+  const { token } = parseDeviceTokenBody(parseObjectBody(event));
   const remove = deps.deleteDevice ?? deleteDeviceToken;
   await remove({ uid, token });
   return noContent();
@@ -172,16 +171,24 @@ async function handleList(
 ): Promise<APIGatewayProxyResultV2> {
   const query = parseUserListQuery(event.queryStringParameters);
   const list = deps.listConversations ?? listConversationsByUid;
-  const result: ListConversationsByStatusResult = await list({
-    uid,
-    limit: query.limit,
-    exclusiveStartKey: query.exclusiveStartKey,
-  });
+  const countUnread = deps.countUnread ?? countUnreadConversationsByUid;
+  const [result, unreadCount]: [
+    ListConversationsByStatusResult,
+    number,
+  ] = await Promise.all([
+    list({
+      uid,
+      limit: query.limit,
+      exclusiveStartKey: query.exclusiveStartKey,
+    }),
+    countUnread({ uid }),
+  ]);
 
   return ok({
     items: result.items
       .filter((item) => isConversationOwnedBy(item, uid))
       .map(mapListItem),
+    unreadCount,
     nextCursor: encodeExclusiveStartKey(result.lastEvaluatedKey),
   });
 }

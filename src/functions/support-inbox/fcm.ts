@@ -77,6 +77,61 @@ export function resetSupportFcmCache(): void {
 }
 
 /**
+ * FCM HTTP v1 payload for an admin reply. Both `notification` (system
+ * tray / lock screen) and `data` (tap deep-link) are required so a tap
+ * opens the app when it is backgrounded or terminated.
+ */
+export function buildSupportReplyFcmMessage(input: {
+  token: string;
+  conversationId: string;
+}): {
+  message: {
+    token: string;
+    notification: { title: string; body: string };
+    data: { type: string; conversationId: string };
+    android: {
+      priority: 'high';
+      notification: { click_action: string };
+    };
+    apns: {
+      headers: { 'apns-priority': string };
+      payload: { aps: { sound: string; 'content-available': number } };
+    };
+  };
+} {
+  return {
+    message: {
+      token: input.token,
+      notification: {
+        title: SUPPORT_REPLY_PUSH_TITLE,
+        body: SUPPORT_REPLY_PUSH_BODY,
+      },
+      data: {
+        type: SUPPORT_REPLY_PUSH_DATA_TYPE,
+        conversationId: input.conversationId,
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+      },
+      apns: {
+        headers: {
+          'apns-priority': '10',
+        },
+        payload: {
+          aps: {
+            sound: 'default',
+            'content-available': 1,
+          },
+        },
+      },
+    },
+  };
+}
+
+/**
  * Optional Firebase service-account JSON for FCM HTTP v1.
  *
  * Secret path: `wardrobe/{stage}/fcm-service-account`
@@ -211,25 +266,12 @@ export async function sendSupportReplyPush(
             Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            message: {
+          body: JSON.stringify(
+            buildSupportReplyFcmMessage({
               token,
-              notification: {
-                title: SUPPORT_REPLY_PUSH_TITLE,
-                body: SUPPORT_REPLY_PUSH_BODY,
-              },
-              data: {
-                type: SUPPORT_REPLY_PUSH_DATA_TYPE,
-                conversationId: input.conversationId,
-              },
-              android: { priority: 'high' },
-              apns: {
-                payload: {
-                  aps: { sound: 'default' },
-                },
-              },
-            },
-          }),
+              conversationId: input.conversationId,
+            }),
+          ),
         },
         timeoutMs,
       );

@@ -385,13 +385,7 @@ export function addSupportInbox(
   const userAuthorizer = { authorizer };
   httpApi.addRoutes({
     path: '/support/devices',
-    methods: [apigwv2.HttpMethod.POST],
-    integration: userIntegration,
-    ...userAuthorizer,
-  });
-  httpApi.addRoutes({
-    path: '/support/devices/{token}',
-    methods: [apigwv2.HttpMethod.DELETE],
+    methods: [apigwv2.HttpMethod.POST, apigwv2.HttpMethod.DELETE],
     integration: userIntegration,
     ...userAuthorizer,
   });

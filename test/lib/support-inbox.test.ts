@@ -369,7 +369,7 @@ describe('support inbox user stack wiring (WARDROBE-286)', () => {
     const routes = routesOf(template);
     for (const routeKey of [
       'POST /support/devices',
-      'DELETE /support/devices/{token}',
+      'DELETE /support/devices',
       'GET /support/my/conversations',
       'GET /support/my/conversations/{id}',
       'POST /support/my/conversations/{id}/messages',
@@ -380,6 +380,12 @@ describe('support inbox user stack wiring (WARDROBE-286)', () => {
       expect(route).toBeDefined();
       expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
     }
+    expect(
+      routes.find(
+        (candidate) =>
+          candidate.Properties.RouteKey === 'DELETE /support/devices/{token}',
+      ),
+    ).toBeUndefined();
 
     template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
       CorsConfiguration: Match.objectLike({

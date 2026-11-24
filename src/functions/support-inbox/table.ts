@@ -26,6 +26,10 @@ import {
   SupportValidationError,
 } from './http';
 import { keys, STATUS_LAST_MESSAGE_INDEX, UID_LAST_MESSAGE_INDEX } from './keys';
+import { conversationUnread } from './status';
+
+/** Page size when totaling unread across UidLastMessageIndex. */
+export const UNREAD_COUNT_PAGE_SIZE = 100;
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -499,20 +503,102 @@ export async function listConversationsByUid(input: {
   exclusiveStartKey?: Record<string, unknown>;
   tableName?: string;
 }): Promise<ListConversationsByStatusResult> {
+  return queryConversationsByUid({
+    uid: input.uid,
+    limit: input.limit,
+    exclusiveStartKey: input.exclusiveStartKey,
+    tableName: input.tableName,
+  });
+}
+
+export type QueryUidConversationsPageFn = (input: {
+  uid: string;
+  limit: number;
+  exclusiveStartKey?: Record<string, unknown>;
+  tableName?: string;
+}) => Promise<ListConversationsByStatusResult>;
+
+/**
+ * Total unread conversations for `uid` across every UidLastMessageIndex
+ * page. Uses a minimal projection so list `limit` does not cap the count.
+ */
+export async function countUnreadConversationsByUid(
+  input: {
+    uid: string;
+    tableName?: string;
+    pageSize?: number;
+  },
+  queryPage: QueryUidConversationsPageFn = queryUnreadConversationsByUidPage,
+): Promise<number> {
+  const pageSize = input.pageSize ?? UNREAD_COUNT_PAGE_SIZE;
+  let unreadCount = 0;
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+
+  do {
+    const page = await queryPage({
+      uid: input.uid,
+      limit: pageSize,
+      exclusiveStartKey,
+      tableName: input.tableName,
+    });
+    for (const item of page.items) {
+      if (conversationUnread(item)) {
+        unreadCount += 1;
+      }
+    }
+    exclusiveStartKey = page.lastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return unreadCount;
+}
+
+async function queryUnreadConversationsByUidPage(input: {
+  uid: string;
+  limit: number;
+  exclusiveStartKey?: Record<string, unknown>;
+  tableName?: string;
+}): Promise<ListConversationsByStatusResult> {
+  return queryConversationsByUid({
+    ...input,
+    unreadProjection: true,
+  });
+}
+
+async function queryConversationsByUid(input: {
+  uid: string;
+  limit: number;
+  exclusiveStartKey?: Record<string, unknown>;
+  tableName?: string;
+  unreadProjection?: boolean;
+}): Promise<ListConversationsByStatusResult> {
   try {
+    const expressionAttributeNames: Record<string, string> = {
+      '#uid': 'uid',
+    };
+    if (input.unreadProjection) {
+      expressionAttributeNames['#conversationId'] = 'conversationId';
+      expressionAttributeNames['#lastAdminMessageAt'] = 'lastAdminMessageAt';
+      expressionAttributeNames['#lastReadAt'] = 'lastReadAt';
+      expressionAttributeNames['#lastMessageAuthor'] = 'lastMessageAuthor';
+      expressionAttributeNames['#lastMessageAt'] = 'lastMessageAt';
+    }
     const result = await client.send(
       new QueryCommand({
         TableName: input.tableName ?? supportInboxTableName(),
         IndexName: UID_LAST_MESSAGE_INDEX,
         KeyConditionExpression: '#uid = :uid',
-        ExpressionAttributeNames: {
-          '#uid': 'uid',
-        },
+        ExpressionAttributeNames: expressionAttributeNames,
         ExpressionAttributeValues: {
           ':uid': input.uid,
         },
         ScanIndexForward: false,
         Limit: input.limit,
+        ...(input.unreadProjection
+          ? {
+              ProjectionExpression:
+                '#uid, #conversationId, #lastAdminMessageAt, #lastReadAt, #lastMessageAuthor, #lastMessageAt',
+            }
+          : {}),
         ...(input.exclusiveStartKey
           ? { ExclusiveStartKey: input.exclusiveStartKey }
           : {}),

@@ -36,6 +36,7 @@ import {
   formatSupportInboxReply,
   loadSupportInboxAppLink,
   sendSupportInboxReplyBestEffort,
+  supportConversationAppUrl,
 } from '../../src/functions/support-inbox/reply';
 import { transactPutAdminReply } from '../../src/functions/support-inbox/table';
 import {
@@ -379,6 +380,20 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
     expect(withoutLink.html).not.toContain('Open in Pocket Closet');
     expect(withoutLink.text).toBe('Thanks for writing in.');
     expect(escapeHtml(`&<>"'`)).toBe('&amp;&lt;&gt;&quot;&#39;');
+  });
+
+  it('builds Open in Pocket Closet as <app-link>/support/{conversationId} and trims a trailing slash', () => {
+    expect(
+      supportConversationAppUrl('https://example.invalid/app', 'conv_1'),
+    ).toBe('https://example.invalid/app/support/conv_1');
+    expect(
+      supportConversationAppUrl('https://example.invalid/app/', 'conv_1'),
+    ).toBe('https://example.invalid/app/support/conv_1');
+    expect(
+      supportConversationAppUrl('https://example.invalid/app///', 'conv_1'),
+    ).toBe('https://example.invalid/app/support/conv_1');
+    expect(supportConversationAppUrl(undefined, 'conv_1')).toBeUndefined();
+    expect(supportConversationAppUrl('  ', 'conv_1')).toBeUndefined();
   });
 });
 
@@ -1338,7 +1353,7 @@ describe('support inbox admin reply email (WARDROBE-284)', () => {
         env: {
           SUPPORT_FROM_EMAIL: 'Wardrobe Support <support@example.com>',
           SUPPORT_INBOX_RECIPIENT: 'inbox@example.com',
-          SUPPORT_INBOX_APP_LINK: 'https://example.invalid/app',
+          SUPPORT_INBOX_APP_LINK: 'https://example.invalid/app/',
           RESEND_API_KEY: 're_test_placeholder',
         },
         http,
@@ -1361,7 +1376,13 @@ describe('support inbox admin reply email (WARDROBE-284)', () => {
     expect(payload.to).toEqual(['user@example.com']);
     expect(payload.reply_to).toBe('inbox@example.com');
     expect(payload.html).toContain('Open in Pocket Closet');
-    expect(payload.text).toContain('https://example.invalid/app');
+    expect(payload.html).toContain(
+      'https://example.invalid/app/support/conv_1',
+    );
+    expect(payload.text).toContain(
+      'https://example.invalid/app/support/conv_1',
+    );
+    expect(payload.text).not.toContain('https://example.invalid/app/support/conv_1/');
   });
 
   it('omits Reply-To and the app link when those params are missing and still sends', async () => {
@@ -1448,8 +1469,8 @@ describe('support inbox admin reply email (WARDROBE-284)', () => {
       { body?: string },
     ];
     const payload = JSON.parse(init.body ?? '{}') as { html: string; text: string };
-    expect(payload.html).toContain('https://runtime.example/app');
-    expect(payload.text).toContain('https://runtime.example/app');
+    expect(payload.html).toContain('https://runtime.example/app/support/conv_1');
+    expect(payload.text).toContain('https://runtime.example/app/support/conv_1');
   });
 
   it('times out Resend and records failed without leaking PII', async () => {

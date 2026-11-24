@@ -1,4 +1,5 @@
 import {
+  buildSupportReplyFcmMessage,
   parseFcmServiceAccount,
   resetSupportFcmCache,
   sendSupportReplyPushBestEffort,
@@ -115,6 +116,30 @@ describe('support inbox FCM push (WARDROBE-286)', () => {
     ).toBe('skipped');
   });
 
+  it('includes both a notification block and data plus apns/android tap fields', () => {
+    const payload = buildSupportReplyFcmMessage({
+      token: 'live-token',
+      conversationId: CONVERSATION_ID,
+    });
+    expect(payload.message.notification).toEqual({
+      title: SUPPORT_REPLY_PUSH_TITLE,
+      body: SUPPORT_REPLY_PUSH_BODY,
+    });
+    expect(payload.message.data).toEqual({
+      type: SUPPORT_REPLY_PUSH_DATA_TYPE,
+      conversationId: CONVERSATION_ID,
+    });
+    expect(payload.message.android).toEqual({
+      priority: 'high',
+      notification: { click_action: 'FLUTTER_NOTIFICATION_CLICK' },
+    });
+    expect(payload.message.apns).toEqual({
+      headers: { 'apns-priority': '10' },
+      payload: { aps: { sound: 'default', 'content-available': 1 } },
+    });
+    expect(JSON.stringify(payload)).not.toContain('Thanks for writing in.');
+  });
+
   it('sends FCM HTTP v1 with no message text, prunes UNREGISTERED and INVALID_ARGUMENT tokens, and records sent', async () => {
     process.env[FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV] = 'arn:secret:fcm';
     const deleteDevice = jest.fn(async () => undefined);
@@ -128,10 +153,24 @@ describe('support inbox FCM push (WARDROBE-286)', () => {
         };
       }
       const body = String(init?.body ?? '');
-      expect(body).toContain(SUPPORT_REPLY_PUSH_TITLE);
-      expect(body).toContain(SUPPORT_REPLY_PUSH_BODY);
-      expect(body).toContain(SUPPORT_REPLY_PUSH_DATA_TYPE);
-      expect(body).toContain(CONVERSATION_ID);
+      const parsed = JSON.parse(body) as {
+        message: {
+          notification?: unknown;
+          data?: unknown;
+          android?: unknown;
+          apns?: unknown;
+        };
+      };
+      expect(parsed.message.notification).toEqual({
+        title: SUPPORT_REPLY_PUSH_TITLE,
+        body: SUPPORT_REPLY_PUSH_BODY,
+      });
+      expect(parsed.message.data).toEqual({
+        type: SUPPORT_REPLY_PUSH_DATA_TYPE,
+        conversationId: CONVERSATION_ID,
+      });
+      expect(parsed.message.android).toBeDefined();
+      expect(parsed.message.apns).toBeDefined();
       expect(body).not.toContain('Thanks for writing in.');
       expect(body).not.toContain('user@example.com');
       if (body.includes('dead-token')) {

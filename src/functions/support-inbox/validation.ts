@@ -120,17 +120,21 @@ export function parseDeviceBody(body: unknown): {
   return { token, platform };
 }
 
-export function parseDeviceTokenPath(raw: string): string {
+export function parseDeviceTokenBody(body: unknown): { token: string } {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new SupportValidationError({ body: 'must be an object' });
+  }
+
   const fields: Record<string, string> = {};
-  const parsed = parseDeviceToken(raw, fields);
-  if (!parsed) {
+  const token = parseDeviceToken((body as { token?: unknown }).token, fields);
+  if (Object.keys(fields).length > 0 || !token) {
     throw new SupportValidationError(
       Object.keys(fields).length > 0
         ? fields
         : { token: 'must be 1-4096 characters' },
     );
   }
-  return parsed;
+  return { token };
 }
 
 export function parseReplyBody(body: unknown): { message: string } {
