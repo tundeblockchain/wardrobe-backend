@@ -785,6 +785,8 @@ describe('support inbox conversation items (WARDROBE-281)', () => {
         status: 'open',
         uid: 'firebase-uid-1',
         lastMessageAt: '2026-01-01T00:00:00.000Z',
+        lastMessageAuthor: 'user',
+        lastMessagePreview: 'How do I export?',
       }),
     );
     expect(message).toEqual(
@@ -792,6 +794,7 @@ describe('support inbox conversation items (WARDROBE-281)', () => {
         PK: 'CONV#conv_1',
         SK: 'MSG#2026-01-01T00:00:00.000Z#msg_1',
         author: 'user',
+        screenshotKey: 'support/abc.png',
       }),
     );
     expect(newConversationId()).toMatch(/^conv_[A-Za-z0-9_-]{16}$/);

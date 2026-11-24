@@ -1,6 +1,7 @@
 import {
   extractBearerToken,
   firebaseUidFromPayload,
+  isFirebaseAdminClaim,
 } from '../../src/shared/firebase-token';
 
 describe('extractBearerToken', () => {
@@ -55,5 +56,15 @@ describe('firebaseUidFromPayload', () => {
   it('returns undefined when all identity claims are empty', () => {
     expect(firebaseUidFromPayload({ sub: '', uid: '  ', user_id: undefined })).toBeUndefined();
     expect(firebaseUidFromPayload({})).toBeUndefined();
+  });
+});
+
+describe('isFirebaseAdminClaim', () => {
+  it('is true only for boolean true', () => {
+    expect(isFirebaseAdminClaim({ admin: true })).toBe(true);
+    expect(isFirebaseAdminClaim({ admin: false })).toBe(false);
+    expect(isFirebaseAdminClaim({ admin: 'true' })).toBe(false);
+    expect(isFirebaseAdminClaim({ admin: 1 })).toBe(false);
+    expect(isFirebaseAdminClaim({})).toBe(false);
   });
 });

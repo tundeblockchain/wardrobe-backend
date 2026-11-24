@@ -10,9 +10,9 @@
  *   PK RATE#<scope>#<sha256> / SK WINDOW#<unixWindowStart>
  *
  * META holds status (open|replied|closed), type, email, uid?, platform,
- * appVersion?, device?, screenshotKey?, createdAt, updatedAt, lastMessageAt.
- * The first MSG item is updated after the Resend attempt with
- * emailStatus "sent" | "failed" | "skipped".
+ * appVersion?, device?, screenshotKey?, createdAt, updatedAt, lastMessageAt,
+ * lastMessagePreview, lastMessageAuthor, lastEmailStatus?.
+ * MSG items hold author, body, createdAt, screenshotKey?, emailStatus?.
  * Sparse GSIs: StatusLastMessageIndex (status + lastMessageAt) and
  * UidLastMessageIndex (uid + lastMessageAt). MSG and RATE items omit GSI keys.
  */
@@ -23,6 +23,7 @@ export const UID_LAST_MESSAGE_INDEX = 'UidLastMessageIndex';
 export const keys = {
   conversationPk: (conversationId: string) => `CONV#${conversationId}`,
   metaSk: 'META',
+  messageSkPrefix: 'MSG#',
   messageSk: (createdAt: string, messageId: string) =>
     `MSG#${createdAt}#${messageId}`,
   rateLimitPk: (scope: string, hashedId: string) => `RATE#${scope}#${hashedId}`,

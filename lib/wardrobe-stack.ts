@@ -1256,6 +1256,7 @@ export class WardrobeStack extends cdk.Stack {
       stage,
       isDev,
       httpApi,
+      authorizer: firebaseAuthorizer,
       mediaBucket,
       firebaseProjectIdSecret,
       resendSecret: supportMail.resendSecret,

@@ -94,6 +94,26 @@ export function parseFeedbackBody(body: unknown): ParsedFeedback {
   };
 }
 
+export function parseReplyBody(body: unknown): { message: string } {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new SupportValidationError({ body: 'must be an object' });
+  }
+
+  const fields: Record<string, string> = {};
+  const message = parseMessage(
+    (body as { message?: unknown }).message,
+    fields,
+  );
+  if (Object.keys(fields).length > 0 || !message) {
+    throw new SupportValidationError(
+      Object.keys(fields).length > 0
+        ? fields
+        : { message: 'must be 1-5000 characters' },
+    );
+  }
+  return { message };
+}
+
 export function isHoneypotTripped(website: unknown): boolean {
   if (website === undefined || website === null) {
     return false;

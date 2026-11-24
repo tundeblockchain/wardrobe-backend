@@ -1,6 +1,16 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { firebaseUidFromPayload } from './firebase-token';
+import {
+  firebaseUidFromPayload,
+  isFirebaseAdminClaim,
+  type FirebaseTokenClaims,
+} from './firebase-token';
+
+export interface VerifiedFirebaseIdentity {
+  uid: string;
+  admin: boolean;
+  claims: FirebaseTokenClaims;
+}
 
 /**
  * Shared Firebase ID-token verification (API Gateway authorizer + in-Lambda
@@ -21,6 +31,17 @@ let cachedProjectId: string | undefined;
 let cachedAt = 0;
 
 export async function verifyFirebaseIdToken(token: string): Promise<string> {
+  const identity = await verifyFirebaseIdTokenWithClaims(token);
+  return identity.uid;
+}
+
+/**
+ * Same verification as the API Gateway authorizer, plus custom claims.
+ * Admin routes must check `admin === true` in Lambda (not only at API Gateway).
+ */
+export async function verifyFirebaseIdTokenWithClaims(
+  token: string,
+): Promise<VerifiedFirebaseIdentity> {
   const projectId = await firebaseProjectId();
   const { payload } = await jwtVerify(token, FIREBASE_JWKS, {
     issuer: `https://securetoken.google.com/${projectId}`,
@@ -29,11 +50,16 @@ export async function verifyFirebaseIdToken(token: string): Promise<string> {
     clockTolerance: 5,
   });
 
-  const uid = firebaseUidFromPayload(payload);
+  const claims = payload as FirebaseTokenClaims;
+  const uid = firebaseUidFromPayload(claims);
   if (!uid) {
     throw new Error('Firebase token is missing a user id');
   }
-  return uid;
+  return {
+    uid,
+    admin: isFirebaseAdminClaim(claims),
+    claims,
+  };
 }
 
 export async function firebaseProjectId(): Promise<string> {

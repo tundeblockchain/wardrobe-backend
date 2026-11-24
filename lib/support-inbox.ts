@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import { HttpLambdaAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -18,6 +19,8 @@ import {
   SUPPORT_FEEDBACK_IP_RATE_LIMIT_ENV,
   SUPPORT_FROM_EMAIL_ENV,
   SUPPORT_INBOX_ALLOWED_ORIGINS_ENV,
+  SUPPORT_INBOX_APP_LINK_ENV,
+  SUPPORT_INBOX_APP_LINK_PARAM_ENV,
   SUPPORT_INBOX_RATE_WINDOW_SECONDS_ENV,
   SUPPORT_INBOX_RECIPIENT_PARAM_ENV,
   RESEND_SECRET_ARN_ENV,
@@ -25,19 +28,21 @@ import {
   SUPPORT_EMAIL_TIMEOUT_MS_ENV,
   SUPPORT_TABLE_NAME_ENV,
   SUPPORT_UPLOAD_IP_RATE_LIMIT_ENV,
+  supportInboxAppLinkParamName,
   supportInboxRecipientParamName,
   supportTableName,
 } from '../src/shared/support-inbox-names';
 import { resolveSupportInboxAllowedOrigins } from './support-inbox-cors';
 
 /**
- * Isolated WARDROBE-281 wiring (public feedback + screenshot upload).
+ * Isolated WARDROBE-281 / WARDROBE-284 wiring (public feedback + admin inbox).
  * Kept out of the main stack body so support-mail rebase conflicts stay small.
  */
 export interface SupportInboxProps {
   stage: string;
   isDev: boolean;
   httpApi: apigwv2.HttpApi;
+  authorizer: HttpLambdaAuthorizer;
   mediaBucket: s3.Bucket;
   firebaseProjectIdSecret: secretsmanager.ISecret;
   resendSecret: secretsmanager.ISecret;
@@ -49,6 +54,7 @@ export interface SupportInboxProps {
 export interface SupportInboxResources {
   table: dynamodb.Table;
   supportInboxFn: NodejsFunction;
+  supportInboxAdminFn: NodejsFunction;
 }
 
 export function addSupportInbox(
@@ -59,6 +65,7 @@ export function addSupportInbox(
     stage,
     isDev,
     httpApi,
+    authorizer,
     mediaBucket,
     firebaseProjectIdSecret,
     resendSecret,
@@ -105,16 +112,14 @@ export function addSupportInbox(
   });
 
   const recipientParamName = supportInboxRecipientParamName(stage);
-  const recipientParamArn = cdk.Stack.of(scope).formatArn({
-    service: 'ssm',
-    resource: 'parameter',
-    resourceName: recipientParamName.replace(/^\//, ''),
-  });
+  const appLinkParamName = supportInboxAppLinkParamName(stage);
+  const recipientParamArn = ssmParameterArn(scope, recipientParamName);
+  const appLinkParamArn = ssmParameterArn(scope, appLinkParamName);
   const fromEmail = supportMailSecret
     .secretValueFromJson('fromEmail')
     .unsafeUnwrap();
 
-  const supportInboxFn = lambda(scope, 'SupportInboxFn', {
+  const supportInboxFn = lambda(scope, 'SupportInboxFn', 'handler.ts', {
     ...commonLambdaProps,
     timeout: cdk.Duration.seconds(15),
     environment: {
@@ -190,6 +195,109 @@ export function addSupportInbox(
     integration,
   });
 
+  const appLinkFromConfig = optionalContextOrEnv(
+    scope,
+    'supportInboxAppLink',
+    process.env.SUPPORT_INBOX_APP_LINK,
+  );
+
+  const supportInboxAdminFn = lambda(scope, 'SupportInboxAdminFn', 'admin-handler.ts', {
+    ...commonLambdaProps,
+    timeout: cdk.Duration.seconds(15),
+    environment: {
+      ...commonLambdaProps.environment,
+      [SUPPORT_TABLE_NAME_ENV]: table.tableName,
+      [RESEND_SECRET_ARN_ENV]: resendSecret.secretArn,
+      [SUPPORT_FROM_EMAIL_ENV]: fromEmail,
+      [SUPPORT_INBOX_RECIPIENT_PARAM_ENV]: recipientParamName,
+      [SUPPORT_INBOX_APP_LINK_PARAM_ENV]: appLinkParamName,
+      ...(appLinkFromConfig
+        ? { [SUPPORT_INBOX_APP_LINK_ENV]: appLinkFromConfig }
+        : {}),
+      FIREBASE_PROJECT_ID_SECRET_ARN: firebaseProjectIdSecret.secretArn,
+      [SUPPORT_INBOX_ALLOWED_ORIGINS_ENV]: allowedOrigins.join(','),
+      [SUPPORT_EMAIL_TIMEOUT_MS_ENV]: readContextOrEnv(
+        scope,
+        'supportEmailTimeoutMs',
+        process.env.SUPPORT_EMAIL_TIMEOUT_MS,
+        String(SUPPORT_EMAIL_TIMEOUT_MS),
+      ),
+    },
+  });
+
+  supportInboxAdminFn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: 'SupportInboxAdminTable',
+      actions: [
+        'dynamodb:GetItem',
+        'dynamodb:Query',
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+      ],
+      resources: [
+        table.tableArn,
+        `${table.tableArn}/index/StatusLastMessageIndex`,
+      ],
+    }),
+  );
+  supportInboxAdminFn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: 'SupportInboxAdminScreenshotGet',
+      actions: ['s3:GetObject'],
+      resources: [mediaBucket.arnForObjects('support/*')],
+    }),
+  );
+  supportInboxAdminFn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: 'SupportInboxAdminSsmRead',
+      actions: ['ssm:GetParameter'],
+      resources: [recipientParamArn, appLinkParamArn],
+    }),
+  );
+  resendSecret.grantRead(supportInboxAdminFn);
+  firebaseProjectIdSecret.grantRead(supportInboxAdminFn);
+
+  const adminIntegration = new HttpLambdaIntegration(
+    'SupportInboxAdminIntegration',
+    supportInboxAdminFn,
+  );
+
+  // Firebase authorizer plus in-Lambda `admin === true` claim check.
+  // OPTIONS is answered by API-level corsPreflight (GET/POST + Authorization;
+  // allowOrigins stays ['*'] for mobile). Admin UI origins match the
+  // support-inbox allowlist (Netlify + localhost).
+  const adminAuthorizer = { authorizer };
+  httpApi.addRoutes({
+    path: '/admin/support/conversations',
+    methods: [apigwv2.HttpMethod.GET],
+    integration: adminIntegration,
+    ...adminAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/admin/support/conversations/{conversationId}',
+    methods: [apigwv2.HttpMethod.GET],
+    integration: adminIntegration,
+    ...adminAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/admin/support/conversations/{conversationId}/replies',
+    methods: [apigwv2.HttpMethod.POST],
+    integration: adminIntegration,
+    ...adminAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/admin/support/conversations/{conversationId}/close',
+    methods: [apigwv2.HttpMethod.POST],
+    integration: adminIntegration,
+    ...adminAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/admin/support/conversations/{conversationId}/messages/{messageId}/retry-email',
+    methods: [apigwv2.HttpMethod.POST],
+    integration: adminIntegration,
+    ...adminAuthorizer,
+  });
+
   new cdk.CfnOutput(scope, 'SupportTableName', {
     value: table.tableName,
     description:
@@ -200,8 +308,13 @@ export function addSupportInbox(
     description:
       'SSM parameter for the support inbox recipient. The operator sets its value.',
   });
+  new cdk.CfnOutput(scope, 'SupportInboxAppLinkParamName', {
+    value: appLinkParamName,
+    description:
+      'SSM parameter for the Pocket Closet app link used in admin reply emails. The operator sets its value. Omit to send replies without the link.',
+  });
 
-  return { table, supportInboxFn };
+  return { table, supportInboxFn, supportInboxAdminFn };
 }
 
 function readContextOrEnv(
@@ -220,9 +333,27 @@ function readContextOrEnv(
   return fallback;
 }
 
+function optionalContextOrEnv(
+  scope: Construct,
+  contextKey: string,
+  envValue: string | undefined,
+): string | undefined {
+  const value = readContextOrEnv(scope, contextKey, envValue, '');
+  return value.length > 0 ? value : undefined;
+}
+
+function ssmParameterArn(scope: Construct, parameterName: string): string {
+  return cdk.Stack.of(scope).formatArn({
+    service: 'ssm',
+    resource: 'parameter',
+    resourceName: parameterName.replace(/^\//, ''),
+  });
+}
+
 function lambda(
   scope: Construct,
   id: string,
+  entryFile: string,
   props: Partial<NodejsFunctionProps>,
 ): NodejsFunction {
   const logGroup = new logs.LogGroup(scope, `${id}Logs`, {
@@ -232,7 +363,7 @@ function lambda(
 
   return new NodejsFunction(scope, id, {
     ...props,
-    entry: path.join(__dirname, '../src/functions/support-inbox/handler.ts'),
+    entry: path.join(__dirname, `../src/functions/support-inbox/${entryFile}`),
     handler: 'handler',
     logGroup,
   });

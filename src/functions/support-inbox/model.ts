@@ -1,8 +1,14 @@
 import { nanoid } from 'nanoid';
 import { nowIso } from '../../shared/ids';
+import type { SupportEmailStatus } from '../../shared/support-inbox-names';
 import type { FeedbackInput } from './validation';
 import { keys } from './keys';
-import { transactPutSupportItems } from './table';
+import { conversationPatchAfterMessage } from './status';
+import {
+  closeConversation as closeConversationItem,
+  transactPutAdminReply,
+  transactPutSupportItems,
+} from './table';
 
 export function newConversationId(): string {
   return `conv_${nanoid(16)}`;
@@ -38,6 +44,12 @@ export function conversationItems(
     createdAt,
     updatedAt: createdAt,
     lastMessageAt: createdAt,
+    lastMessagePreview: conversationPatchAfterMessage({
+      author: 'user',
+      body: input.message,
+      createdAt,
+    }).lastMessagePreview,
+    lastMessageAuthor: 'user',
   };
   if (input.uid) {
     meta.uid = input.uid;
@@ -62,6 +74,9 @@ export function conversationItems(
     body: input.message,
     createdAt,
   };
+  if (input.screenshotKey) {
+    message.screenshotKey = input.screenshotKey;
+  }
 
   return [meta, message];
 }
@@ -80,4 +95,84 @@ export async function persistConversation(
     conversationId: input.conversationId,
     messageSk: String(items[1].SK),
   };
+}
+
+export interface PersistAdminReplyInput {
+  conversationId: string;
+  body: string;
+  messageId?: string;
+  createdAt?: string;
+}
+
+export interface PersistAdminReplyResult {
+  conversationId: string;
+  messageId: string;
+  messageSk: string;
+  body: string;
+}
+
+export function adminReplyMessageItem(
+  input: PersistAdminReplyInput,
+): Record<string, unknown> {
+  const createdAt = input.createdAt ?? nowIso();
+  const messageId = input.messageId ?? newMessageId();
+  return {
+    PK: keys.conversationPk(input.conversationId),
+    SK: keys.messageSk(createdAt, messageId),
+    entityType: 'MESSAGE',
+    conversationId: input.conversationId,
+    messageId,
+    author: 'admin',
+    body: input.body,
+    createdAt,
+  };
+}
+
+/**
+ * Store an admin reply (MSG first via transact with META status=replied).
+ * WARDROBE-286 user follow-up should call `conversationPatchAfterMessage`
+ * with author `user` (status back to open) instead of duplicating this.
+ */
+export async function persistAdminReply(
+  input: PersistAdminReplyInput,
+): Promise<PersistAdminReplyResult> {
+  const createdAt = input.createdAt ?? nowIso();
+  const messageId = input.messageId ?? newMessageId();
+  const message = adminReplyMessageItem({
+    ...input,
+    createdAt,
+    messageId,
+  });
+  const patch = conversationPatchAfterMessage({
+    author: 'admin',
+    body: input.body,
+    createdAt,
+  });
+  await transactPutAdminReply({
+    conversationId: input.conversationId,
+    message,
+    ...patch,
+  });
+  return {
+    conversationId: input.conversationId,
+    messageId,
+    messageSk: String(message.SK),
+    body: input.body,
+  };
+}
+
+export async function persistConversationClose(
+  conversationId: string,
+): Promise<{ conversationId: string; status: 'closed' }> {
+  await closeConversationItem(conversationId);
+  return { conversationId, status: 'closed' };
+}
+
+export function isRetryableAdminEmail(
+  message: Record<string, unknown>,
+): boolean {
+  return (
+    message.author === 'admin' &&
+    (message.emailStatus as SupportEmailStatus | undefined) === 'failed'
+  );
 }
