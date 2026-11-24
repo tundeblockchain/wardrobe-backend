@@ -291,4 +291,22 @@ describe('support inbox admin stack wiring (WARDROBE-284)', () => {
       Value: supportInboxAppLinkParamName('dev'),
     });
   });
+
+  test('app-link SSM param is read at runtime, not baked in at synth', () => {
+    const env = functionEnvById(template, 'SupportInboxAdminFn');
+    expect(env?.SUPPORT_INBOX_APP_LINK_PARAM).toBe(
+      '/wardrobe/dev/support/app-link',
+    );
+    expect(env).not.toHaveProperty('SUPPORT_INBOX_APP_LINK');
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).toContain('/wardrobe/dev/support/app-link');
+    expect(synthesized).not.toMatch(
+      /"SUPPORT_INBOX_APP_LINK"\s*:\s*"https?:\/\//,
+    );
+    expect(actionsFor('SupportInboxAdminFn', 'ssm:')).toEqual(['ssm:GetParameter']);
+    expect(
+      JSON.stringify(statementsFor('SupportInboxAdminFn', 'ssm:GetParameter')),
+    ).toContain('parameter/wardrobe/dev/support/app-link');
+  });
 });

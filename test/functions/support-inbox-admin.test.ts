@@ -1,4 +1,15 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
+
+jest.mock('../../src/functions/support-inbox/table', () => {
+  const actual = jest.requireActual(
+    '../../src/functions/support-inbox/table',
+  ) as typeof import('../../src/functions/support-inbox/table');
+  return {
+    ...actual,
+    transactPutAdminReply: jest.fn().mockResolvedValue(undefined),
+  };
+});
+
 import { handleSupportInboxAdmin } from '../../src/functions/support-inbox/admin-handler';
 import { parseAdminListQuery } from '../../src/functions/support-inbox/admin-validation';
 import {
@@ -16,12 +27,15 @@ import {
 import {
   adminReplyMessageItem,
   isRetryableAdminEmail,
+  persistAdminReply,
 } from '../../src/functions/support-inbox/model';
 import {
   escapeHtml,
   formatSupportInboxReply,
+  loadSupportInboxAppLink,
   sendSupportInboxReplyBestEffort,
 } from '../../src/functions/support-inbox/reply';
+import { transactPutAdminReply } from '../../src/functions/support-inbox/table';
 import {
   conversationPatchAfterMessage,
   statusAfterUserFollowUp,
@@ -36,6 +50,10 @@ import {
 const SECRET_LIKE_KEY = 're_test_placeholder_key';
 const ADMIN_TOKEN = 'admin-token';
 const USER_TOKEN = 'user-token';
+const INVALID_TOKEN = 'not.a.jwt';
+const transactPutAdminReplyMock = transactPutAdminReply as jest.MockedFunction<
+  typeof transactPutAdminReply
+>;
 
 function assertSafeReplyFailureLog(fields: unknown): void {
   expect(fields).toEqual(
@@ -403,6 +421,16 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     });
   });
 
+  it('covers every admin route for missing, invalid, and non-admin tokens', () => {
+    expect(ADMIN_ROUTES.map((route) => route.routeKey)).toEqual([
+      'GET /admin/support/conversations',
+      'GET /admin/support/conversations/{conversationId}',
+      'POST /admin/support/conversations/{conversationId}/replies',
+      'POST /admin/support/conversations/{conversationId}/close',
+      'POST /admin/support/conversations/{conversationId}/messages/{messageId}/retry-email',
+    ]);
+  });
+
   it.each(ADMIN_ROUTES)(
     '$name missing token => 401 unauthorized',
     async (route) => {
@@ -417,8 +445,11 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       );
       expect(result.statusCode).toBe(401);
       expect(bodyOf(result)).toEqual({ error: 'unauthorized' });
+      expect(verifyIdToken).not.toHaveBeenCalled();
       expect(listConversations).not.toHaveBeenCalled();
       expect(persistReply).not.toHaveBeenCalled();
+      expect(persistClose).not.toHaveBeenCalled();
+      expect(sendReply).not.toHaveBeenCalled();
     },
   );
 
@@ -429,13 +460,18 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
         await handleSupportInboxAdmin(
           event({
             ...route,
-            authorization: 'nope',
+            authorization: `Bearer ${INVALID_TOKEN}`,
           }),
           deps,
         ),
       );
       expect(result.statusCode).toBe(401);
       expect(bodyOf(result)).toEqual({ error: 'unauthorized' });
+      expect(verifyIdToken).toHaveBeenCalledWith(INVALID_TOKEN);
+      expect(listConversations).not.toHaveBeenCalled();
+      expect(persistReply).not.toHaveBeenCalled();
+      expect(persistClose).not.toHaveBeenCalled();
+      expect(sendReply).not.toHaveBeenCalled();
     },
   );
 
@@ -453,8 +489,11 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       );
       expect(result.statusCode).toBe(403);
       expect(bodyOf(result)).toEqual({ error: 'forbidden' });
+      expect(verifyIdToken).toHaveBeenCalledWith(USER_TOKEN);
+      expect(listConversations).not.toHaveBeenCalled();
       expect(persistReply).not.toHaveBeenCalled();
       expect(persistClose).not.toHaveBeenCalled();
+      expect(sendReply).not.toHaveBeenCalled();
     },
   );
 
@@ -537,7 +576,7 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     });
   });
 
-  it('round-trips list cursor through the handler', async () => {
+  it('round-trips a cursor across two pages', async () => {
     const lastEvaluatedKey = {
       PK: 'CONV#conv_1',
       SK: 'META',
@@ -560,8 +599,16 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
         deps,
       ),
     );
-    const firstBody = bodyOf(first) as { nextCursor: string };
+    const firstBody = bodyOf(first) as {
+      items: Array<{ conversationId: string }>;
+      nextCursor: string | null;
+    };
+    expect(first.statusCode).toBe(200);
+    expect(firstBody.items.map((item) => item.conversationId)).toEqual(['conv_1']);
     expect(firstBody.nextCursor).toBe(encodeExclusiveStartKey(lastEvaluatedKey));
+    expect(decodeExclusiveStartKey(firstBody.nextCursor as string)).toEqual(
+      lastEvaluatedKey,
+    );
 
     listConversations.mockResolvedValueOnce({
       items: [{ conversationId: 'conv_2', status: 'open' }],
@@ -573,20 +620,28 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
           method: 'GET',
           path: '/admin/support/conversations',
           routeKey: 'GET /admin/support/conversations',
-          query: { limit: '1', cursor: firstBody.nextCursor },
+          query: { limit: '1', cursor: firstBody.nextCursor as string },
         }),
         deps,
       ),
     );
+    const secondBody = bodyOf(second) as {
+      items: Array<{ conversationId: string }>;
+      nextCursor: string | null;
+    };
+    expect(second.statusCode).toBe(200);
     expect(listConversations).toHaveBeenLastCalledWith({
       status: 'open',
       limit: 1,
       exclusiveStartKey: lastEvaluatedKey,
     });
-    expect(bodyOf(second)).toEqual({
-      items: [expect.objectContaining({ conversationId: 'conv_2' })],
-      nextCursor: null,
-    });
+    expect(secondBody.items.map((item) => item.conversationId)).toEqual([
+      'conv_2',
+    ]);
+    expect(secondBody.items.map((item) => item.conversationId)).not.toContain(
+      'conv_1',
+    );
+    expect(secondBody.nextCursor).toBeNull();
   });
 
   it('returns thread messages oldest first with a 900s presigned screenshot URL', async () => {
@@ -712,7 +767,8 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     });
   });
 
-  it('returns 201 + failed when Resend throws after the write', async () => {
+  it('returns 201, sets status replied, and records emailStatus failed when Resend throws', async () => {
+    transactPutAdminReplyMock.mockClear();
     sendReply.mockRejectedValueOnce(new Error('Resend down'));
     const result = asResult(
       await handleSupportInboxAdmin(
@@ -723,15 +779,26 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
           pathParameters: { conversationId: 'conv_1' },
           body: { message: 'Thanks for writing in.' },
         }),
-        deps,
+        {
+          ...deps,
+          persistReply: persistAdminReply,
+        },
       ),
     );
     expect(result.statusCode).toBe(201);
     expect(bodyOf(result)).toEqual({
-      messageId: 'msg_admin',
+      messageId: expect.stringMatching(/^msg_/),
       emailStatus: 'failed',
     });
-    expect(persistReply).toHaveBeenCalled();
+    expect(transactPutAdminReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv_1',
+        status: 'replied',
+        lastMessageAuthor: 'admin',
+        lastMessagePreview: 'Thanks for writing in.',
+      }),
+    );
+    expect(sendReply).toHaveBeenCalled();
     expect(setMessageEmailStatus).toHaveBeenCalledWith(
       expect.objectContaining({ emailStatus: 'failed' }),
     );
@@ -769,7 +836,7 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     expect(order).toEqual(['put', 'send', 'status']);
   });
 
-  it('closes a conversation and is idempotent', async () => {
+  it('close called twice returns 200 both times', async () => {
     const first = asResult(
       await handleSupportInboxAdmin(
         event({
@@ -799,7 +866,7 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     expect(persistClose).toHaveBeenCalledTimes(2);
   });
 
-  it('retries a failed admin email and rejects non-failed messages', async () => {
+  it('retries a failed admin email', async () => {
     const retried = asResult(
       await handleSupportInboxAdmin(
         event({
@@ -818,15 +885,25 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       emailStatus: 'sent',
     });
     expect(sendReply).toHaveBeenCalled();
+  });
 
+  it.each([
+    [
+      'user-authored message',
+      { author: 'user', emailStatus: 'failed' },
+    ],
+    [
+      'admin message whose emailStatus is already sent',
+      { author: 'admin', emailStatus: 'sent' },
+    ],
+  ])('retry-email returns 409 for a %s', async (_name, message) => {
     requireMessage.mockResolvedValueOnce({
       SK: 'MSG#x#msg_1',
       messageId: 'msg_1',
-      author: 'admin',
       body: 'Thanks for writing in.',
-      emailStatus: 'sent',
+      ...message,
     });
-    const notRetryable = asResult(
+    const result = asResult(
       await handleSupportInboxAdmin(
         event({
           method: 'POST',
@@ -838,8 +915,9 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
         deps,
       ),
     );
-    expect(notRetryable.statusCode).toBe(409);
-    expect(bodyOf(notRetryable)).toEqual({ error: 'not_retryable' });
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({ error: 'not_retryable' });
+    expect(sendReply).not.toHaveBeenCalled();
   });
 
   it('returns 404 when retrying an unknown message', async () => {
@@ -955,6 +1033,56 @@ describe('support inbox admin reply email (WARDROBE-284)', () => {
     expect(payload.reply_to).toBeUndefined();
     expect(payload.html).not.toContain('Open in Pocket Closet');
     expect(payload.text).toBe('Thanks for writing in.');
+  });
+
+  it('reads the app-link SSM param at runtime when the URL is not in env', async () => {
+    const getParameter = jest.fn(async (name: string) => {
+      if (name === '/wardrobe/dev/support/app-link') {
+        return 'https://runtime.example/app';
+      }
+      return undefined;
+    });
+    const http = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: 'email_1' }),
+    }));
+
+    const loaded = await loadSupportInboxAppLink({
+      env: {
+        SUPPORT_INBOX_APP_LINK_PARAM: '/wardrobe/dev/support/app-link',
+      },
+      getParameter,
+    });
+    expect(loaded).toBe('https://runtime.example/app');
+    expect(getParameter).toHaveBeenCalledWith('/wardrobe/dev/support/app-link');
+
+    const status = await sendSupportInboxReplyBestEffort(
+      {
+        conversationId: 'conv_1',
+        messageId: 'msg_admin',
+        email: 'user@example.com',
+        body: 'Thanks for writing in.',
+      },
+      {
+        env: {
+          SUPPORT_FROM_EMAIL: 'Wardrobe Support <support@example.com>',
+          RESEND_API_KEY: 're_test_placeholder',
+          SUPPORT_INBOX_APP_LINK_PARAM: '/wardrobe/dev/support/app-link',
+        },
+        getParameter,
+        http,
+      },
+    );
+    expect(status).toBe('sent');
+    expect(getParameter).toHaveBeenCalledWith('/wardrobe/dev/support/app-link');
+    const [, init] = http.mock.calls[0] as unknown as [
+      string,
+      { body?: string },
+    ];
+    const payload = JSON.parse(init.body ?? '{}') as { html: string; text: string };
+    expect(payload.html).toContain('https://runtime.example/app');
+    expect(payload.text).toContain('https://runtime.example/app');
   });
 
   it('times out Resend and records failed without leaking PII', async () => {
