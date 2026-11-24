@@ -3473,7 +3473,7 @@ No API Gateway Firebase authorizer. An optional `Authorization: Bearer <firebase
 ### Contract v1
 
 1. `POST /support/upload-url` — body `{ "contentType": "image/png" | "image/jpeg" }`. `200 { url, fields, screenshotKey }`. S3 presigned POST (`createPresignedPost`), `content-length-range` 1..5242880, exact `Content-Type`, expiry 900s, key under `support/` with a random id. Clients send multipart form: all `fields` then `file`.
-2. `POST /support/feedback` — body `{ type: "bug"|"query", message (1-5000 chars, trimmed), email, screenshotKey?, appVersion?, platform: "ios"|"android"|"web", device? (max 200), website? }`. `201 { conversationId }`. Validation: `400 { error: "validation", fields: { <name>: <reason> } }`. Rate limit: `429 { error: "rate_limited", retryAfterSeconds }` plus `Retry-After`. If `screenshotKey` is set, HeadObject it: must exist, be under `support/`, and be ≤5 MB.
+2. `POST /support/feedback` — body `{ type: "bug"|"query", message (1-5000 chars, trimmed), email, screenshotKey?, appVersion?, platform: "ios"|"android"|"web", device? (max 200), website? }`. `201 { conversationId }`. Validation: `400 { error: "validation", fields: { <name>: <reason> } }`. Rate limit: `429 { error: "rate_limited", retryAfterSeconds }` plus `Retry-After`. If `screenshotKey` is set, HeadObject it: must exist, be under `support/`, and be ≤5 MB. DynamoDB write of META + first MSG always happens first. The Resend alert runs only after that write succeeds. After the attempt, the first MSG item is updated with `emailStatus: "sent" | "failed"` (`failed` also when the recipient SSM param is missing/unset, Resend throws, or Resend times out). Timeout is `SUPPORT_EMAIL_TIMEOUT_MS` (default 3000). The alert never throws; once stored, the response is always `201 { conversationId }`.
 3. Honeypot: non-empty `website` returns `201` with a fake `conversationId`, stores nothing, sends no email.
 4. Rate limits (fixed-window TTL counters in the support table): feedback 5/hour per IP and per email; upload-url 20/hour per IP. Override with `SUPPORT_FEEDBACK_IP_RATE_LIMIT` / `SUPPORT_FEEDBACK_EMAIL_RATE_LIMIT` / `SUPPORT_UPLOAD_IP_RATE_LIMIT` / `SUPPORT_INBOX_RATE_WINDOW_SECONDS`.
 5. API CORS stays `allowOrigins: ['*']`. Media-bucket CORS adds `POST` for configured origins (Netlify site + `http://localhost:*` by default). Override with `supportInboxAllowedOrigins` / `SUPPORT_INBOX_ALLOWED_ORIGINS`. Never a match-all `*`.
@@ -3482,18 +3482,19 @@ No API Gateway Firebase authorizer. An optional `Authorization: Bearer <firebase
 
 ```
 PK CONV#<id> / SK META
-PK CONV#<id> / SK MSG#<isoTs>#<messageId>
+PK CONV#<id> / SK MSG#<isoTs>#<messageId>   (emailStatus sent|failed after alert)
 PK RATE#<scope>#<sha256> / SK WINDOW#<unixWindowStart>   (TTL on ttl)
 
 META: status=open, type, email, uid?, platform, appVersion?, device?,
       screenshotKey?, createdAt, updatedAt, lastMessageAt
+MSG:  author=user, body, createdAt, emailStatus? (sent|failed; written after Resend)
 GSI StatusLastMessageIndex: status + lastMessageAt   (Stage 2 admin list)
 GSI UidLastMessageIndex:    uid + lastMessageAt      (Stage 3 my conversations)
 ```
 
 PAY_PER_REQUEST, PITR on, RETAIN in prod.
 
-Alert: From = existing verified sender; Reply-To = user's email. Best-effort (short timeout, never throws). If the recipient SSM parameter is missing/unset, the conversation is still stored and the handler returns 201.
+Alert: From = existing verified sender; Reply-To = user's email. Best-effort (`SUPPORT_EMAIL_TIMEOUT_MS`, try/catch, never throws). Write META+MSG first, then send, then set `emailStatus` on the first message. If the recipient SSM parameter is missing/unset, the conversation is still stored, `emailStatus` is `failed`, and the handler returns 201. Failure logs include only `conversationId` and error class/code — never email, message text, or secrets.
 
 ### Operator setup
 

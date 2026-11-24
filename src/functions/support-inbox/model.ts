@@ -66,9 +66,18 @@ export function conversationItems(
   return [meta, message];
 }
 
+export interface PersistConversationResult {
+  conversationId: string;
+  messageSk: string;
+}
+
 export async function persistConversation(
   input: PersistConversationInput,
-): Promise<{ conversationId: string }> {
-  await transactPutSupportItems(conversationItems(input));
-  return { conversationId: input.conversationId };
+): Promise<PersistConversationResult> {
+  const items = conversationItems(input);
+  await transactPutSupportItems(items);
+  return {
+    conversationId: input.conversationId,
+    messageSk: String(items[1].SK),
+  };
 }

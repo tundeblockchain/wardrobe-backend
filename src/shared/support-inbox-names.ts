@@ -32,8 +32,28 @@ export const DEFAULT_FEEDBACK_EMAIL_RATE_LIMIT = 5;
 export const DEFAULT_UPLOAD_IP_RATE_LIMIT = 20;
 export const DEFAULT_RATE_WINDOW_SECONDS = 3600;
 
-/** Best-effort Resend send budget so the client is never blocked on mail. */
-export const SUPPORT_INBOX_SEND_TIMEOUT_MS = 3_000;
+/**
+ * Best-effort Resend send budget so the client is never blocked on mail.
+ * Override with env SUPPORT_EMAIL_TIMEOUT_MS.
+ */
+export const SUPPORT_EMAIL_TIMEOUT_MS = 3_000;
+export const SUPPORT_EMAIL_TIMEOUT_MS_ENV = 'SUPPORT_EMAIL_TIMEOUT_MS';
+
+export const SUPPORT_EMAIL_STATUSES = ['sent', 'failed'] as const;
+export type SupportEmailStatus = (typeof SUPPORT_EMAIL_STATUSES)[number];
+
+export function readSupportEmailTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[SUPPORT_EMAIL_TIMEOUT_MS_ENV]?.trim();
+  if (!raw) {
+    return SUPPORT_EMAIL_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : SUPPORT_EMAIL_TIMEOUT_MS;
+}
 /** Cold-start SSM / Secrets reads; cached after the first hit. */
 export const SUPPORT_INBOX_AWS_REQUEST_TIMEOUT_MS = 1_000;
 export const SUPPORT_INBOX_AWS_MAX_ATTEMPTS = 1;

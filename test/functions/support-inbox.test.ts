@@ -2,6 +2,7 @@ import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-l
 import {
   formatSupportInboxAlert,
   resetSupportInboxAlertCache,
+  safeAlertFailureFields,
   sendSupportInboxAlertBestEffort,
 } from '../../src/functions/support-inbox/alert';
 import { handleSupportInbox } from '../../src/functions/support-inbox/handler';
@@ -28,9 +29,33 @@ import { SupportValidationError } from '../../src/functions/support-inbox/http';
 import { keys } from '../../src/functions/support-inbox/keys';
 import { logger } from '../../src/shared/logger';
 import {
+  SUPPORT_EMAIL_TIMEOUT_MS,
   SUPPORT_PRESIGN_EXPIRES_SECONDS,
   SUPPORT_SCREENSHOT_MAX_BYTES,
 } from '../../src/shared/support-inbox-names';
+
+const MESSAGE_SK = 'MSG#2026-01-01T00:00:00.000Z#msg_1';
+const SECRET_LIKE_KEY = 're_test_placeholder_key';
+
+function assertSafeFailureLog(fields: unknown): void {
+  expect(fields).toEqual(
+    expect.objectContaining({
+      conversationId: expect.any(String),
+      error: expect.any(String),
+    }),
+  );
+  const record = fields as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    expect(['conversationId', 'error', 'code']).toContain(key);
+  }
+  const blob = JSON.stringify(record);
+  expect(blob).not.toContain('user@example.com');
+  expect(blob).not.toContain('The try-on button does nothing.');
+  expect(blob).not.toContain('Broken button');
+  expect(blob).not.toMatch(/re_[A-Za-z0-9]/);
+  expect(blob).not.toContain(SECRET_LIKE_KEY);
+  expect(blob.toLowerCase()).not.toContain('apikey');
+}
 
 function asResult(
   result: Awaited<ReturnType<typeof handleSupportInbox>>,
@@ -193,7 +218,9 @@ describe('support inbox validation (WARDROBE-281)', () => {
 describe('support inbox handler (WARDROBE-281)', () => {
   const persistConversation = jest.fn(async (input: { conversationId: string }) => ({
     conversationId: input.conversationId,
+    messageSk: MESSAGE_SK,
   }));
+  const setMessageEmailStatus = jest.fn(async () => undefined);
   const createUploadPost = jest.fn(async () => ({
     url: 'https://s3.example/support',
     fields: { key: 'support/abc.png', Policy: 'policy', 'X-Amz-Signature': 'sig' },
@@ -215,6 +242,7 @@ describe('support inbox handler (WARDROBE-281)', () => {
 
   const deps = {
     persistConversation,
+    setMessageEmailStatus,
     createUploadPost,
     headScreenshot,
     verifyIdToken,
@@ -307,6 +335,36 @@ describe('support inbox handler (WARDROBE-281)', () => {
         email: 'user@example.com',
       }),
     );
+    expect(setMessageEmailStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_testhoneypot01',
+      messageSk: MESSAGE_SK,
+      emailStatus: 'sent',
+    });
+  });
+
+  it('writes META+MSG before calling Resend', async () => {
+    const order: string[] = [];
+    persistConversation.mockImplementation(async (input: { conversationId: string }) => {
+      order.push('put');
+      return { conversationId: input.conversationId, messageSk: MESSAGE_SK };
+    });
+    sendAlert.mockImplementation(async () => {
+      order.push('send');
+    });
+    setMessageEmailStatus.mockImplementation(async () => {
+      order.push('status');
+    });
+
+    await handleSupportInbox(
+      event({
+        path: '/support/feedback',
+        authorization: null,
+        body: validFeedback,
+      }),
+      deps,
+    );
+
+    expect(order).toEqual(['put', 'send', 'status']);
   });
 
   it('returns 401 for an invalid Firebase token and stores nothing', async () => {
@@ -479,8 +537,12 @@ describe('support inbox handler (WARDROBE-281)', () => {
     );
   });
 
-  it('still returns 201 when the alert throws', async () => {
-    sendAlert.mockRejectedValueOnce(new Error('Resend down'));
+  it('returns 201 with emailStatus failed when Resend throws', async () => {
+    const logError = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    sendAlert.mockRejectedValueOnce(
+      Object.assign(new Error('Resend down'), { name: 'ResendError' }),
+    );
+
     const result = asResult(
       await handleSupportInbox(
         event({
@@ -491,8 +553,54 @@ describe('support inbox handler (WARDROBE-281)', () => {
         deps,
       ),
     );
+
+    expect(result.statusCode).toBe(201);
+    expect(bodyOf(result)).toEqual({ conversationId: 'conv_testhoneypot01' });
+    expect(persistConversation).toHaveBeenCalled();
+    expect(setMessageEmailStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_testhoneypot01',
+      messageSk: MESSAGE_SK,
+      emailStatus: 'failed',
+    });
+    expect(logError).toHaveBeenCalled();
+    const failureLog = logError.mock.calls.find(
+      ([message]) => message === 'Support inbox alert failed',
+    );
+    expect(failureLog).toBeDefined();
+    assertSafeFailureLog(failureLog?.[1]);
+    logError.mockRestore();
+  });
+
+  it('returns 201 with emailStatus failed when Resend times out', async () => {
+    const logError = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    sendAlert.mockRejectedValueOnce(
+      Object.assign(new Error('Resend send timed out'), { name: 'TimeoutError' }),
+    );
+
+    const result = asResult(
+      await handleSupportInbox(
+        event({
+          path: '/support/feedback',
+          authorization: null,
+          body: validFeedback,
+        }),
+        deps,
+      ),
+    );
+
     expect(result.statusCode).toBe(201);
     expect(persistConversation).toHaveBeenCalled();
+    expect(setMessageEmailStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_testhoneypot01',
+      messageSk: MESSAGE_SK,
+      emailStatus: 'failed',
+    });
+    const failureLog = logError.mock.calls.find(
+      ([message]) => message === 'Support inbox alert failed',
+    );
+    expect(failureLog).toBeDefined();
+    assertSafeFailureLog(failureLog?.[1]);
+    logError.mockRestore();
   });
 });
 
@@ -717,10 +825,12 @@ describe('support inbox alert email (WARDROBE-281)', () => {
   });
 
   it('stores the conversation path: missing recipient still 201 and does not throw', async () => {
-    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const logError = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
     const persistConversation = jest.fn(async (input: { conversationId: string }) => ({
       conversationId: input.conversationId,
+      messageSk: MESSAGE_SK,
     }));
+    const setMessageEmailStatus = jest.fn(async () => undefined);
 
     const result = asResult(
       await handleSupportInbox(
@@ -731,6 +841,7 @@ describe('support inbox alert email (WARDROBE-281)', () => {
         }),
         {
           persistConversation,
+          setMessageEmailStatus,
           consumeFeedbackRateLimit: async () => ({
             allowed: true,
             retryAfterSeconds: 1,
@@ -756,8 +867,98 @@ describe('support inbox alert email (WARDROBE-281)', () => {
       conversationId: 'conv_missingrecipient',
     });
     expect(persistConversation).toHaveBeenCalled();
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    expect(setMessageEmailStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_missingrecipient',
+      messageSk: MESSAGE_SK,
+      emailStatus: 'failed',
+    });
+    const failureLog = logError.mock.calls.find(
+      ([message]) => message === 'Support inbox alert failed',
+    );
+    expect(failureLog).toBeDefined();
+    assertSafeFailureLog(failureLog?.[1]);
+    logError.mockRestore();
+  });
+
+  it('times out Resend and records emailStatus failed without leaking PII', async () => {
+    expect(SUPPORT_EMAIL_TIMEOUT_MS).toBe(3000);
+    const log = {
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    };
+    const hanging = jest.fn(
+      () => new Promise<{ ok: boolean; status: number; text(): Promise<string> }>(() => undefined),
+    );
+
+    const status = await sendSupportInboxAlertBestEffort(
+      {
+        conversationId: 'conv_timeout',
+        type: 'bug',
+        message: 'Broken button',
+        email: 'user@example.com',
+        platform: 'ios',
+      },
+      {
+        env: {
+          SUPPORT_FROM_EMAIL: 'Wardrobe Support <support@example.com>',
+          SUPPORT_INBOX_RECIPIENT: 'inbox@example.com',
+          RESEND_API_KEY: SECRET_LIKE_KEY,
+        },
+        http: hanging,
+        timeoutMs: 20,
+        log,
+      },
+    );
+
+    expect(status).toBe('failed');
+    expect(log.error).toHaveBeenCalledWith(
+      'Support inbox alert failed',
+      expect.objectContaining({
+        conversationId: 'conv_timeout',
+        error: expect.any(String),
+        code: 'TIMEOUT',
+      }),
+    );
+    assertSafeFailureLog(log.error.mock.calls[0]?.[1]);
+  });
+
+  it('returns sent on a successful Resend call', async () => {
+    const status = await sendSupportInboxAlertBestEffort(
+      {
+        conversationId: 'conv_ok',
+        type: 'query',
+        message: 'How do I share?',
+        email: 'user@example.com',
+        platform: 'web',
+      },
+      {
+        env: {
+          SUPPORT_FROM_EMAIL: 'Wardrobe Support <support@example.com>',
+          SUPPORT_INBOX_RECIPIENT: 'inbox@example.com',
+          RESEND_API_KEY: SECRET_LIKE_KEY,
+        },
+        http: async () => ({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ id: 'email_1' }),
+        }),
+      },
+    );
+    expect(status).toBe('sent');
+  });
+
+  it('keeps failure log fields to conversationId and error class/code', () => {
+    const fields = safeAlertFailureFields(
+      'conv_1',
+      Object.assign(new Error('Resend send timed out'), { name: 'TimeoutError' }),
+    );
+    expect(fields).toEqual({
+      conversationId: 'conv_1',
+      error: 'TimeoutError',
+      code: 'TIMEOUT',
+    });
+    assertSafeFailureLog(fields);
   });
 
   it('formats type, message, platform, and screenshot presence', () => {

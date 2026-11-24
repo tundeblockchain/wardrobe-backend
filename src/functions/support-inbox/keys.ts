@@ -11,6 +11,8 @@
  *
  * META holds status (open|replied|closed), type, email, uid?, platform,
  * appVersion?, device?, screenshotKey?, createdAt, updatedAt, lastMessageAt.
+ * The first MSG item is updated after the Resend attempt with
+ * emailStatus "sent" | "failed".
  * Sparse GSIs: StatusLastMessageIndex (status + lastMessageAt) and
  * UidLastMessageIndex (uid + lastMessageAt). MSG and RATE items omit GSI keys.
  */

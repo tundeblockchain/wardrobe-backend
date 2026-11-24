@@ -161,6 +161,7 @@ describe('support inbox stack wiring (WARDROBE-281)', () => {
         SUPPORT_FEEDBACK_EMAIL_RATE_LIMIT: '5',
         SUPPORT_UPLOAD_IP_RATE_LIMIT: '20',
         SUPPORT_INBOX_RATE_WINDOW_SECONDS: '3600',
+        SUPPORT_EMAIL_TIMEOUT_MS: '3000',
       }),
     );
     expect(env).not.toHaveProperty('RESEND_API_KEY');

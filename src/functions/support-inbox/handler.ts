@@ -9,7 +9,9 @@ import {
   parseJsonBody,
 } from '../../shared/http';
 import { logger } from '../../shared/logger';
+import type { SupportEmailStatus } from '../../shared/support-inbox-names';
 import {
+  safeAlertFailureFields,
   sendSupportInboxAlertBestEffort,
   type SupportInboxAlertDeps,
 } from './alert';
@@ -22,7 +24,12 @@ import {
   unauthenticatedResponse,
   validationResponse,
 } from './http';
-import { newConversationId, persistConversation } from './model';
+import {
+  newConversationId,
+  persistConversation,
+  type PersistConversationResult,
+} from './model';
+import { updateMessageEmailStatus } from './table';
 import { createSupportUploadPost } from './presign';
 import {
   assertAllowed,
@@ -35,6 +42,7 @@ import { parseFeedbackBody, parseUploadUrlBody } from './validation';
 
 export interface SupportInboxHandlerDeps {
   persistConversation?: typeof persistConversation;
+  setMessageEmailStatus?: typeof updateMessageEmailStatus;
   createUploadPost?: typeof createSupportUploadPost;
   headScreenshot?: HeadScreenshotFn;
   verifyIdToken?: (token: string) => Promise<string>;
@@ -130,28 +138,51 @@ async function handleFeedback(
   }
 
   const persist = deps.persistConversation ?? persistConversation;
-  await persist({
+  const stored: PersistConversationResult = await persist({
     ...parsed.value,
     conversationId,
     uid,
   });
 
-  await sendSupportInboxAlertBestEffort(
-    {
-      conversationId,
-      type: parsed.value.type,
-      message: parsed.value.message,
-      email: parsed.value.email,
-      platform: parsed.value.platform,
-      appVersion: parsed.value.appVersion,
-      device: parsed.value.device,
-      uid,
-      screenshotKey: parsed.value.screenshotKey,
-    },
-    deps.alert,
-  );
+  let emailStatus: SupportEmailStatus = 'failed';
+  try {
+    emailStatus = await sendSupportInboxAlertBestEffort(
+      {
+        conversationId: stored.conversationId,
+        type: parsed.value.type,
+        message: parsed.value.message,
+        email: parsed.value.email,
+        platform: parsed.value.platform,
+        appVersion: parsed.value.appVersion,
+        device: parsed.value.device,
+        uid,
+        screenshotKey: parsed.value.screenshotKey,
+      },
+      deps.alert,
+    );
+  } catch (error) {
+    logger.error(
+      'Support inbox alert failed',
+      safeAlertFailureFields(stored.conversationId, error),
+    );
+    emailStatus = 'failed';
+  }
 
-  return created({ conversationId });
+  const setStatus = deps.setMessageEmailStatus ?? updateMessageEmailStatus;
+  try {
+    await setStatus({
+      conversationId: stored.conversationId,
+      messageSk: stored.messageSk,
+      emailStatus,
+    });
+  } catch (error) {
+    logger.error(
+      'Support inbox alert failed',
+      safeAlertFailureFields(stored.conversationId, error),
+    );
+  }
+
+  return created({ conversationId: stored.conversationId });
 }
 
 async function optionalUid(

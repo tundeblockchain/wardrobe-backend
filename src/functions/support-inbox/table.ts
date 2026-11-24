@@ -6,7 +6,11 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { Errors } from '../../shared/errors';
 import { nowIso } from '../../shared/ids';
-import { SUPPORT_TABLE_NAME_ENV } from '../../shared/support-inbox-names';
+import {
+  SUPPORT_TABLE_NAME_ENV,
+  type SupportEmailStatus,
+} from '../../shared/support-inbox-names';
+import { keys } from './keys';
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -73,6 +77,31 @@ export async function transactPutSupportItems(
           ConditionExpression: 'attribute_not_exists(PK)',
         },
       })),
+    }),
+  );
+}
+
+export async function updateMessageEmailStatus(input: {
+  conversationId: string;
+  messageSk: string;
+  emailStatus: SupportEmailStatus;
+  tableName?: string;
+}): Promise<void> {
+  await client.send(
+    new UpdateCommand({
+      TableName: input.tableName ?? supportInboxTableName(),
+      Key: {
+        PK: keys.conversationPk(input.conversationId),
+        SK: input.messageSk,
+      },
+      UpdateExpression: 'SET emailStatus = :status, #updatedAt = :now',
+      ExpressionAttributeNames: {
+        '#updatedAt': 'updatedAt',
+      },
+      ExpressionAttributeValues: {
+        ':status': input.emailStatus,
+        ':now': nowIso(),
+      },
     }),
   );
 }

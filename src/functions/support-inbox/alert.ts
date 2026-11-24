@@ -4,7 +4,7 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { logger } from '../../shared/logger';
-import { sendEmail, type FetchLike } from '../../shared/resend';
+import { PermanentResendError, sendEmail, type FetchLike } from '../../shared/resend';
 import { parseJsonObjectOrString } from '../../shared/secrets';
 import {
   RESEND_API_KEY_ENV,
@@ -14,7 +14,8 @@ import {
   SUPPORT_INBOX_AWS_REQUEST_TIMEOUT_MS,
   SUPPORT_INBOX_RECIPIENT_ENV,
   SUPPORT_INBOX_RECIPIENT_PARAM_ENV,
-  SUPPORT_INBOX_SEND_TIMEOUT_MS,
+  readSupportEmailTimeoutMs,
+  type SupportEmailStatus,
   type SupportFeedbackType,
   type SupportPlatform,
 } from '../../shared/support-inbox-names';
@@ -60,6 +61,13 @@ export interface SupportInboxAlertDeps {
   log?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
 }
 
+export interface SupportAlertFailureFields {
+  conversationId: string;
+  error: string;
+  code?: string | number;
+  [key: string]: unknown;
+}
+
 let cachedConfig: { cacheKey: string; config: SupportInboxMailConfig } | undefined;
 let cachedApiKey: string | undefined;
 
@@ -69,32 +77,31 @@ export function resetSupportInboxAlertCache(): void {
 }
 
 /**
- * Best-effort support inbox email. Never throws: the HTTP status stays 201
- * whether send succeeds, fails, times out, or config is missing.
+ * Best-effort support inbox email. Never throws. The HTTP status stays 201
+ * once the conversation is stored, whether send succeeds, fails, times out,
+ * or config is missing. Timeout is SUPPORT_EMAIL_TIMEOUT_MS.
  */
 export async function sendSupportInboxAlertBestEffort(
   alert: SupportInboxAlert,
   deps: SupportInboxAlertDeps = {},
-): Promise<void> {
+): Promise<SupportEmailStatus> {
   const log = deps.log ?? logger;
   try {
     if (deps.sendAlert) {
       await deps.sendAlert(alert);
-      return;
+      return 'sent';
     }
-    await sendSupportInboxAlert(alert, deps);
+    return await sendSupportInboxAlert(alert, deps);
   } catch (error) {
-    log.error('Support inbox alert failed', {
-      conversationId: alert.conversationId,
-      error: errorName(error),
-    });
+    log.error('Support inbox alert failed', safeAlertFailureFields(alert.conversationId, error));
+    return 'failed';
   }
 }
 
 export async function sendSupportInboxAlert(
   alert: SupportInboxAlert,
   deps: SupportInboxAlertDeps = {},
-): Promise<void> {
+): Promise<SupportEmailStatus> {
   const log = deps.log ?? logger;
   const loadConfig =
     deps.loadConfig ??
@@ -106,7 +113,11 @@ export async function sendSupportInboxAlert(
       }));
   const config = await loadConfig();
   if (!config) {
-    return;
+    log.error(
+      'Support inbox alert failed',
+      safeAlertFailureFields(alert.conversationId, 'RecipientMissing'),
+    );
+    return 'failed';
   }
 
   const loadApiKey =
@@ -119,13 +130,15 @@ export async function sendSupportInboxAlert(
       }));
   const apiKey = await loadApiKey();
   if (!apiKey) {
-    log.warn('Support inbox alert skipped; Resend secret is missing or invalid', {
-      conversationId: alert.conversationId,
-    });
-    return;
+    log.error(
+      'Support inbox alert failed',
+      safeAlertFailureFields(alert.conversationId, 'ApiKeyMissing'),
+    );
+    return 'failed';
   }
 
   const email = formatSupportInboxAlert(alert);
+  const timeoutMs = deps.timeoutMs ?? readSupportEmailTimeoutMs(deps.env);
   await sendEmail(
     {
       apiKey,
@@ -134,7 +147,7 @@ export async function sendSupportInboxAlert(
       subject: email.subject,
       text: email.text,
       replyTo: alert.email,
-      timeoutMs: deps.timeoutMs ?? SUPPORT_INBOX_SEND_TIMEOUT_MS,
+      timeoutMs,
     },
     deps.http,
   );
@@ -145,12 +158,31 @@ export async function sendSupportInboxAlert(
     hasUid: Boolean(alert.uid),
     hasScreenshot: Boolean(alert.screenshotKey),
   });
+  return 'sent';
+}
+
+/**
+ * Failure log fields: conversationId + error class/code only.
+ * Never include email, message text, keys, or secrets.
+ */
+export function safeAlertFailureFields(
+  conversationId: string,
+  error: unknown,
+): SupportAlertFailureFields {
+  const fields: SupportAlertFailureFields = {
+    conversationId,
+    error: errorClass(error),
+  };
+  const code = errorCode(error);
+  if (code !== undefined) {
+    fields.code = code;
+  }
+  return fields;
 }
 
 export async function loadSupportInboxMailConfig(
   deps: SupportInboxAlertDeps = {},
 ): Promise<SupportInboxMailConfig | undefined> {
-  const log = deps.log ?? logger;
   const env = deps.env ?? process.env;
   const sender = env[SUPPORT_FROM_EMAIL_ENV]?.trim();
   const recipientFromEnv = env[SUPPORT_INBOX_RECIPIENT_ENV]?.trim();
@@ -158,17 +190,11 @@ export async function loadSupportInboxMailConfig(
     return { recipient: recipientFromEnv, sender };
   }
   if (!sender) {
-    log.warn(
-      'Support inbox alert skipped; recipient parameter is missing or unset',
-    );
     return undefined;
   }
 
   const paramName = env[SUPPORT_INBOX_RECIPIENT_PARAM_ENV]?.trim();
   if (!paramName) {
-    log.warn(
-      'Support inbox alert skipped; recipient parameter is missing or unset',
-    );
     return undefined;
   }
 
@@ -180,17 +206,10 @@ export async function loadSupportInboxMailConfig(
   let recipient: string | undefined;
   try {
     recipient = optionalNonEmpty(await getParameter(paramName));
-  } catch (error) {
-    log.warn(
-      'Support inbox alert skipped; recipient parameter is missing or unset',
-      { error: errorName(error) },
-    );
+  } catch {
     return undefined;
   }
   if (!recipient) {
-    log.warn(
-      'Support inbox alert skipped; recipient parameter is missing or unset',
-    );
     return undefined;
   }
 
@@ -210,10 +229,8 @@ export async function loadSupportInboxApiKey(
   if (cachedApiKey) {
     return cachedApiKey;
   }
-  const log = deps.log ?? logger;
   const secretId = env[RESEND_SECRET_ARN_ENV]?.trim();
   if (!secretId) {
-    log.warn('Support inbox alert skipped; Resend secret is not configured');
     return undefined;
   }
 
@@ -221,15 +238,11 @@ export async function loadSupportInboxApiKey(
   try {
     const apiKey = parseResendApiKey(await getSecret(secretId));
     if (!apiKey) {
-      log.warn('Support inbox alert skipped; Resend secret is missing or invalid');
       return undefined;
     }
     cachedApiKey = apiKey;
     return apiKey;
-  } catch (error) {
-    log.warn('Support inbox alert skipped; failed to read Resend secret', {
-      error: errorName(error),
-    });
+  } catch {
     return undefined;
   }
 }
@@ -304,12 +317,48 @@ function optionalNonEmpty(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-function errorName(error: unknown): string {
+function errorClass(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) {
+    return error.trim();
+  }
   if (error && typeof error === 'object') {
     const name = (error as { name?: unknown }).name;
     if (typeof name === 'string' && name.trim()) {
-      return name;
+      return name.trim();
     }
   }
   return 'Error';
+}
+
+function errorCode(error: unknown): string | number | undefined {
+  if (typeof error === 'string') {
+    return undefined;
+  }
+  if (isTimeoutError(error)) {
+    return 'TIMEOUT';
+  }
+  if (error instanceof PermanentResendError) {
+    return error.status;
+  }
+  if (error && typeof error === 'object') {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' && code.trim()) {
+      return code.trim();
+    }
+    if (typeof code === 'number' && Number.isFinite(code)) {
+      return code;
+    }
+  }
+  return undefined;
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const named = error as { name?: unknown; message?: unknown };
+  if (named.name === 'AbortError' || named.name === 'TimeoutError') {
+    return true;
+  }
+  return named.message === 'Resend send timed out';
 }

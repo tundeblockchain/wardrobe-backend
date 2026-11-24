@@ -21,6 +21,8 @@ import {
   SUPPORT_INBOX_RATE_WINDOW_SECONDS_ENV,
   SUPPORT_INBOX_RECIPIENT_PARAM_ENV,
   RESEND_SECRET_ARN_ENV,
+  SUPPORT_EMAIL_TIMEOUT_MS,
+  SUPPORT_EMAIL_TIMEOUT_MS_ENV,
   SUPPORT_TABLE_NAME_ENV,
   SUPPORT_UPLOAD_IP_RATE_LIMIT_ENV,
   supportInboxRecipientParamName,
@@ -146,6 +148,12 @@ export function addSupportInbox(
         'supportInboxRateWindowSeconds',
         process.env.SUPPORT_INBOX_RATE_WINDOW_SECONDS,
         String(DEFAULT_RATE_WINDOW_SECONDS),
+      ),
+      [SUPPORT_EMAIL_TIMEOUT_MS_ENV]: readContextOrEnv(
+        scope,
+        'supportEmailTimeoutMs',
+        process.env.SUPPORT_EMAIL_TIMEOUT_MS,
+        String(SUPPORT_EMAIL_TIMEOUT_MS),
       ),
     },
   });
