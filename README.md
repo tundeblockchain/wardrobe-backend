@@ -824,7 +824,7 @@ READY Virtual Try On photos on the wish are copied onto the new item (`users/{ui
 
 **400** `VALIDATION_ERROR` when the wish is missing category or image, or `wardrobeId` is missing.
 
-Browser `PUT`s (WARDROBE-176) need S3 bucket CORS on this media bucket only. The rule is `PUT`, `Content-Type`, `ETag`, `maxAge` 3000, and these origins by default: `https://wende-wardrobe.netlify.app`, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173`. Override with CDK context `uploadAllowedOrigins` or env `UPLOAD_ALLOWED_ORIGINS` (comma-separated). Never `*`. API Gateway CORS stays `allowOrigins: ['*']`. The presign body, response fields, and Flutter contract are unchanged. The same rule covers `POST /ai-profiles/{aiProfileId}/uploads`.
+Browser `PUT`s (WARDROBE-176) need S3 bucket CORS on this media bucket only. The rule is `PUT`, `Content-Type`, `ETag`, `maxAge` 3000, and these origins by default: `https://wende-wardrobe.netlify.app`, `https://deploy-preview-*--wende-wardrobe.netlify.app`, `http://localhost:5173`. Override with CDK context `uploadAllowedOrigins` or env `UPLOAD_ALLOWED_ORIGINS` (comma-separated). Never `*`. WARDROBE-281 adds a second rule for `POST` (presigned support screenshots); origins default to the Netlify site plus `http://localhost:*` and are overridden with `supportInboxAllowedOrigins` / `SUPPORT_INBOX_ALLOWED_ORIGINS`. API Gateway CORS stays `allowOrigins: ['*']`. The presign body, response fields, and Flutter contract are unchanged. The same PUT rule covers `POST /ai-profiles/{aiProfileId}/uploads`.
 
 ### Clothing items
 
@@ -2135,7 +2135,7 @@ Unit tests inject `fetchSecret` / HTTP clients / cache / S3 image loader — no 
 
 Identity always comes from the validated Firebase token (`sub` = Firebase UID). Clients must not send `userId` as proof of ownership.
 
-Unauthenticated routes: `GET /health`, `GET /public/shares/{token}` (WARDROBE-126 — token is the capability), Superwall / support webhooks.
+Unauthenticated routes: `GET /health`, `GET /public/shares/{token}` (WARDROBE-126 — token is the capability), Superwall / support webhooks, `POST /support/upload-url` and `POST /support/feedback` (WARDROBE-281; optional Firebase token is verified in-Lambda on feedback).
 
 A Lambda authorizer reads the Firebase project ID from Secrets Manager and validates the ID token:
 
@@ -2716,6 +2716,7 @@ lib/entitlements.ts    isolated WARDROBE-91 Superwall webhook wiring
 lib/conversion-events.ts isolated WARDROBE-249 Meta CAPI + TikTok Events API secrets
 lib/stripe.ts          isolated WARDROBE-187 Stripe secrets + grantStripeSecretRead
 lib/support-mail.ts    isolated WARDROBE-38 / WARDROBE-143 Resend wiring (rebase-friendly)
+lib/support-inbox.ts   isolated WARDROBE-281 public feedback + SupportTable + S3 POST CORS
 lib/wardrobe-pipeline-stack.ts
 lib/wardrobe-stage.ts
 cdk.json.example
@@ -2742,6 +2743,7 @@ src/functions/
   processing/          Gemini helpers, bg-remove, classify, colour-detect, try-on, pipeline
   outfit-render/       SQS worker for RENDER_OUTFIT (WARDROBE-47) + RENDER_ITEM (WARDROBE-150) + RENDER_WISH (WARDROBE-253)
   support/             WARDROBE-38 outbound contact/bug + WARDROBE-143 public website contact + Resend client + Svix verify
+  support-inbox/       WARDROBE-281 public POST /support/upload-url + /support/feedback
   support-webhook/     public inbound webhook entry (re-exports support/webhook)
 src/shared/
   auth.ts
@@ -3456,3 +3458,46 @@ Enable **receiving** on that domain. Create a webhook for `email.received` point
 Do not put production Resend keys in git, `cdk.json`, or Lambda env literals.
 
 Unit tests inject a mock Resend HTTP client and sign Svix fixtures locally — no live sends in CI.
+
+## Support inbox (WARDROBE-281)
+
+Public feedback used by the Flutter app and the website. Conversations are stored in a **separate** DynamoDB table (`wardrobe-support-{stage}`), not the main single table. Alert mail reuses the WARDROBE-38 Resend secret and verified sender; the recipient is the SSM parameter `/wardrobe/{stage}/support/recipient`.
+
+```http
+POST /support/upload-url
+POST /support/feedback
+```
+
+No API Gateway Firebase authorizer. An optional `Authorization: Bearer <firebase-id-token>` on `/support/feedback` links the conversation to that uid; a present-but-invalid token is `401`. `/support/upload-url` is public.
+
+### Contract v1
+
+1. `POST /support/upload-url` — body `{ "contentType": "image/png" | "image/jpeg" }`. `200 { url, fields, screenshotKey }`. S3 presigned POST (`createPresignedPost`), `content-length-range` 1..5242880, exact `Content-Type`, expiry 900s, key under `support/` with a random id. Clients send multipart form: all `fields` then `file`.
+2. `POST /support/feedback` — body `{ type: "bug"|"query", message (1-5000 chars, trimmed), email, screenshotKey?, appVersion?, platform: "ios"|"android"|"web", device? (max 200), website? }`. `201 { conversationId }`. Validation: `400 { error: "validation", fields: { <name>: <reason> } }`. Rate limit: `429 { error: "rate_limited", retryAfterSeconds }` plus `Retry-After`. If `screenshotKey` is set, HeadObject it: must exist, be under `support/`, and be ≤5 MB. DynamoDB write of META + first MSG always happens first. The Resend alert runs only after that write succeeds. After the attempt, the first MSG item is updated with `emailStatus: "sent" | "failed" | "skipped"`. `sent`/`failed` are real send outcomes; `skipped` is used when the recipient SSM param is missing/unset. Timeout is `SUPPORT_EMAIL_TIMEOUT_MS` (default 3000). The alert never throws; once stored, the response is always `201 { conversationId }`.
+3. Honeypot: only a non-empty `website` (after trim) is a bot. Missing `website` or `website: ""` takes the normal path (store, alert, real `conversationId`). A non-empty value returns `201` with a fake `conversationId`, stores nothing, and sends no email.
+4. Rate limits (fixed-window TTL counters in the support table): feedback 5/hour per IP and per email; upload-url 20/hour per IP. Override with `SUPPORT_FEEDBACK_IP_RATE_LIMIT` / `SUPPORT_FEEDBACK_EMAIL_RATE_LIMIT` / `SUPPORT_UPLOAD_IP_RATE_LIMIT` / `SUPPORT_INBOX_RATE_WINDOW_SECONDS`.
+5. API CORS stays `allowOrigins: ['*']`. Media-bucket CORS adds `POST` for configured origins (Netlify site + `http://localhost:*` by default). Override with `supportInboxAllowedOrigins` / `SUPPORT_INBOX_ALLOWED_ORIGINS`. Never a match-all `*`.
+
+### Key design
+
+```
+PK CONV#<id> / SK META
+PK CONV#<id> / SK MSG#<isoTs>#<messageId>   (emailStatus sent|failed|skipped after alert)
+PK RATE#<scope>#<sha256> / SK WINDOW#<unixWindowStart>   (TTL on ttl)
+
+META: status=open, type, email, uid?, platform, appVersion?, device?,
+      screenshotKey?, createdAt, updatedAt, lastMessageAt
+MSG:  author=user, body, createdAt, emailStatus? (sent|failed|skipped; written after Resend)
+GSI StatusLastMessageIndex: status + lastMessageAt   (Stage 2 admin list)
+GSI UidLastMessageIndex:    uid + lastMessageAt      (Stage 3 my conversations)
+```
+
+PAY_PER_REQUEST, PITR on, RETAIN in prod.
+
+Alert: From = existing verified sender; Reply-To = user's email. Best-effort (`SUPPORT_EMAIL_TIMEOUT_MS`, try/catch, never throws). Write META+MSG first, then send, then set `emailStatus` on the first message. If the recipient SSM parameter is missing/unset, the conversation is still stored, `emailStatus` is `skipped`, a warning is logged, and the handler returns 201. Failure logs include only `conversationId` and error class/code — never email, message text, or secrets.
+
+### Operator setup
+
+1. Set SSM `/wardrobe/<stage>/support/recipient` to the support inbox address (placeholder until replaced).
+2. Confirm `supportInboxAllowedOrigins` / `SUPPORT_INBOX_ALLOWED_ORIGINS` includes the Netlify site origin and local web origins.
+3. Confirm `wardrobe/<stage>/resend` and `wardrobe/<stage>/support-mail` `fromEmail` are already set (WARDROBE-38).

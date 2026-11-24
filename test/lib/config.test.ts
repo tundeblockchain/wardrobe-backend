@@ -102,6 +102,28 @@ describe('resolveAppConfig', () => {
     );
   });
 
+  it('prefers CDK context over env for supportInboxAllowedOrigins', () => {
+    process.env.SUPPORT_INBOX_ALLOWED_ORIGINS = 'https://env.example';
+    const config = resolveAppConfig({
+      tryGetContext: (key: string) =>
+        key === 'supportInboxAllowedOrigins'
+          ? 'https://ctx.example,http://localhost:*'
+          : undefined,
+    });
+    expect(config.supportInboxAllowedOrigins).toBe(
+      'https://ctx.example,http://localhost:*',
+    );
+  });
+
+  it('reads supportInboxAllowedOrigins from env when context is empty', () => {
+    process.env.SUPPORT_INBOX_ALLOWED_ORIGINS =
+      'https://env.example,http://localhost:*';
+    const config = resolveAppConfig({ tryGetContext: () => undefined });
+    expect(config.supportInboxAllowedOrigins).toBe(
+      'https://env.example,http://localhost:*',
+    );
+  });
+
   it('prefers CDK context over env for billingWebOrigin', () => {
     process.env.BILLING_WEB_ORIGIN = 'https://env.example';
     const config = resolveAppConfig({

@@ -56,6 +56,10 @@ export class WardrobePipelineStack extends cdk.Stack {
     if (config.uploadAllowedOrigins) {
       synthEnv.UPLOAD_ALLOWED_ORIGINS = config.uploadAllowedOrigins;
     }
+    if (config.supportInboxAllowedOrigins) {
+      synthEnv.SUPPORT_INBOX_ALLOWED_ORIGINS =
+        config.supportInboxAllowedOrigins;
+    }
     if (config.stripeMode) {
       synthEnv.STRIPE_MODE = config.stripeMode;
     }

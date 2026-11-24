@@ -29,6 +29,7 @@ import {
 import { addEntitlements } from './entitlements';
 import { addOwnerNotify } from './owner-notify';
 import { addStripeSecrets, grantStripeSecretRead } from './stripe';
+import { addSupportInbox } from './support-inbox';
 import { addSupportMail } from './support-mail';
 import { resolveUploadAllowedOrigins } from './upload-cors';
 
@@ -1246,6 +1247,19 @@ export class WardrobeStack extends cdk.Stack {
       authorizer: firebaseAuthorizer,
       table,
       firebaseProjectIdSecret,
+      commonLambdaProps,
+      removalPolicy,
+    });
+
+    // Isolated WARDROBE-281 module — public feedback + screenshot upload.
+    addSupportInbox(this, {
+      stage,
+      isDev,
+      httpApi,
+      mediaBucket,
+      firebaseProjectIdSecret,
+      resendSecret: supportMail.resendSecret,
+      supportMailSecret: supportMail.supportMailSecret,
       commonLambdaProps,
       removalPolicy,
     });

@@ -8,6 +8,7 @@ export interface AppConfig {
   supportContactRateLimit?: string;
   supportContactRateWindowSeconds?: string;
   uploadAllowedOrigins?: string;
+  supportInboxAllowedOrigins?: string;
   stripeMode?: string;
   stripeLookupKeyBasicMonthly?: string;
   stripeLookupKeyPremiumMonthly?: string;
@@ -69,6 +70,11 @@ export function resolveAppConfig(node: ContextReader): AppConfig {
       node,
       'uploadAllowedOrigins',
       process.env.UPLOAD_ALLOWED_ORIGINS,
+    ),
+    supportInboxAllowedOrigins: readString(
+      node,
+      'supportInboxAllowedOrigins',
+      process.env.SUPPORT_INBOX_ALLOWED_ORIGINS,
     ),
     stripeMode: readString(node, 'stripeMode', process.env.STRIPE_MODE),
     stripeLookupKeyBasicMonthly: readString(
