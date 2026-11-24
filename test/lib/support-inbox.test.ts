@@ -3,6 +3,7 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { DEFAULT_SUPPORT_INBOX_ALLOWED_ORIGINS } from '../../lib/support-inbox-cors';
 import { WardrobeStack } from '../../lib/wardrobe-stack';
 import {
+  fcmServiceAccountSecretName,
   supportInboxAppLinkParamName,
   supportInboxRecipientParamName,
 } from '../../src/shared/support-inbox-names';
@@ -245,10 +246,15 @@ describe('support inbox admin stack wiring (WARDROBE-284)', () => {
   test('admin Lambda has least-privilege SupportTable, S3 GetObject on support/, and SSM params', () => {
     const dynamo = actionsFor('SupportInboxAdminFn', 'dynamodb:');
     expect(dynamo.sort()).toEqual(
-      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:UpdateItem'].sort(),
+      [
+        'dynamodb:DeleteItem',
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:Query',
+        'dynamodb:UpdateItem',
+      ].sort(),
     );
     expect(dynamo).not.toContain('dynamodb:Scan');
-    expect(dynamo).not.toContain('dynamodb:DeleteItem');
 
     const tableStatements = statementsFor('SupportInboxAdminFn', 'dynamodb:Query');
     const tableResources = JSON.stringify(tableStatements);
@@ -280,11 +286,14 @@ describe('support inbox admin stack wiring (WARDROBE-284)', () => {
           ',',
         ),
         SUPPORT_EMAIL_TIMEOUT_MS: '3000',
+        SUPPORT_PUSH_TIMEOUT_MS: '3000',
+        FCM_SERVICE_ACCOUNT_SECRET_ARN: expect.anything(),
         MEDIA_BUCKET_NAME: expect.anything(),
       }),
     );
     expect(env).not.toHaveProperty('RESEND_API_KEY');
     expect(env).not.toHaveProperty('SUPPORT_INBOX_APP_LINK');
+    expect(env).not.toHaveProperty('FCM_SERVICE_ACCOUNT_JSON');
 
     expect(template.findResources('AWS::SSM::Parameter')).toEqual({});
     template.hasOutput('SupportInboxAppLinkParamName', {
@@ -308,5 +317,150 @@ describe('support inbox admin stack wiring (WARDROBE-284)', () => {
     expect(
       JSON.stringify(statementsFor('SupportInboxAdminFn', 'ssm:GetParameter')),
     ).toContain('parameter/wardrobe/dev/support/app-link');
+  });
+});
+
+describe('support inbox user stack wiring (WARDROBE-286)', () => {
+  const template = synthTemplate('dev');
+
+  type PolicyResource = {
+    Properties: {
+      PolicyDocument: {
+        Statement: Array<{
+          Sid?: string;
+          Action?: string | string[];
+          Resource?: unknown;
+        }>;
+      };
+    };
+  };
+
+  function policiesFor(fnId: string): PolicyResource[] {
+    const policies = Object.values(
+      template.findResources('AWS::IAM::Policy'),
+    ) as PolicyResource[];
+    return policies.filter((policy) => JSON.stringify(policy).includes(fnId));
+  }
+
+  function actionsFor(fnId: string, prefix: string): string[] {
+    return policiesFor(fnId).flatMap((policy) =>
+      policy.Properties.PolicyDocument.Statement.flatMap((statement) => {
+        const actions = statement.Action;
+        const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+        return list.filter((action) => action.startsWith(prefix));
+      }),
+    );
+  }
+
+  function statementsFor(
+    fnId: string,
+    action: string,
+  ): PolicyResource['Properties']['PolicyDocument']['Statement'] {
+    return policiesFor(fnId).flatMap((policy) =>
+      policy.Properties.PolicyDocument.Statement.filter((statement) => {
+        const actions = statement.Action;
+        const list = Array.isArray(actions) ? actions : actions ? [actions] : [];
+        return list.includes(action);
+      }),
+    );
+  }
+
+  test('user routes exist with the Firebase authorizer', () => {
+    const routes = routesOf(template);
+    for (const routeKey of [
+      'POST /support/devices',
+      'DELETE /support/devices/{token}',
+      'GET /support/my/conversations',
+      'GET /support/my/conversations/{id}',
+      'POST /support/my/conversations/{id}/messages',
+    ]) {
+      const route = routes.find(
+        (candidate) => candidate.Properties.RouteKey === routeKey,
+      );
+      expect(route).toBeDefined();
+      expect(route?.Properties.AuthorizationType).toBe('CUSTOM');
+    }
+
+    template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: Match.objectLike({
+        AllowOrigins: ['*'],
+        AllowMethods: Match.arrayWith(['GET', 'POST', 'DELETE', 'OPTIONS']),
+        AllowHeaders: Match.arrayWith(['Authorization']),
+      }),
+    });
+  });
+
+  test('user Lambda has least-privilege SupportTable GSI, S3 GetObject, and no FCM secret', () => {
+    const dynamo = actionsFor('SupportInboxUserFn', 'dynamodb:');
+    expect(dynamo.sort()).toEqual(
+      [
+        'dynamodb:DeleteItem',
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:Query',
+        'dynamodb:UpdateItem',
+      ].sort(),
+    );
+    expect(dynamo).not.toContain('dynamodb:Scan');
+
+    const tableResources = JSON.stringify(
+      statementsFor('SupportInboxUserFn', 'dynamodb:Query'),
+    );
+    expect(tableResources).toContain('SupportTable');
+    expect(tableResources).toContain('UidLastMessageIndex');
+    expect(tableResources).not.toContain('StatusLastMessageIndex');
+
+    const s3 = actionsFor('SupportInboxUserFn', 's3:');
+    expect(s3).toEqual(['s3:GetObject']);
+    expect(JSON.stringify(statementsFor('SupportInboxUserFn', 's3:GetObject'))).toContain(
+      'support/*',
+    );
+
+    const env = functionEnvById(template, 'SupportInboxUserFn');
+    expect(env).toEqual(
+      expect.objectContaining({
+        SUPPORT_TABLE_NAME: expect.anything(),
+        RESEND_SECRET_ARN: expect.anything(),
+        SUPPORT_FROM_EMAIL: expect.anything(),
+        SUPPORT_INBOX_RECIPIENT_PARAM: '/wardrobe/dev/support/recipient',
+        FIREBASE_PROJECT_ID_SECRET_ARN: expect.anything(),
+        SUPPORT_EMAIL_TIMEOUT_MS: '3000',
+        MEDIA_BUCKET_NAME: expect.anything(),
+      }),
+    );
+    expect(env).not.toHaveProperty('RESEND_API_KEY');
+    expect(env).not.toHaveProperty('FCM_SERVICE_ACCOUNT_SECRET_ARN');
+    expect(env).not.toHaveProperty('FCM_SERVICE_ACCOUNT_JSON');
+    expect(JSON.stringify(policiesFor('SupportInboxUserFn'))).not.toContain(
+      'fcm-service-account',
+    );
+
+    const functions = Object.entries(
+      template.findResources('AWS::Lambda::Function'),
+    ) as Array<[string, { Properties?: { Nodejs?: unknown } }]>;
+    for (const [id] of functions.filter(
+      ([logicalId]) =>
+        logicalId.includes('SupportInboxUserFn') ||
+        logicalId.includes('SupportInboxAdminFn'),
+    )) {
+      expect(id).not.toMatch(/firebase-admin/i);
+    }
+  });
+
+  test('creates an FCM service-account placeholder secret with no secret values in the template', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: fcmServiceAccountSecretName('dev'),
+    });
+    template.hasOutput('SupportFcmServiceAccountSecretName', {
+      Value: fcmServiceAccountSecretName('dev'),
+    });
+
+    const synthesized = JSON.stringify(template.toJSON());
+    expect(synthesized).toContain('wardrobe/dev/fcm-service-account');
+    expect(synthesized).not.toMatch(/BEGIN PRIVATE KEY/);
+    expect(synthesized).not.toMatch(/firebase-adminsdk/);
+    expect(synthesized).not.toMatch(/re_[A-Za-z0-9]{10,}/);
+    expect(synthesized).not.toMatch(/AIza[0-9A-Za-z_-]{20,}/);
+    expect(synthesized).not.toContain('ya29.');
   });
 });

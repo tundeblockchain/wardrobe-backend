@@ -54,11 +54,43 @@ export function conversationPatchAfterMessage(input: {
   lastMessageAt: string;
   lastMessagePreview: string;
   lastMessageAuthor: SupportMessageAuthor;
+  lastAdminMessageAt?: string;
 } {
-  return {
+  const patch: {
+    status: SupportConversationStatus;
+    lastMessageAt: string;
+    lastMessagePreview: string;
+    lastMessageAuthor: SupportMessageAuthor;
+    lastAdminMessageAt?: string;
+  } = {
     status: statusAfterStoredMessage(input.author),
     lastMessageAt: input.createdAt,
     lastMessagePreview: lastMessagePreview(input.body),
     lastMessageAuthor: input.author,
   };
+  if (input.author === 'admin') {
+    patch.lastAdminMessageAt = input.createdAt;
+  }
+  return patch;
+}
+
+/**
+ * `unread` is true when the latest admin message is newer than lastReadAt.
+ * Missing lastReadAt counts as never read. No admin message => not unread.
+ */
+export function conversationUnread(item: Record<string, unknown>): boolean {
+  const lastAdminAt =
+    optionalNonEmpty(item.lastAdminMessageAt) ??
+    (item.lastMessageAuthor === 'admin'
+      ? optionalNonEmpty(item.lastMessageAt)
+      : undefined);
+  if (!lastAdminAt) {
+    return false;
+  }
+  const lastReadAt = optionalNonEmpty(item.lastReadAt);
+  return !lastReadAt || lastAdminAt > lastReadAt;
+}
+
+function optionalNonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }

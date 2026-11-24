@@ -118,6 +118,48 @@ export const DEFAULT_ADMIN_LIST_LIMIT = 50;
 export const ADMIN_LIST_LIMIT_MIN = 1;
 export const ADMIN_LIST_LIMIT_MAX = 100;
 
+export const DEFAULT_USER_LIST_LIMIT = DEFAULT_ADMIN_LIST_LIMIT;
+export const USER_LIST_LIMIT_MIN = ADMIN_LIST_LIMIT_MIN;
+export const USER_LIST_LIMIT_MAX = ADMIN_LIST_LIMIT_MAX;
+
+export const SUPPORT_DEVICE_PLATFORMS = ['ios', 'android'] as const;
+export type SupportDevicePlatform = (typeof SUPPORT_DEVICE_PLATFORMS)[number];
+export const DEVICE_TOKEN_MIN_CHARS = 1;
+export const DEVICE_TOKEN_MAX_CHARS = 4096;
+
+export const SUPPORT_PUSH_STATUSES = ['sent', 'failed', 'skipped'] as const;
+export type SupportPushStatus = (typeof SUPPORT_PUSH_STATUSES)[number];
+
+/**
+ * Best-effort FCM HTTP v1 budget so an admin reply never waits on push.
+ * Override with env SUPPORT_PUSH_TIMEOUT_MS.
+ */
+export const SUPPORT_PUSH_TIMEOUT_MS = 3_000;
+export const SUPPORT_PUSH_TIMEOUT_MS_ENV = 'SUPPORT_PUSH_TIMEOUT_MS';
+export const FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV =
+  'FCM_SERVICE_ACCOUNT_SECRET_ARN';
+
+export const SUPPORT_REPLY_PUSH_TITLE = 'Pocket Closet Support';
+export const SUPPORT_REPLY_PUSH_BODY = 'You have a new reply';
+export const SUPPORT_REPLY_PUSH_DATA_TYPE = 'support_reply';
+
+export function readSupportPushTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[SUPPORT_PUSH_TIMEOUT_MS_ENV]?.trim();
+  if (!raw) {
+    return SUPPORT_PUSH_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : SUPPORT_PUSH_TIMEOUT_MS;
+}
+
+export function fcmServiceAccountSecretName(stage: string): string {
+  return `wardrobe/${stage}/fcm-service-account`;
+}
+
 export function supportInboxRecipientParamName(stage: string): string {
   return `/wardrobe/${stage}/support/recipient`;
 }

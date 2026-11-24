@@ -15,6 +15,7 @@ import {
   DEFAULT_FEEDBACK_IP_RATE_LIMIT,
   DEFAULT_RATE_WINDOW_SECONDS,
   DEFAULT_UPLOAD_IP_RATE_LIMIT,
+  FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV,
   SUPPORT_FEEDBACK_EMAIL_RATE_LIMIT_ENV,
   SUPPORT_FEEDBACK_IP_RATE_LIMIT_ENV,
   SUPPORT_FROM_EMAIL_ENV,
@@ -26,8 +27,11 @@ import {
   RESEND_SECRET_ARN_ENV,
   SUPPORT_EMAIL_TIMEOUT_MS,
   SUPPORT_EMAIL_TIMEOUT_MS_ENV,
+  SUPPORT_PUSH_TIMEOUT_MS,
+  SUPPORT_PUSH_TIMEOUT_MS_ENV,
   SUPPORT_TABLE_NAME_ENV,
   SUPPORT_UPLOAD_IP_RATE_LIMIT_ENV,
+  fcmServiceAccountSecretName,
   supportInboxAppLinkParamName,
   supportInboxRecipientParamName,
   supportTableName,
@@ -35,7 +39,8 @@ import {
 import { resolveSupportInboxAllowedOrigins } from './support-inbox-cors';
 
 /**
- * Isolated WARDROBE-281 / WARDROBE-284 wiring (public feedback + admin inbox).
+ * Isolated WARDROBE-281 / WARDROBE-284 / WARDROBE-286 wiring
+ * (public feedback + admin inbox + user threads / FCM devices).
  * Kept out of the main stack body so support-mail rebase conflicts stay small.
  */
 export interface SupportInboxProps {
@@ -55,6 +60,7 @@ export interface SupportInboxResources {
   table: dynamodb.Table;
   supportInboxFn: NodejsFunction;
   supportInboxAdminFn: NodejsFunction;
+  supportInboxUserFn: NodejsFunction;
 }
 
 export function addSupportInbox(
@@ -201,6 +207,15 @@ export function addSupportInbox(
     process.env.SUPPORT_INBOX_APP_LINK,
   );
 
+  // Placeholder until the operator uploads a Firebase service-account JSON.
+  // Missing / invalid JSON skips push (WARDROBE-286). Never commit the real key.
+  const fcmSecret = new secretsmanager.Secret(scope, 'SupportFcmServiceAccountSecret', {
+    secretName: fcmServiceAccountSecretName(stage),
+    description:
+      'Firebase service-account JSON for support reply FCM HTTP v1 (WARDROBE-286). Store { "project_id", "client_email", "private_key" }. Leave the placeholder to skip push. Never commit the real key.',
+    removalPolicy,
+  });
+
   const supportInboxAdminFn = lambda(scope, 'SupportInboxAdminFn', 'admin-handler.ts', {
     ...commonLambdaProps,
     timeout: cdk.Duration.seconds(15),
@@ -222,6 +237,13 @@ export function addSupportInbox(
         process.env.SUPPORT_EMAIL_TIMEOUT_MS,
         String(SUPPORT_EMAIL_TIMEOUT_MS),
       ),
+      [FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV]: fcmSecret.secretArn,
+      [SUPPORT_PUSH_TIMEOUT_MS_ENV]: readContextOrEnv(
+        scope,
+        'supportPushTimeoutMs',
+        process.env.SUPPORT_PUSH_TIMEOUT_MS,
+        String(SUPPORT_PUSH_TIMEOUT_MS),
+      ),
     },
   });
 
@@ -233,6 +255,7 @@ export function addSupportInbox(
         'dynamodb:Query',
         'dynamodb:PutItem',
         'dynamodb:UpdateItem',
+        'dynamodb:DeleteItem',
       ],
       resources: [
         table.tableArn,
@@ -256,6 +279,7 @@ export function addSupportInbox(
   );
   resendSecret.grantRead(supportInboxAdminFn);
   firebaseProjectIdSecret.grantRead(supportInboxAdminFn);
+  fcmSecret.grantRead(supportInboxAdminFn);
 
   const adminIntegration = new HttpLambdaIntegration(
     'SupportInboxAdminIntegration',
@@ -298,6 +322,98 @@ export function addSupportInbox(
     ...adminAuthorizer,
   });
 
+  const supportInboxUserFn = lambda(scope, 'SupportInboxUserFn', 'user-handler.ts', {
+    ...commonLambdaProps,
+    timeout: cdk.Duration.seconds(15),
+    environment: {
+      ...commonLambdaProps.environment,
+      [SUPPORT_TABLE_NAME_ENV]: table.tableName,
+      [RESEND_SECRET_ARN_ENV]: resendSecret.secretArn,
+      [SUPPORT_FROM_EMAIL_ENV]: fromEmail,
+      [SUPPORT_INBOX_RECIPIENT_PARAM_ENV]: recipientParamName,
+      FIREBASE_PROJECT_ID_SECRET_ARN: firebaseProjectIdSecret.secretArn,
+      [SUPPORT_INBOX_ALLOWED_ORIGINS_ENV]: allowedOrigins.join(','),
+      [SUPPORT_EMAIL_TIMEOUT_MS_ENV]: readContextOrEnv(
+        scope,
+        'supportEmailTimeoutMs',
+        process.env.SUPPORT_EMAIL_TIMEOUT_MS,
+        String(SUPPORT_EMAIL_TIMEOUT_MS),
+      ),
+    },
+  });
+
+  supportInboxUserFn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: 'SupportInboxUserTable',
+      actions: [
+        'dynamodb:GetItem',
+        'dynamodb:Query',
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:DeleteItem',
+      ],
+      resources: [
+        table.tableArn,
+        `${table.tableArn}/index/UidLastMessageIndex`,
+      ],
+    }),
+  );
+  supportInboxUserFn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: 'SupportInboxUserScreenshotGet',
+      actions: ['s3:GetObject'],
+      resources: [mediaBucket.arnForObjects('support/*')],
+    }),
+  );
+  supportInboxUserFn.addToRolePolicy(
+    new iam.PolicyStatement({
+      sid: 'SupportInboxUserSsmRead',
+      actions: ['ssm:GetParameter'],
+      resources: [recipientParamArn],
+    }),
+  );
+  resendSecret.grantRead(supportInboxUserFn);
+  firebaseProjectIdSecret.grantRead(supportInboxUserFn);
+
+  const userIntegration = new HttpLambdaIntegration(
+    'SupportInboxUserIntegration',
+    supportInboxUserFn,
+  );
+
+  // Firebase authorizer plus in-Lambda token check. OPTIONS is answered
+  // by API-level corsPreflight (GET/POST/DELETE + Authorization).
+  const userAuthorizer = { authorizer };
+  httpApi.addRoutes({
+    path: '/support/devices',
+    methods: [apigwv2.HttpMethod.POST],
+    integration: userIntegration,
+    ...userAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/support/devices/{token}',
+    methods: [apigwv2.HttpMethod.DELETE],
+    integration: userIntegration,
+    ...userAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/support/my/conversations',
+    methods: [apigwv2.HttpMethod.GET],
+    integration: userIntegration,
+    ...userAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/support/my/conversations/{id}',
+    methods: [apigwv2.HttpMethod.GET],
+    integration: userIntegration,
+    ...userAuthorizer,
+  });
+  httpApi.addRoutes({
+    path: '/support/my/conversations/{id}/messages',
+    methods: [apigwv2.HttpMethod.POST],
+    integration: userIntegration,
+    ...userAuthorizer,
+  });
+
   new cdk.CfnOutput(scope, 'SupportTableName', {
     value: table.tableName,
     description:
@@ -313,8 +429,13 @@ export function addSupportInbox(
     description:
       'SSM parameter for the Pocket Closet app link used in admin reply emails. The operator sets its value. Omit to send replies without the link.',
   });
+  new cdk.CfnOutput(scope, 'SupportFcmServiceAccountSecretName', {
+    value: fcmServiceAccountSecretName(stage),
+    description:
+      'Secrets Manager secret for Firebase FCM service-account JSON used on support reply push. The operator replaces the placeholder. Leave the placeholder to skip push.',
+  });
 
-  return { table, supportInboxFn, supportInboxAdminFn };
+  return { table, supportInboxFn, supportInboxAdminFn, supportInboxUserFn };
 }
 
 function readContextOrEnv(

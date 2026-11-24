@@ -263,6 +263,7 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
       lastMessageAt: '2026-01-02T00:00:00.000Z',
       lastMessagePreview: 'x'.repeat(140),
       lastMessageAuthor: 'admin',
+      lastAdminMessageAt: '2026-01-02T00:00:00.000Z',
     });
     expect(statusAfterUserFollowUp()).toBe('open');
     expect(
@@ -460,6 +461,10 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
   }));
   const claimRetry = jest.fn(async () => undefined);
   const setMessageEmailStatus = jest.fn(async () => undefined);
+  const setMessagePushStatus = jest.fn(async () => undefined);
+  const sendPush = jest.fn(
+    async (): Promise<'sent' | 'failed' | 'skipped'> => 'skipped',
+  );
   const presignGet = jest.fn(async () => 'https://s3.example/signed');
   const sendReply = jest.fn(async () => undefined);
   const verifyIdToken = jest.fn(async (token: string) => {
@@ -482,6 +487,8 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     requireMessage,
     claimRetry,
     setMessageEmailStatus,
+    setMessagePushStatus,
+    sendPush,
     presignGet,
     reply: { sendReply },
   };
@@ -891,6 +898,19 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       messageSk: 'MSG#2026-01-03T00:00:00.000Z#msg_admin',
       emailStatus: 'sent',
     });
+    expect(sendPush).toHaveBeenCalledWith(
+      {
+        conversationId: 'conv_1',
+        messageId: 'msg_admin',
+        uid: 'firebase-uid-1',
+      },
+      undefined,
+    );
+    expect(setMessagePushStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_1',
+      messageSk: 'MSG#2026-01-03T00:00:00.000Z#msg_admin',
+      pushStatus: 'skipped',
+    });
   });
 
   it('returns 201, sets status replied, and records emailStatus failed when Resend throws', async () => {
@@ -927,6 +947,61 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     expect(sendReply).toHaveBeenCalled();
     expect(setMessageEmailStatus).toHaveBeenCalledWith(
       expect.objectContaining({ emailStatus: 'failed' }),
+    );
+    expect(result.statusCode).toBe(201);
+  });
+
+  it('sends FCM after the reply write, stores pushStatus, and keeps 201 when push throws', async () => {
+    sendPush.mockResolvedValueOnce('sent');
+    const sent = asResult(
+      await handleSupportInboxAdmin(
+        event({
+          method: 'POST',
+          path: '/admin/support/conversations/conv_1/replies',
+          routeKey: 'POST /admin/support/conversations/{conversationId}/replies',
+          pathParameters: { conversationId: 'conv_1' },
+          body: { message: 'Thanks for writing in.' },
+        }),
+        deps,
+      ),
+    );
+    expect(sent.statusCode).toBe(201);
+    expect(bodyOf(sent)).toEqual({
+      messageId: 'msg_admin',
+      emailStatus: 'sent',
+    });
+    expect(sendPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conv_1',
+        messageId: 'msg_admin',
+        uid: 'firebase-uid-1',
+      }),
+      undefined,
+    );
+    expect(setMessagePushStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ pushStatus: 'sent' }),
+    );
+
+    sendPush.mockRejectedValueOnce(new Error('FCM exploded'));
+    const thrown = asResult(
+      await handleSupportInboxAdmin(
+        event({
+          method: 'POST',
+          path: '/admin/support/conversations/conv_1/replies',
+          routeKey: 'POST /admin/support/conversations/{conversationId}/replies',
+          pathParameters: { conversationId: 'conv_1' },
+          body: { message: 'Thanks for writing in.' },
+        }),
+        deps,
+      ),
+    );
+    expect(thrown.statusCode).toBe(201);
+    expect(bodyOf(thrown)).toEqual({
+      messageId: 'msg_admin',
+      emailStatus: 'sent',
+    });
+    expect(setMessagePushStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ pushStatus: 'failed' }),
     );
   });
 
