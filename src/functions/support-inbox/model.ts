@@ -1,6 +1,10 @@
 import { nanoid } from 'nanoid';
 import { nowIso } from '../../shared/ids';
-import type { SupportEmailStatus } from '../../shared/support-inbox-names';
+import {
+  SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
+  supportEmailRetryClaimStaleBefore,
+  type SupportEmailStatus,
+} from '../../shared/support-inbox-names';
 import type { FeedbackInput } from './validation';
 import { keys } from './keys';
 import { conversationPatchAfterMessage } from './status';
@@ -172,9 +176,24 @@ export async function persistConversationClose(
 export function isRetryableAdminEmail(
   message: Record<string, unknown>,
 ): boolean {
+  if (message.author !== 'admin') {
+    return false;
+  }
+  const status = message.emailStatus as
+    | SupportEmailStatus
+    | typeof SUPPORT_EMAIL_RETRY_CLAIM_STATUS
+    | undefined;
+  if (status === 'failed') {
+    return true;
+  }
+  if (status !== SUPPORT_EMAIL_RETRY_CLAIM_STATUS) {
+    return false;
+  }
+  const claimedAt =
+    typeof message.updatedAt === 'string' ? message.updatedAt : '';
   return (
-    message.author === 'admin' &&
-    (message.emailStatus as SupportEmailStatus | undefined) === 'failed'
+    Boolean(claimedAt) &&
+    claimedAt < supportEmailRetryClaimStaleBefore(nowIso())
   );
 }
 
