@@ -38,6 +38,6 @@ The script merges `admin: true` onto existing custom claims (or removes `admin` 
 
 After a grant or revoke, the user must **sign out and sign in**, or otherwise refresh the ID token, before the claim appears on API requests. Cached tokens keep the previous claims until they are replaced.
 
-## CORS
+## Auth and CORS
 
-HTTP API CORS stays `allowOrigins: ['*']` with methods including GET/POST and header `Authorization` (mobile + public routes). The admin Lambda is given the same `supportInboxAllowedOrigins` list as public support (Netlify site + localhost).
+Admin route auth is enforced by the Firebase Bearer token plus the `admin` custom claim (API Gateway authorizer and an in-Lambda `admin === true` check on every admin route). API-level CORS currently allows `*` (same HTTP API config as the rest of the backend; methods include GET/POST and header `Authorization`). `supportInboxAllowedOrigins` is the media-bucket POST allowlist for screenshot uploads, not an admin-route restriction.

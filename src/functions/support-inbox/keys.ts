@@ -11,7 +11,7 @@
  *
  * META holds status (open|replied|closed), type, email, uid?, platform,
  * appVersion?, device?, screenshotKey?, createdAt, updatedAt, lastMessageAt,
- * lastMessagePreview, lastMessageAuthor, lastEmailStatus?.
+ * lastMessagePreview, lastMessageAuthor, lastAdminMessageId?, lastEmailStatus?.
  * MSG items hold author, body, createdAt, screenshotKey?, emailStatus?.
  * Sparse GSIs: StatusLastMessageIndex (status + lastMessageAt) and
  * UidLastMessageIndex (uid + lastMessageAt). MSG and RATE items omit GSI keys.

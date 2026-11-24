@@ -10,12 +10,17 @@ import { isConditionalCheckFailed, isTransactionCanceled } from '../../shared/dy
 import { Errors } from '../../shared/errors';
 import { nowIso } from '../../shared/ids';
 import {
+  SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
   SUPPORT_TABLE_NAME_ENV,
   type SupportConversationStatus,
   type SupportEmailStatus,
   type SupportMessageAuthor,
 } from '../../shared/support-inbox-names';
-import { SupportNotFoundError } from './http';
+import {
+  SupportNotFoundError,
+  SupportNotRetryableError,
+  SupportValidationError,
+} from './http';
 import { keys, STATUS_LAST_MESSAGE_INDEX } from './keys';
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -87,10 +92,60 @@ export async function transactPutSupportItems(
   );
 }
 
+export interface ClaimFailedAdminEmailRetryInput {
+  conversationId: string;
+  messageSk: string;
+  tableName?: string;
+}
+
+/**
+ * Atomically claim a failed admin message for retry-email.
+ * Condition: author=admin AND emailStatus=failed. Sets emailStatus=sending.
+ * Conditional-check failure => 409 not_retryable.
+ */
+export async function claimFailedAdminEmailRetry(
+  input: ClaimFailedAdminEmailRetryInput,
+): Promise<void> {
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: input.tableName ?? supportInboxTableName(),
+        Key: {
+          PK: keys.conversationPk(input.conversationId),
+          SK: input.messageSk,
+        },
+        UpdateExpression: 'SET emailStatus = :sending, #updatedAt = :now',
+        ConditionExpression: '#author = :admin AND emailStatus = :failed',
+        ExpressionAttributeNames: {
+          '#author': 'author',
+          '#updatedAt': 'updatedAt',
+        },
+        ExpressionAttributeValues: {
+          ':sending': SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
+          ':admin': 'admin',
+          ':failed': 'failed',
+          ':now': nowIso(),
+        },
+      }),
+    );
+  } catch (error) {
+    if (isConditionalCheckFailed(error)) {
+      throw new SupportNotRetryableError();
+    }
+    throw error;
+  }
+}
+
 export async function updateMessageEmailStatus(input: {
   conversationId: string;
   messageSk: string;
   emailStatus: SupportEmailStatus;
+  /**
+   * Reply path omits this and always writes META lastEmailStatus.
+   * Retry of the latest admin message passes `{ createdAt }` (conditional).
+   * Retry of an older admin message passes `false` (META untouched).
+   */
+  conversationLastEmailStatus?: false | { createdAt: string };
   tableName?: string;
 }): Promise<void> {
   const tableName = input.tableName ?? supportInboxTableName();
@@ -112,23 +167,47 @@ export async function updateMessageEmailStatus(input: {
       },
     }),
   );
-  await client.send(
-    new UpdateCommand({
-      TableName: tableName,
-      Key: {
-        PK: keys.conversationPk(input.conversationId),
-        SK: keys.metaSk,
-      },
-      UpdateExpression: 'SET lastEmailStatus = :status, #updatedAt = :now',
-      ExpressionAttributeNames: {
-        '#updatedAt': 'updatedAt',
-      },
-      ExpressionAttributeValues: {
-        ':status': input.emailStatus,
-        ':now': now,
-      },
-    }),
-  );
+
+  if (input.conversationLastEmailStatus === false) {
+    return;
+  }
+
+  const metaValues: Record<string, unknown> = {
+    ':status': input.emailStatus,
+    ':now': now,
+  };
+  let conditionExpression: string | undefined;
+  if (input.conversationLastEmailStatus) {
+    conditionExpression =
+      'lastMessageAuthor = :admin AND lastMessageAt = :createdAt';
+    metaValues[':admin'] = 'admin';
+    metaValues[':createdAt'] = input.conversationLastEmailStatus.createdAt;
+  }
+
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: {
+          PK: keys.conversationPk(input.conversationId),
+          SK: keys.metaSk,
+        },
+        UpdateExpression: 'SET lastEmailStatus = :status, #updatedAt = :now',
+        ExpressionAttributeNames: {
+          '#updatedAt': 'updatedAt',
+        },
+        ExpressionAttributeValues: metaValues,
+        ...(conditionExpression
+          ? { ConditionExpression: conditionExpression }
+          : {}),
+      }),
+    );
+  } catch (error) {
+    if (conditionExpression && isConditionalCheckFailed(error)) {
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function getConversationMeta(
@@ -227,31 +306,42 @@ export interface ListConversationsByStatusResult {
 export async function listConversationsByStatus(
   input: ListConversationsByStatusInput,
 ): Promise<ListConversationsByStatusResult> {
-  const result = await client.send(
-    new QueryCommand({
-      TableName: input.tableName ?? supportInboxTableName(),
-      IndexName: STATUS_LAST_MESSAGE_INDEX,
-      KeyConditionExpression: '#status = :status',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-      },
-      ExpressionAttributeValues: {
-        ':status': input.status,
-      },
-      ScanIndexForward: false,
-      Limit: input.limit,
-      ...(input.exclusiveStartKey
-        ? { ExclusiveStartKey: input.exclusiveStartKey }
-        : {}),
-    }),
-  );
+  try {
+    const result = await client.send(
+      new QueryCommand({
+        TableName: input.tableName ?? supportInboxTableName(),
+        IndexName: STATUS_LAST_MESSAGE_INDEX,
+        KeyConditionExpression: '#status = :status',
+        ExpressionAttributeNames: {
+          '#status': 'status',
+        },
+        ExpressionAttributeValues: {
+          ':status': input.status,
+        },
+        ScanIndexForward: false,
+        Limit: input.limit,
+        ...(input.exclusiveStartKey
+          ? { ExclusiveStartKey: input.exclusiveStartKey }
+          : {}),
+      }),
+    );
 
-  return {
-    items: (result.Items ?? []) as Array<Record<string, unknown>>,
-    lastEvaluatedKey: result.LastEvaluatedKey as
-      | Record<string, unknown>
-      | undefined,
-  };
+    return {
+      items: (result.Items ?? []) as Array<Record<string, unknown>>,
+      lastEvaluatedKey: result.LastEvaluatedKey as
+        | Record<string, unknown>
+        | undefined,
+    };
+  } catch (error) {
+    if (
+      input.exclusiveStartKey &&
+      error instanceof Error &&
+      error.name === 'ValidationException'
+    ) {
+      throw new SupportValidationError({ cursor: 'must be a valid cursor' });
+    }
+    throw error;
+  }
 }
 
 export async function transactPutAdminReply(input: {
@@ -261,10 +351,16 @@ export async function transactPutAdminReply(input: {
   lastMessageAt: string;
   lastMessagePreview: string;
   lastMessageAuthor: SupportMessageAuthor;
+  lastAdminMessageId?: string;
   tableName?: string;
 }): Promise<void> {
   const tableName = input.tableName ?? supportInboxTableName();
   const now = nowIso();
+  const lastAdminMessageId =
+    input.lastAdminMessageId ??
+    (typeof input.message.messageId === 'string'
+      ? input.message.messageId
+      : undefined);
   try {
     await client.send(
       new TransactWriteCommand({
@@ -284,7 +380,10 @@ export async function transactPutAdminReply(input: {
                 SK: keys.metaSk,
               },
               UpdateExpression:
-                'SET #status = :status, lastMessageAt = :lastMessageAt, lastMessagePreview = :preview, lastMessageAuthor = :author, #updatedAt = :now',
+                'SET #status = :status, lastMessageAt = :lastMessageAt, lastMessagePreview = :preview, lastMessageAuthor = :author, #updatedAt = :now' +
+                (lastAdminMessageId
+                  ? ', lastAdminMessageId = :lastAdminMessageId'
+                  : ''),
               ExpressionAttributeNames: {
                 '#status': 'status',
                 '#updatedAt': 'updatedAt',
@@ -295,6 +394,9 @@ export async function transactPutAdminReply(input: {
                 ':preview': input.lastMessagePreview,
                 ':author': input.lastMessageAuthor,
                 ':now': now,
+                ...(lastAdminMessageId
+                  ? { ':lastAdminMessageId': lastAdminMessageId }
+                  : {}),
               },
               ConditionExpression: 'attribute_exists(PK)',
             },
