@@ -22,10 +22,12 @@ import {
 } from '../../src/functions/support-inbox/cursor';
 import {
   SupportNotFoundError,
+  SupportNotRetryableError,
   SupportValidationError,
 } from '../../src/functions/support-inbox/http';
 import {
   adminReplyMessageItem,
+  isLatestAdminMessage,
   isRetryableAdminEmail,
   persistAdminReply,
 } from '../../src/functions/support-inbox/model';
@@ -229,6 +231,25 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
     );
   });
 
+  it.each([
+    ['bad base64', '%%%'],
+    ['bad JSON', Buffer.from('not-json', 'utf8').toString('base64')],
+    [
+      'wrong key shape',
+      Buffer.from(JSON.stringify({ foo: 1 }), 'utf8').toString('base64'),
+    ],
+  ])('rejects a %s list cursor', (_name, cursor) => {
+    expect(() => parseAdminListQuery({ cursor })).toThrow(SupportValidationError);
+    try {
+      parseAdminListQuery({ cursor });
+    } catch (error) {
+      expect(error).toBeInstanceOf(SupportValidationError);
+      expect((error as SupportValidationError).fields).toEqual({
+        cursor: expect.any(String),
+      });
+    }
+  });
+
   it('sets replied for admin messages and open for user follow-up (WARDROBE-286 hook)', () => {
     expect(
       conversationPatchAfterMessage({
@@ -261,6 +282,57 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
     ).toBe(false);
     expect(
       isRetryableAdminEmail({ author: 'user', emailStatus: 'failed' }),
+    ).toBe(false);
+  });
+
+  it('identifies the latest admin message from META messageId or createdAt', () => {
+    const latest = {
+      messageId: 'msg_latest',
+      createdAt: '2026-01-03T00:00:00.000Z',
+      author: 'admin',
+    };
+    const older = {
+      messageId: 'msg_old',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      author: 'admin',
+    };
+    expect(
+      isLatestAdminMessage(
+        {
+          lastMessageAuthor: 'admin',
+          lastAdminMessageId: 'msg_latest',
+          lastMessageAt: '2026-01-03T00:00:00.000Z',
+        },
+        latest,
+      ),
+    ).toBe(true);
+    expect(
+      isLatestAdminMessage(
+        {
+          lastMessageAuthor: 'admin',
+          lastAdminMessageId: 'msg_latest',
+          lastMessageAt: '2026-01-03T00:00:00.000Z',
+        },
+        older,
+      ),
+    ).toBe(false);
+    expect(
+      isLatestAdminMessage(
+        {
+          lastMessageAuthor: 'admin',
+          lastMessageAt: '2026-01-03T00:00:00.000Z',
+        },
+        latest,
+      ),
+    ).toBe(true);
+    expect(
+      isLatestAdminMessage(
+        {
+          lastMessageAuthor: 'user',
+          lastMessageAt: '2026-01-04T00:00:00.000Z',
+        },
+        latest,
+      ),
     ).toBe(false);
   });
 
@@ -315,7 +387,7 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       lastEvaluatedKey: undefined,
     }),
   );
-  const requireConversation = jest.fn(async () => ({
+  const requireConversation = jest.fn(async (): Promise<Record<string, unknown>> => ({
     conversationId: 'conv_1',
     status: 'open',
     type: 'bug',
@@ -326,6 +398,7 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     device: 'iPhone',
     createdAt: '2026-01-01T00:00:00.000Z',
     lastMessageAt: '2026-01-01T00:00:00.000Z',
+    lastMessageAuthor: 'user',
     screenshotKey: 'support/shot.png',
   }));
   const listMessages = jest.fn(async () => [
@@ -359,13 +432,15 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     conversationId,
     status: 'closed' as const,
   }));
-  const requireMessage = jest.fn(async () => ({
+  const requireMessage = jest.fn(async (): Promise<Record<string, unknown>> => ({
     SK: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
     messageId: 'msg_1',
     author: 'admin',
     body: 'Thanks for writing in.',
     emailStatus: 'failed',
+    createdAt: '2026-01-02T00:00:00.000Z',
   }));
+  const claimRetry = jest.fn(async () => undefined);
   const setMessageEmailStatus = jest.fn(async () => undefined);
   const presignGet = jest.fn(async () => 'https://s3.example/signed');
   const sendReply = jest.fn(async () => undefined);
@@ -387,6 +462,7 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     persistReply,
     persistClose,
     requireMessage,
+    claimRetry,
     setMessageEmailStatus,
     presignGet,
     reply: { sendReply },
@@ -418,7 +494,9 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       author: 'admin',
       body: 'Thanks for writing in.',
       emailStatus: 'failed',
+      createdAt: '2026-01-02T00:00:00.000Z',
     });
+    claimRetry.mockResolvedValue(undefined);
   });
 
   it('covers every admin route for missing, invalid, and non-admin tokens', () => {
@@ -644,6 +722,36 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     expect(secondBody.nextCursor).toBeNull();
   });
 
+  it.each([
+    ['bad base64', '%%%'],
+    ['bad JSON', Buffer.from('not-json', 'utf8').toString('base64')],
+    [
+      'wrong key shape',
+      Buffer.from(JSON.stringify({ foo: 1 }), 'utf8').toString('base64'),
+    ],
+  ])(
+    'GET /admin/support/conversations malformed cursor (%s) returns 400 validation',
+    async (_name, cursor) => {
+      const result = asResult(
+        await handleSupportInboxAdmin(
+          event({
+            method: 'GET',
+            path: '/admin/support/conversations',
+            routeKey: 'GET /admin/support/conversations',
+            query: { cursor },
+          }),
+          deps,
+        ),
+      );
+      expect(result.statusCode).toBe(400);
+      expect(bodyOf(result)).toEqual({
+        error: 'validation',
+        fields: { cursor: expect.any(String) },
+      });
+      expect(listConversations).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns thread messages oldest first with a 900s presigned screenshot URL', async () => {
     const result = asResult(
       await handleSupportInboxAdmin(
@@ -866,25 +974,108 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     expect(persistClose).toHaveBeenCalledTimes(2);
   });
 
+  const retryEmailEvent = () =>
+    event({
+      method: 'POST',
+      path: '/admin/support/conversations/conv_1/messages/msg_1/retry-email',
+      routeKey:
+        'POST /admin/support/conversations/{conversationId}/messages/{messageId}/retry-email',
+      pathParameters: { conversationId: 'conv_1', messageId: 'msg_1' },
+    });
+
   it('retries a failed admin email', async () => {
     const retried = asResult(
-      await handleSupportInboxAdmin(
-        event({
-          method: 'POST',
-          path: '/admin/support/conversations/conv_1/messages/msg_1/retry-email',
-          routeKey:
-            'POST /admin/support/conversations/{conversationId}/messages/{messageId}/retry-email',
-          pathParameters: { conversationId: 'conv_1', messageId: 'msg_1' },
-        }),
-        deps,
-      ),
+      await handleSupportInboxAdmin(retryEmailEvent(), deps),
     );
     expect(retried.statusCode).toBe(200);
     expect(bodyOf(retried)).toEqual({
       messageId: 'msg_1',
       emailStatus: 'sent',
     });
+    expect(claimRetry).toHaveBeenCalledWith({
+      conversationId: 'conv_1',
+      messageSk: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
+    });
     expect(sendReply).toHaveBeenCalled();
+  });
+
+  it('retries concurrently: exactly one send and the other 409', async () => {
+    let claimed = false;
+    claimRetry.mockImplementation(async () => {
+      if (claimed) {
+        throw new SupportNotRetryableError();
+      }
+      claimed = true;
+    });
+
+    const [first, second] = await Promise.all([
+      handleSupportInboxAdmin(retryEmailEvent(), deps),
+      handleSupportInboxAdmin(retryEmailEvent(), deps),
+    ]);
+    const results = [asResult(first), asResult(second)];
+    const statuses = results.map((result) => result.statusCode).sort();
+    expect(statuses).toEqual([200, 409]);
+    const bodies = results.map((result) => bodyOf(result));
+    expect(bodies).toEqual(
+      expect.arrayContaining([
+        { messageId: 'msg_1', emailStatus: 'sent' },
+        { error: 'not_retryable' },
+      ]),
+    );
+    expect(claimRetry).toHaveBeenCalledTimes(2);
+    expect(sendReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overwrite META lastEmailStatus when retrying an older admin message', async () => {
+    requireConversation.mockResolvedValueOnce({
+      conversationId: 'conv_1',
+      email: 'user@example.com',
+      lastMessageAuthor: 'admin',
+      lastMessageAt: '2026-01-03T00:00:00.000Z',
+      lastAdminMessageId: 'msg_latest',
+      lastEmailStatus: 'failed',
+    });
+    requireMessage.mockResolvedValueOnce({
+      SK: 'MSG#2026-01-01T00:00:00.000Z#msg_1',
+      messageId: 'msg_1',
+      author: 'admin',
+      body: 'Thanks for writing in.',
+      emailStatus: 'failed',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const retried = asResult(
+      await handleSupportInboxAdmin(retryEmailEvent(), deps),
+    );
+    expect(retried.statusCode).toBe(200);
+    expect(setMessageEmailStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_1',
+      messageSk: 'MSG#2026-01-01T00:00:00.000Z#msg_1',
+      emailStatus: 'sent',
+      conversationLastEmailStatus: false,
+    });
+  });
+
+  it('updates META lastEmailStatus when retrying the latest admin message', async () => {
+    requireConversation.mockResolvedValueOnce({
+      conversationId: 'conv_1',
+      email: 'user@example.com',
+      lastMessageAuthor: 'admin',
+      lastMessageAt: '2026-01-02T00:00:00.000Z',
+      lastAdminMessageId: 'msg_1',
+      lastEmailStatus: 'failed',
+    });
+
+    const retried = asResult(
+      await handleSupportInboxAdmin(retryEmailEvent(), deps),
+    );
+    expect(retried.statusCode).toBe(200);
+    expect(setMessageEmailStatus).toHaveBeenCalledWith({
+      conversationId: 'conv_1',
+      messageSk: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
+      emailStatus: 'sent',
+      conversationLastEmailStatus: { createdAt: '2026-01-02T00:00:00.000Z' },
+    });
   });
 
   it.each([
@@ -918,6 +1109,7 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
     expect(result.statusCode).toBe(409);
     expect(bodyOf(result)).toEqual({ error: 'not_retryable' });
     expect(sendReply).not.toHaveBeenCalled();
+    expect(claimRetry).not.toHaveBeenCalled();
   });
 
   it('returns 404 when retrying an unknown message', async () => {

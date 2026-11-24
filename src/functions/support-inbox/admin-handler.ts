@@ -32,6 +32,7 @@ import {
   validationResponse,
 } from './http';
 import {
+  isLatestAdminMessage,
   isRetryableAdminEmail,
   persistAdminReply,
   persistConversationClose,
@@ -42,6 +43,7 @@ import {
   type SupportInboxReplyDeps,
 } from './reply';
 import {
+  claimFailedAdminEmailRetry,
   listConversationsByStatus,
   queryConversationMessages,
   requireConversationMessage,
@@ -66,6 +68,7 @@ export interface SupportInboxAdminHandlerDeps {
   persistReply?: typeof persistAdminReply;
   persistClose?: typeof persistConversationClose;
   requireMessage?: typeof requireConversationMessage;
+  claimRetry?: typeof claimFailedAdminEmailRetry;
   setMessageEmailStatus?: typeof updateMessageEmailStatus;
   presignGet?: (objectKey: string) => Promise<string>;
   reply?: SupportInboxReplyDeps;
@@ -264,6 +267,12 @@ async function handleRetryEmail(
     throw new SupportNotFoundError();
   }
 
+  const claim = deps.claimRetry ?? claimFailedAdminEmailRetry;
+  await claim({
+    conversationId,
+    messageSk: String(message.SK),
+  });
+
   const body = optionalString(message.body) ?? '';
   const emailStatus = await sendReplyBestEffort(
     {
@@ -281,6 +290,9 @@ async function handleRetryEmail(
       messageId,
       messageSk: String(message.SK),
       emailStatus,
+      conversationLastEmailStatus: isLatestAdminMessage(conversation, message)
+        ? { createdAt: optionalString(message.createdAt) ?? '' }
+        : false,
     },
     deps,
   );
@@ -317,6 +329,7 @@ async function setStoredEmailStatus(
     messageId: string;
     messageSk: string;
     emailStatus: SupportEmailStatus;
+    conversationLastEmailStatus?: false | { createdAt: string };
   },
   deps: SupportInboxAdminHandlerDeps,
 ): Promise<void> {
@@ -326,6 +339,9 @@ async function setStoredEmailStatus(
       conversationId: input.conversationId,
       messageSk: input.messageSk,
       emailStatus: input.emailStatus,
+      ...(input.conversationLastEmailStatus !== undefined
+        ? { conversationLastEmailStatus: input.conversationLastEmailStatus }
+        : {}),
     });
   } catch (error) {
     logger.error(

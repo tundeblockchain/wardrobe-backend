@@ -262,10 +262,10 @@ export function addSupportInbox(
     supportInboxAdminFn,
   );
 
-  // Firebase authorizer plus in-Lambda `admin === true` claim check.
-  // OPTIONS is answered by API-level corsPreflight (GET/POST + Authorization;
-  // allowOrigins stays ['*'] for mobile). Admin UI origins match the
-  // support-inbox allowlist (Netlify + localhost).
+  // Auth is the Firebase Bearer token (API Gateway authorizer) plus an
+  // in-Lambda `admin === true` claim check on every admin route. API-level
+  // CORS currently allows `*` (GET/POST + Authorization; OPTIONS via
+  // corsPreflight). supportInboxAllowedOrigins is not an admin-route limit.
   const adminAuthorizer = { authorizer };
   httpApi.addRoutes({
     path: '/admin/support/conversations',

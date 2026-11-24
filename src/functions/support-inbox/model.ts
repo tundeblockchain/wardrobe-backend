@@ -152,6 +152,7 @@ export async function persistAdminReply(
     conversationId: input.conversationId,
     message,
     ...patch,
+    lastAdminMessageId: messageId,
   });
   return {
     conversationId: input.conversationId,
@@ -175,4 +176,30 @@ export function isRetryableAdminEmail(
     message.author === 'admin' &&
     (message.emailStatus as SupportEmailStatus | undefined) === 'failed'
   );
+}
+
+/**
+ * Whether a retried admin message is the conversation's latest admin
+ * message. Prefers META `lastAdminMessageId` when present; otherwise
+ * compares `lastMessageAt` to the message `createdAt`.
+ */
+export function isLatestAdminMessage(
+  conversation: Record<string, unknown>,
+  message: Record<string, unknown>,
+): boolean {
+  if (conversation.lastMessageAuthor !== 'admin') {
+    return false;
+  }
+  const messageId =
+    typeof message.messageId === 'string' ? message.messageId : '';
+  const lastAdminMessageId =
+    typeof conversation.lastAdminMessageId === 'string'
+      ? conversation.lastAdminMessageId
+      : '';
+  if (lastAdminMessageId && messageId) {
+    return lastAdminMessageId === messageId;
+  }
+  const createdAt =
+    typeof message.createdAt === 'string' ? message.createdAt : '';
+  return Boolean(createdAt) && conversation.lastMessageAt === createdAt;
 }

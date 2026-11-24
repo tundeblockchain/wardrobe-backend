@@ -46,6 +46,15 @@ export const SUPPORT_EMAIL_TIMEOUT_MS_ENV = 'SUPPORT_EMAIL_TIMEOUT_MS';
 export const SUPPORT_EMAIL_STATUSES = ['sent', 'failed', 'skipped'] as const;
 export type SupportEmailStatus = (typeof SUPPORT_EMAIL_STATUSES)[number];
 
+/**
+ * Transient retry-email claim. Not a client-facing emailStatus.
+ * Concurrent retries condition on emailStatus=failed and set this value
+ * so only one caller may send.
+ */
+export const SUPPORT_EMAIL_RETRY_CLAIM_STATUS = 'sending' as const;
+export type SupportEmailRetryClaimStatus =
+  typeof SUPPORT_EMAIL_RETRY_CLAIM_STATUS;
+
 export function readSupportEmailTimeoutMs(
   env: NodeJS.ProcessEnv = process.env,
 ): number {

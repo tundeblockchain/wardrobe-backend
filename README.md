@@ -3488,7 +3488,7 @@ PK RATE#<scope>#<sha256> / SK WINDOW#<unixWindowStart>   (TTL on ttl)
 
 META: status=open, type, email, uid?, platform, appVersion?, device?,
       screenshotKey?, createdAt, updatedAt, lastMessageAt,
-      lastMessagePreview, lastMessageAuthor, lastEmailStatus?
+      lastMessagePreview, lastMessageAuthor, lastAdminMessageId?, lastEmailStatus?
 MSG:  author=user|admin, body, createdAt, screenshotKey?, emailStatus? (sent|failed|skipped; written after Resend)
 GSI StatusLastMessageIndex: status + lastMessageAt   (Stage 2 admin list)
 GSI UidLastMessageIndex:    uid + lastMessageAt      (Stage 3 my conversations)
@@ -3506,7 +3506,7 @@ Alert: From = existing verified sender; Reply-To = user's email. Best-effort (`S
 
 ## Support inbox admin (WARDROBE-284)
 
-Operator UI routes. Same SupportTable. Firebase ID token required; the handler checks custom claim `admin === true` on every route (in addition to the API Gateway Firebase authorizer).
+Operator UI routes. Same SupportTable. Auth is enforced by the Firebase Bearer token plus the `admin` custom claim: the API Gateway Firebase authorizer validates the token, and the handler checks `admin === true` on every route. API-level CORS currently allows `*` (same as the rest of the HTTP API). `supportInboxAllowedOrigins` is not an admin-route restriction.
 
 ```http
 GET  /admin/support/conversations
@@ -3516,10 +3516,12 @@ POST /admin/support/conversations/{conversationId}/close
 POST /admin/support/conversations/{conversationId}/messages/{messageId}/retry-email
 ```
 
-Missing/invalid token: `401 { "error": "unauthorized" }`. Valid token without `admin === true`: `403 { "error": "forbidden" }`. Validation: `400 { "error": "validation", "fields": { <name>: <reason> } }`. Unknown conversation/message: `404 { "error": "not_found" }`.
+Missing/invalid token: `401 { "error": "unauthorized" }`. Valid token without `admin === true`: `403 { "error": "forbidden" }`. Validation: `400 { "error": "validation", "fields": { <name>: <reason> } }`. A malformed or undecodable list `cursor` (bad base64, bad JSON, or wrong key shape) is `400 { "error": "validation", "fields": { "cursor": ... } }`, not 500. Unknown conversation/message: `404 { "error": "not_found" }`. Retry of a non-failed / non-admin message, or a lost retry-email race: `409 { "error": "not_retryable" }`.
 
 Status: new feedback => `open`; admin reply => `replied` (any previous status); close => `closed` (idempotent). A later user follow-up reopening the thread is WARDROBE-286 (`statusAfterUserFollowUp` / `conversationPatchAfterMessage`) and is not exposed as a user endpoint here.
 
 Reply email: From = existing verified sender; To = conversation email; Reply-To = SSM `/wardrobe/<stage>/support/recipient` when set (omitted if missing). Body is the reply text plus an "Open in Pocket Closet" link from CDK context `supportInboxAppLink` or SSM `/wardrobe/<stage>/support/app-link`. If the link is missing, the email is still sent without it. HTML escapes the reply text. Write the MSG item first, then best-effort Resend (`SUPPORT_EMAIL_TIMEOUT_MS`, try/catch, never throws). Always `201` once stored. Failure logs include only `conversationId`, `messageId`, and error class/code.
+
+`POST .../retry-email` atomically claims the message first (`author=admin` and `emailStatus=failed` → `sending`). A lost claim is `409 { "error": "not_retryable" }`. After the send it writes `emailStatus` `sent` or `failed`. Conversation META `lastEmailStatus` is updated only when the retried message is the latest admin message (`lastAdminMessageId` or `lastMessageAt` / `createdAt`); retrying an older admin message leaves META untouched.
 
 Granting the admin claim (operator machine, credentials not in the repo): see `docs/support-admin.md` and `npm run support:grant-admin`. The operator must sign out/in or refresh the ID token after a claim change.
