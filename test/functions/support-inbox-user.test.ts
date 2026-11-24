@@ -4,6 +4,7 @@ import { parseUserListQuery } from '../../src/functions/support-inbox/user-valid
 import {
   decodeExclusiveStartKey,
   encodeExclusiveStartKey,
+  UID_INDEX_CURSOR_KEYS,
 } from '../../src/functions/support-inbox/cursor';
 import {
   SupportNotFoundError,
@@ -185,7 +186,9 @@ describe('support inbox user helpers (WARDROBE-286)', () => {
     };
     const cursor = encodeExclusiveStartKey(key);
     expect(cursor).toEqual(expect.any(String));
-    expect(decodeExclusiveStartKey(cursor as string)).toEqual(key);
+    expect(
+      decodeExclusiveStartKey(cursor as string, UID_INDEX_CURSOR_KEYS),
+    ).toEqual(key);
     expect(parseUserListQuery({ cursor: cursor as string })).toEqual({
       limit: 50,
       exclusiveStartKey: key,
@@ -197,6 +200,16 @@ describe('support inbox user helpers (WARDROBE-286)', () => {
       SupportValidationError,
     );
     expect(() => parseUserListQuery({ cursor: 'e30=' })).toThrow(SupportValidationError);
+    expect(() =>
+      parseUserListQuery({
+        cursor: encodeExclusiveStartKey({
+          PK: 'CONV#conv_1',
+          SK: 'META',
+          status: 'open',
+          lastMessageAt: '2026-01-02T00:00:00.000Z',
+        }) as string,
+      }),
+    ).toThrow(SupportValidationError);
   });
 
   it('marks unread only when the latest admin message is newer than lastReadAt', () => {
@@ -553,6 +566,91 @@ describe('support inbox user handler (WARDROBE-286)', () => {
     });
   });
 
+  it('fetches page 2 of the user list via nextCursor', async () => {
+    const page1Key = {
+      PK: 'CONV#conv_1',
+      SK: 'META',
+      uid: OWNER_UID,
+      lastMessageAt: '2026-01-02T00:00:00.000Z',
+    };
+    listConversations
+      .mockResolvedValueOnce({
+        items: [ownedMeta()],
+        lastEvaluatedKey: page1Key,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          ownedMeta({
+            conversationId: 'conv_2',
+            lastMessageAt: '2026-01-01T00:00:00.000Z',
+            lastMessageAuthor: 'user',
+            lastAdminMessageAt: undefined,
+          }),
+        ],
+        lastEvaluatedKey: undefined,
+      });
+
+    const first = asResult(
+      await handleSupportInboxUser(
+        event({
+          method: 'GET',
+          path: '/support/my/conversations',
+          routeKey: 'GET /support/my/conversations',
+          query: { limit: '1' },
+        }),
+        deps,
+      ),
+    );
+    const firstBody = bodyOf(first) as {
+      items: Array<{ conversationId: string }>;
+      nextCursor: string | null;
+      unreadCount: number;
+    };
+    expect(first.statusCode).toBe(200);
+    expect(firstBody.items.map((item) => item.conversationId)).toEqual([
+      'conv_1',
+    ]);
+    expect(firstBody.nextCursor).toBe(encodeExclusiveStartKey(page1Key));
+    expect(
+      decodeExclusiveStartKey(
+        firstBody.nextCursor as string,
+        UID_INDEX_CURSOR_KEYS,
+      ),
+    ).toEqual(page1Key);
+    expect(parseUserListQuery({ cursor: firstBody.nextCursor as string })).toEqual(
+      {
+        limit: 50,
+        exclusiveStartKey: page1Key,
+      },
+    );
+
+    const second = asResult(
+      await handleSupportInboxUser(
+        event({
+          method: 'GET',
+          path: '/support/my/conversations',
+          routeKey: 'GET /support/my/conversations',
+          query: { limit: '1', cursor: firstBody.nextCursor as string },
+        }),
+        deps,
+      ),
+    );
+    const secondBody = bodyOf(second) as {
+      items: Array<{ conversationId: string }>;
+      nextCursor: string | null;
+    };
+    expect(second.statusCode).toBe(200);
+    expect(secondBody.items.map((item) => item.conversationId)).toEqual([
+      'conv_2',
+    ]);
+    expect(secondBody.nextCursor).toBeNull();
+    expect(listConversations).toHaveBeenLastCalledWith({
+      uid: OWNER_UID,
+      limit: 1,
+      exclusiveStartKey: page1Key,
+    });
+  });
+
   it('returns unreadCount across every GSI page, not just the current list page', async () => {
     const pageSize = 50;
     const items = Array.from({ length: pageSize + 25 }, (_, index) => ({
@@ -775,6 +873,7 @@ describe('support inbox user handler (WARDROBE-286)', () => {
       expect.objectContaining({
         conversationId: 'conv_1',
         emailStatus: 'sent',
+        conversationLastEmailStatus: false,
       }),
     );
   });

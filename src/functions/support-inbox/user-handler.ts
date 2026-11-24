@@ -292,6 +292,7 @@ async function handleFollowUp(
         conversationId: stored.conversationId,
         messageSk: stored.messageSk,
         emailStatus,
+        conversationLastEmailStatus: false,
       });
     } catch (error) {
       logger.error(

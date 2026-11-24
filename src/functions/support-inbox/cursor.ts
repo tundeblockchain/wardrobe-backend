@@ -1,6 +1,20 @@
 import { SupportValidationError } from './http';
 
-const STATUS_INDEX_CURSOR_KEYS = ['PK', 'SK', 'status', 'lastMessageAt'] as const;
+/** StatusLastMessageIndex ExclusiveStartKey: table PK/SK plus GSI keys. */
+export const STATUS_INDEX_CURSOR_KEYS = [
+  'PK',
+  'SK',
+  'status',
+  'lastMessageAt',
+] as const;
+
+/** UidLastMessageIndex ExclusiveStartKey: table PK/SK plus GSI keys. */
+export const UID_INDEX_CURSOR_KEYS = [
+  'PK',
+  'SK',
+  'uid',
+  'lastMessageAt',
+] as const;
 
 /**
  * Opaque pagination cursor: standard base64 of the DynamoDB
@@ -15,8 +29,14 @@ export function encodeExclusiveStartKey(
   return Buffer.from(JSON.stringify(key), 'utf8').toString('base64');
 }
 
+/**
+ * Decode a list cursor. `expectedKeys` is the GSI ExclusiveStartKey
+ * shape for that list (status index vs uid index). Wrong shape is 400
+ * so it never reaches DynamoDB.
+ */
 export function decodeExclusiveStartKey(
   cursor: string,
+  expectedKeys: readonly string[] = STATUS_INDEX_CURSOR_KEYS,
 ): Record<string, unknown> {
   const trimmed = cursor.trim();
   if (!trimmed) {
@@ -32,7 +52,7 @@ export function decodeExclusiveStartKey(
     throw new SupportValidationError({ cursor: 'must be a valid cursor' });
   }
 
-  if (!isStatusIndexExclusiveStartKey(parsed)) {
+  if (!isExclusiveStartKey(parsed, expectedKeys)) {
     throw new SupportValidationError({ cursor: 'must be a valid cursor' });
   }
 
@@ -52,18 +72,27 @@ function decodeCursorJson(cursor: string): string {
   }
 }
 
-/**
- * StatusLastMessageIndex ExclusiveStartKey: table PK/SK plus the GSI
- * keys. Wrong shape used to reach DynamoDB and 500.
- */
 export function isStatusIndexExclusiveStartKey(
   value: unknown,
+): value is Record<string, unknown> {
+  return isExclusiveStartKey(value, STATUS_INDEX_CURSOR_KEYS);
+}
+
+export function isUidIndexExclusiveStartKey(
+  value: unknown,
+): value is Record<string, unknown> {
+  return isExclusiveStartKey(value, UID_INDEX_CURSOR_KEYS);
+}
+
+function isExclusiveStartKey(
+  value: unknown,
+  expectedKeys: readonly string[],
 ): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return false;
   }
   const record = value as Record<string, unknown>;
-  return STATUS_INDEX_CURSOR_KEYS.every((key) => {
+  return expectedKeys.every((key) => {
     const field = record[key];
     return typeof field === 'string' && field.trim().length > 0;
   });

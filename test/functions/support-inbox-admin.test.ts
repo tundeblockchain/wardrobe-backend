@@ -240,6 +240,18 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
       'wrong key shape',
       Buffer.from(JSON.stringify({ foo: 1 }), 'utf8').toString('base64'),
     ],
+    [
+      'uid index key',
+      Buffer.from(
+        JSON.stringify({
+          PK: 'CONV#conv_1',
+          SK: 'META',
+          uid: 'firebase-uid-owner',
+          lastMessageAt: '2026-01-01T00:00:00.000Z',
+        }),
+        'utf8',
+      ).toString('base64'),
+    ],
   ])('rejects a %s list cursor', (_name, cursor) => {
     expect(() => parseAdminListQuery({ cursor })).toThrow(SupportValidationError);
     try {

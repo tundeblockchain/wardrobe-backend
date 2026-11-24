@@ -156,7 +156,8 @@ export async function updateMessageEmailStatus(input: {
   /**
    * Reply path omits this and always writes META lastEmailStatus.
    * Retry of the latest admin message passes `{ createdAt }` (conditional).
-   * Retry of an older admin message passes `false` (META untouched).
+   * Retry of an older admin message, and user follow-up operator alerts,
+   * pass `false` (META untouched).
    */
   conversationLastEmailStatus?: false | { createdAt: string };
   tableName?: string;
@@ -612,7 +613,10 @@ async function queryConversationsByUid(input: {
         | undefined,
     };
   } catch (error) {
-    if (isDynamoValidationException(error)) {
+    if (
+      input.exclusiveStartKey &&
+      isDynamoValidationException(error)
+    ) {
       throw new SupportValidationError({ cursor: 'must be a valid cursor' });
     }
     throw error;

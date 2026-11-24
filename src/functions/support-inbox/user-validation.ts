@@ -3,7 +3,7 @@ import {
   USER_LIST_LIMIT_MAX,
   USER_LIST_LIMIT_MIN,
 } from '../../shared/support-inbox-names';
-import { decodeExclusiveStartKey } from './cursor';
+import { decodeExclusiveStartKey, UID_INDEX_CURSOR_KEYS } from './cursor';
 import { SupportValidationError } from './http';
 
 export interface UserListQuery {
@@ -19,7 +19,10 @@ export function parseUserListQuery(
   let exclusiveStartKey: Record<string, unknown> | undefined;
   if (params?.cursor !== undefined && params.cursor !== '') {
     try {
-      exclusiveStartKey = decodeExclusiveStartKey(params.cursor);
+      exclusiveStartKey = decodeExclusiveStartKey(
+        params.cursor,
+        UID_INDEX_CURSOR_KEYS,
+      );
     } catch (error) {
       if (error instanceof SupportValidationError) {
         Object.assign(fields, error.fields);
