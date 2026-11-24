@@ -45,6 +45,7 @@ import {
 import { parseReplyBody } from '../../src/functions/support-inbox/validation';
 import { logger } from '../../src/shared/logger';
 import {
+  SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS,
   SUPPORT_EMAIL_TIMEOUT_MS,
   SUPPORT_PRESIGN_EXPIRES_SECONDS,
 } from '../../src/shared/support-inbox-names';
@@ -273,10 +274,27 @@ describe('support inbox admin helpers (WARDROBE-284)', () => {
     ).toBe('open');
   });
 
-  it('treats only failed admin messages as retryable', () => {
+  it('treats failed and stale sending admin messages as retryable', () => {
+    expect(SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS).toBe(2 * SUPPORT_EMAIL_TIMEOUT_MS);
     expect(
       isRetryableAdminEmail({ author: 'admin', emailStatus: 'failed' }),
     ).toBe(true);
+    expect(
+      isRetryableAdminEmail({
+        author: 'admin',
+        emailStatus: 'sending',
+        updatedAt: new Date(
+          Date.now() - SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS - 1,
+        ).toISOString(),
+      }),
+    ).toBe(true);
+    expect(
+      isRetryableAdminEmail({
+        author: 'admin',
+        emailStatus: 'sending',
+        updatedAt: new Date().toISOString(),
+      }),
+    ).toBe(false);
     expect(
       isRetryableAdminEmail({ author: 'admin', emailStatus: 'sent' }),
     ).toBe(false);
@@ -997,6 +1015,88 @@ describe('support inbox admin handler (WARDROBE-284)', () => {
       messageSk: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
     });
     expect(sendReply).toHaveBeenCalled();
+  });
+
+  it('retries a stale sending claim and sends once', async () => {
+    requireMessage.mockResolvedValue({
+      SK: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
+      messageId: 'msg_1',
+      author: 'admin',
+      body: 'Thanks for writing in.',
+      emailStatus: 'sending',
+      updatedAt: new Date(
+        Date.now() - SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS - 1,
+      ).toISOString(),
+      createdAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    const retried = asResult(
+      await handleSupportInboxAdmin(retryEmailEvent(), deps),
+    );
+    expect(retried.statusCode).toBe(200);
+    expect(bodyOf(retried)).toEqual({
+      messageId: 'msg_1',
+      emailStatus: 'sent',
+    });
+    expect(claimRetry).toHaveBeenCalledTimes(1);
+    expect(sendReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 409 for a fresh sending claim', async () => {
+    requireMessage.mockResolvedValue({
+      SK: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
+      messageId: 'msg_1',
+      author: 'admin',
+      body: 'Thanks for writing in.',
+      emailStatus: 'sending',
+      updatedAt: new Date().toISOString(),
+    });
+
+    const result = asResult(
+      await handleSupportInboxAdmin(retryEmailEvent(), deps),
+    );
+    expect(result.statusCode).toBe(409);
+    expect(bodyOf(result)).toEqual({ error: 'not_retryable' });
+    expect(claimRetry).not.toHaveBeenCalled();
+    expect(sendReply).not.toHaveBeenCalled();
+  });
+
+  it('retries a stale sending claim concurrently: exactly one send and the other 409', async () => {
+    requireMessage.mockResolvedValue({
+      SK: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
+      messageId: 'msg_1',
+      author: 'admin',
+      body: 'Thanks for writing in.',
+      emailStatus: 'sending',
+      updatedAt: new Date(
+        Date.now() - SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS - 1,
+      ).toISOString(),
+      createdAt: '2026-01-02T00:00:00.000Z',
+    });
+    let claimed = false;
+    claimRetry.mockImplementation(async () => {
+      if (claimed) {
+        throw new SupportNotRetryableError();
+      }
+      claimed = true;
+    });
+
+    const [first, second] = await Promise.all([
+      handleSupportInboxAdmin(retryEmailEvent(), deps),
+      handleSupportInboxAdmin(retryEmailEvent(), deps),
+    ]);
+    const results = [asResult(first), asResult(second)];
+    const statuses = results.map((result) => result.statusCode).sort();
+    expect(statuses).toEqual([200, 409]);
+    const bodies = results.map((result) => bodyOf(result));
+    expect(bodies).toEqual(
+      expect.arrayContaining([
+        { messageId: 'msg_1', emailStatus: 'sent' },
+        { error: 'not_retryable' },
+      ]),
+    );
+    expect(claimRetry).toHaveBeenCalledTimes(2);
+    expect(sendReply).toHaveBeenCalledTimes(1);
   });
 
   it('retries concurrently: exactly one send and the other 409', async () => {

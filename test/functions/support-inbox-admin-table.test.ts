@@ -35,7 +35,11 @@ import {
   listConversationsByStatus,
   updateMessageEmailStatus,
 } from '../../src/functions/support-inbox/table';
-import { SUPPORT_EMAIL_RETRY_CLAIM_STATUS } from '../../src/shared/support-inbox-names';
+import {
+  SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS,
+  SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
+  SUPPORT_EMAIL_TIMEOUT_MS,
+} from '../../src/shared/support-inbox-names';
 
 describe('support inbox admin table (WARDROBE-288)', () => {
   const previousTable = process.env.SUPPORT_TABLE_NAME;
@@ -53,7 +57,7 @@ describe('support inbox admin table (WARDROBE-288)', () => {
     }
   });
 
-  it('claims a failed admin email with a conditional sending update', async () => {
+  it('claims a failed or stale sending admin email with one conditional update', async () => {
     mockDynamoSend.mockResolvedValue({});
 
     await claimFailedAdminEmailRetry({
@@ -61,12 +65,14 @@ describe('support inbox admin table (WARDROBE-288)', () => {
       messageSk: 'MSG#2026-01-02T00:00:00.000Z#msg_1',
     });
 
+    expect(mockDynamoSend).toHaveBeenCalledTimes(1);
     expect(mockDynamoSend).toHaveBeenCalledWith(
       expect.objectContaining({
         _op: 'Update',
         input: expect.objectContaining({
           Key: { PK: 'CONV#conv_1', SK: 'MSG#2026-01-02T00:00:00.000Z#msg_1' },
-          ConditionExpression: '#author = :admin AND emailStatus = :failed',
+          ConditionExpression:
+            '#author = :admin AND (emailStatus = :failed OR (emailStatus = :sending AND #updatedAt < :staleBefore))',
           UpdateExpression: 'SET emailStatus = :sending, #updatedAt = :now',
           ExpressionAttributeValues: expect.objectContaining({
             ':sending': SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
@@ -75,6 +81,17 @@ describe('support inbox admin table (WARDROBE-288)', () => {
           }),
         }),
       }),
+    );
+    const values = (
+      mockDynamoSend.mock.calls[0]?.[0] as {
+        input: { ExpressionAttributeValues: Record<string, string> };
+      }
+    ).input.ExpressionAttributeValues;
+    expect(SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS).toBe(
+      2 * SUPPORT_EMAIL_TIMEOUT_MS,
+    );
+    expect(Date.parse(values[':now']) - Date.parse(values[':staleBefore'])).toBe(
+      SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS,
     );
   });
 

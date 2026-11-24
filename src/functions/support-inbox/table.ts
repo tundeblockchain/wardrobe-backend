@@ -12,6 +12,7 @@ import { nowIso } from '../../shared/ids';
 import {
   SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
   SUPPORT_TABLE_NAME_ENV,
+  supportEmailRetryClaimStaleBefore,
   type SupportConversationStatus,
   type SupportEmailStatus,
   type SupportMessageAuthor,
@@ -99,13 +100,16 @@ export interface ClaimFailedAdminEmailRetryInput {
 }
 
 /**
- * Atomically claim a failed admin message for retry-email.
- * Condition: author=admin AND emailStatus=failed. Sets emailStatus=sending.
+ * Atomically claim a failed (or stale sending) admin message for retry-email.
+ * Condition: author=admin AND (emailStatus=failed OR (sending AND
+ * updatedAt older than SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS)).
+ * Sets emailStatus=sending and bumps updatedAt so a concurrent takeover loses.
  * Conditional-check failure => 409 not_retryable.
  */
 export async function claimFailedAdminEmailRetry(
   input: ClaimFailedAdminEmailRetryInput,
 ): Promise<void> {
+  const now = nowIso();
   try {
     await client.send(
       new UpdateCommand({
@@ -115,7 +119,8 @@ export async function claimFailedAdminEmailRetry(
           SK: input.messageSk,
         },
         UpdateExpression: 'SET emailStatus = :sending, #updatedAt = :now',
-        ConditionExpression: '#author = :admin AND emailStatus = :failed',
+        ConditionExpression:
+          '#author = :admin AND (emailStatus = :failed OR (emailStatus = :sending AND #updatedAt < :staleBefore))',
         ExpressionAttributeNames: {
           '#author': 'author',
           '#updatedAt': 'updatedAt',
@@ -124,7 +129,8 @@ export async function claimFailedAdminEmailRetry(
           ':sending': SUPPORT_EMAIL_RETRY_CLAIM_STATUS,
           ':admin': 'admin',
           ':failed': 'failed',
-          ':now': nowIso(),
+          ':now': now,
+          ':staleBefore': supportEmailRetryClaimStaleBefore(now),
         },
       }),
     );

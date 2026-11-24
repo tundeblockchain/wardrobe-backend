@@ -48,12 +48,26 @@ export type SupportEmailStatus = (typeof SUPPORT_EMAIL_STATUSES)[number];
 
 /**
  * Transient retry-email claim. Not a client-facing emailStatus.
- * Concurrent retries condition on emailStatus=failed and set this value
- * so only one caller may send.
+ * Claim condition: author=admin AND (emailStatus=failed OR a sending
+ * claim whose updatedAt is older than SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS).
+ * Sets this value so only one caller may send.
  */
 export const SUPPORT_EMAIL_RETRY_CLAIM_STATUS = 'sending' as const;
 export type SupportEmailRetryClaimStatus =
   typeof SUPPORT_EMAIL_RETRY_CLAIM_STATUS;
+
+/**
+ * A `sending` claim older than this may be taken over. Equal to
+ * 2 × SUPPORT_EMAIL_TIMEOUT_MS so a live send is not stolen.
+ */
+export const SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS =
+  2 * SUPPORT_EMAIL_TIMEOUT_MS;
+
+export function supportEmailRetryClaimStaleBefore(now: string): string {
+  return new Date(
+    Date.parse(now) - SUPPORT_EMAIL_RETRY_CLAIM_STALE_MS,
+  ).toISOString();
+}
 
 export function readSupportEmailTimeoutMs(
   env: NodeJS.ProcessEnv = process.env,
