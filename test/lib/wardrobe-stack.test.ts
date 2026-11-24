@@ -1220,7 +1220,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       },
       WebsiteConfiguration: Match.absent(),
       CorsConfiguration: {
-        CorsRules: [
+        CorsRules: Match.arrayWith([
           Match.objectLike({
             AllowedMethods: ['PUT'],
             AllowedOrigins: [...DEFAULT_UPLOAD_ALLOWED_ORIGINS],
@@ -1228,7 +1228,7 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
             ExposedHeaders: ['ETag'],
             MaxAge: 3000,
           }),
-        ],
+        ]),
       },
     });
 
@@ -1265,17 +1265,25 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     );
 
     expect(uploadBuckets).toHaveLength(1);
-    expect(uploadBuckets[0]?.Properties?.CorsConfiguration?.CorsRules).toEqual([
-      uploadCors,
-    ]);
+    const corsRules =
+      uploadBuckets[0]?.Properties?.CorsConfiguration?.CorsRules ?? [];
+    expect(corsRules).toEqual(
+      expect.arrayContaining([uploadCors]),
+    );
 
-    for (const bucket of uploadBuckets) {
-      const rules = bucket.Properties?.CorsConfiguration?.CorsRules ?? [];
-      for (const rule of rules) {
-        expect(rule.AllowedMethods).toEqual(['PUT']);
-        expect(rule.AllowedOrigins).toEqual([...DEFAULT_UPLOAD_ALLOWED_ORIGINS]);
-        expect(rule.AllowedOrigins).not.toContain('*');
-      }
+    const putRules = corsRules.filter(
+      (rule) =>
+        Array.isArray(rule.AllowedMethods) &&
+        (rule.AllowedMethods as string[]).includes('PUT'),
+    );
+    expect(putRules).toHaveLength(1);
+    expect(putRules[0]?.AllowedMethods).toEqual(['PUT']);
+    expect(putRules[0]?.AllowedOrigins).toEqual([
+      ...DEFAULT_UPLOAD_ALLOWED_ORIGINS,
+    ]);
+    expect(putRules[0]?.AllowedOrigins).not.toContain('*');
+    for (const rule of corsRules) {
+      expect(rule.AllowedOrigins).not.toContain('*');
     }
 
     template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
@@ -1299,21 +1307,24 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
       };
     }>;
     expect(buckets).toHaveLength(1);
-    expect(buckets[0]?.Properties?.CorsConfiguration?.CorsRules).toEqual([
-      {
-        AllowedMethods: ['PUT'],
-        AllowedOrigins: [
-          'https://custom.example',
-          'https://deploy-preview-*--custom.netlify.app',
-        ],
-        AllowedHeaders: ['Content-Type'],
-        ExposedHeaders: ['ETag'],
-        MaxAge: 3000,
-      },
-    ]);
-    expect(
-      buckets[0]?.Properties?.CorsConfiguration?.CorsRules?.[0]?.AllowedOrigins,
-    ).not.toContain('*');
+    const corsRules =
+      buckets[0]?.Properties?.CorsConfiguration?.CorsRules ?? [];
+    const putRule = corsRules.find(
+      (rule) =>
+        Array.isArray(rule.AllowedMethods) &&
+        (rule.AllowedMethods as string[]).includes('PUT'),
+    );
+    expect(putRule).toEqual({
+      AllowedMethods: ['PUT'],
+      AllowedOrigins: [
+        'https://custom.example',
+        'https://deploy-preview-*--custom.netlify.app',
+      ],
+      AllowedHeaders: ['Content-Type'],
+      ExposedHeaders: ['ETag'],
+      MaxAge: 3000,
+    });
+    expect(putRule?.AllowedOrigins).not.toContain('*');
   });
 
   test('upload CORS rejects a wildcard-all origin', () => {
@@ -1568,6 +1579,20 @@ describe('WardrobeStack foundation (WARDROBE-4)', () => {
     );
     expect(billingPlans).toBeDefined();
     expect(billingPlans?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+
+    const supportUpload = routes.find(
+      (route) => route.Properties.RouteKey === 'POST /support/upload-url',
+    );
+    expect(supportUpload).toBeDefined();
+    expect(supportUpload?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+    expect(supportUpload?.Properties).not.toHaveProperty('AuthorizerId');
+
+    const supportFeedback = routes.find(
+      (route) => route.Properties.RouteKey === 'POST /support/feedback',
+    );
+    expect(supportFeedback).toBeDefined();
+    expect(supportFeedback?.Properties.AuthorizationType ?? 'NONE').toBe('NONE');
+    expect(supportFeedback?.Properties).not.toHaveProperty('AuthorizerId');
     template.hasResourceProperties('AWS::ApiGatewayV2::Stage', {
       RouteSettings: {
         'GET /billing/plans': {

@@ -164,6 +164,31 @@ describe('WardrobePipelineStack upload CORS synth env (WARDROBE-176)', () => {
   });
 });
 
+describe('WardrobePipelineStack support inbox CORS synth env (WARDROBE-281)', () => {
+  test('bakes non-empty supportInboxAllowedOrigins into the Synth project', () => {
+    const template = synthPipeline({
+      ...pipelineSource,
+      supportInboxAllowedOrigins:
+        'https://wende-wardrobe.netlify.app,http://localhost:*',
+    });
+
+    const env = synthStepEnv(template);
+    expect(env.SUPPORT_INBOX_ALLOWED_ORIGINS).toBe(
+      'https://wende-wardrobe.netlify.app,http://localhost:*',
+    );
+  });
+
+  test('omits SUPPORT_INBOX_ALLOWED_ORIGINS when config does not set it', () => {
+    const template = synthPipeline(pipelineSource);
+    const env = synthStepEnv(template);
+
+    expect(env).not.toHaveProperty('SUPPORT_INBOX_ALLOWED_ORIGINS');
+    for (const vars of codeBuildEnvMaps(template)) {
+      expect(vars).not.toHaveProperty('SUPPORT_INBOX_ALLOWED_ORIGINS');
+    }
+  });
+});
+
 describe('WardrobePipelineStack Stripe synth env (WARDROBE-187)', () => {
   test('bakes non-empty Stripe mode and lookup keys into the Synth project', () => {
     const template = synthPipeline({

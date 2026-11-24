@@ -1,0 +1,72 @@
+/**
+ * Support inbox config names (WARDROBE-281).
+ *
+ * Keep this module free of AWS clients so CDK synth can import it without
+ * pulling Resend, SSM, S3, or DynamoDB.
+ *
+ * Runtime mail reuses WARDROBE-38:
+ *   RESEND_SECRET_ARN  — existing `wardrobe/<stage>/resend` API key
+ *   SUPPORT_FROM_EMAIL — existing support-mail `fromEmail` (injected by CDK)
+ * The only new config is the recipient SSM parameter.
+ */
+
+export const RESEND_SECRET_ARN_ENV = 'RESEND_SECRET_ARN';
+export const RESEND_API_KEY_ENV = 'RESEND_API_KEY';
+export const SUPPORT_FROM_EMAIL_ENV = 'SUPPORT_FROM_EMAIL';
+export const SUPPORT_TABLE_NAME_ENV = 'SUPPORT_TABLE_NAME';
+
+/** Optional address override (tests). Deployed stages use SSM. */
+export const SUPPORT_INBOX_RECIPIENT_ENV = 'SUPPORT_INBOX_RECIPIENT';
+export const SUPPORT_INBOX_RECIPIENT_PARAM_ENV = 'SUPPORT_INBOX_RECIPIENT_PARAM';
+
+export const SUPPORT_INBOX_ALLOWED_ORIGINS_ENV = 'SUPPORT_INBOX_ALLOWED_ORIGINS';
+export const SUPPORT_FEEDBACK_IP_RATE_LIMIT_ENV = 'SUPPORT_FEEDBACK_IP_RATE_LIMIT';
+export const SUPPORT_FEEDBACK_EMAIL_RATE_LIMIT_ENV =
+  'SUPPORT_FEEDBACK_EMAIL_RATE_LIMIT';
+export const SUPPORT_UPLOAD_IP_RATE_LIMIT_ENV = 'SUPPORT_UPLOAD_IP_RATE_LIMIT';
+export const SUPPORT_INBOX_RATE_WINDOW_SECONDS_ENV =
+  'SUPPORT_INBOX_RATE_WINDOW_SECONDS';
+
+export const DEFAULT_FEEDBACK_IP_RATE_LIMIT = 5;
+export const DEFAULT_FEEDBACK_EMAIL_RATE_LIMIT = 5;
+export const DEFAULT_UPLOAD_IP_RATE_LIMIT = 20;
+export const DEFAULT_RATE_WINDOW_SECONDS = 3600;
+
+/** Best-effort Resend send budget so the client is never blocked on mail. */
+export const SUPPORT_INBOX_SEND_TIMEOUT_MS = 3_000;
+/** Cold-start SSM / Secrets reads; cached after the first hit. */
+export const SUPPORT_INBOX_AWS_REQUEST_TIMEOUT_MS = 1_000;
+export const SUPPORT_INBOX_AWS_MAX_ATTEMPTS = 1;
+
+export const SUPPORT_SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024;
+export const SUPPORT_PRESIGN_EXPIRES_SECONDS = 900;
+export const SUPPORT_KEY_PREFIX = 'support/';
+
+export const SUPPORT_FEEDBACK_TYPES = ['bug', 'query'] as const;
+export type SupportFeedbackType = (typeof SUPPORT_FEEDBACK_TYPES)[number];
+
+export const SUPPORT_PLATFORMS = ['ios', 'android', 'web'] as const;
+export type SupportPlatform = (typeof SUPPORT_PLATFORMS)[number];
+
+export const SUPPORT_UPLOAD_CONTENT_TYPES = [
+  'image/png',
+  'image/jpeg',
+] as const;
+export type SupportUploadContentType =
+  (typeof SUPPORT_UPLOAD_CONTENT_TYPES)[number];
+
+export const SUPPORT_CONVERSATION_STATUSES = [
+  'open',
+  'replied',
+  'closed',
+] as const;
+export type SupportConversationStatus =
+  (typeof SUPPORT_CONVERSATION_STATUSES)[number];
+
+export function supportInboxRecipientParamName(stage: string): string {
+  return `/wardrobe/${stage}/support/recipient`;
+}
+
+export function supportTableName(stage: string): string {
+  return `wardrobe-support-${stage}`;
+}
