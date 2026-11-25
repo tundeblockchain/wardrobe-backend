@@ -3555,7 +3555,7 @@ The FCM service-account JSON is read at runtime from the existing Secrets Manage
 ### Operator setup
 
 1. Confirm Secrets Manager `wardrobe/<stage>/firebase-fcm` already holds a Firebase service-account JSON (`type`, `project_id`, `client_email`, `private_key`, …). This is the same secret as job-done FCM (WARDROBE-114). Leave it empty or invalid to skip support reply push. Never commit the JSON.
-2. Upload the APNs key in the Firebase console (operator). This repo does not store APNs keys.
+2. APNs development and production auth keys are already uploaded in Firebase. This repo does not store APNs keys.
 
 WARDROBE-286 created an unused placeholder `wardrobe/<stage>/fcm-service-account`. That construct is removed. Dev stacks used `RemovalPolicy.DESTROY`, so deploying this change deletes that empty secret via CloudFormation. Staging and production used `RemovalPolicy.RETAIN`, so CloudFormation leaves it in place; delete the empty `wardrobe/<stage>/fcm-service-account` secret by hand if desired.
 

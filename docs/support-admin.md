@@ -15,7 +15,7 @@ Confirm WARDROBE-38 secrets are already populated: `wardrobe/<stage>/resend` (AP
 
 ## FCM reply push (WARDROBE-286 / WARDROBE-290)
 
-Admin reply push reads the existing Secrets Manager secret `wardrobe/<stage>/firebase-fcm` (same JSON as job-done FCM). The stack imports it by name and does not create or own it. Expected value is a standard Google service-account JSON (`project_id`, `client_email`, `private_key`). Missing, empty, or invalid JSON skips push; the reply still returns 201.
+Admin reply push reads the existing Secrets Manager secret `wardrobe/<stage>/firebase-fcm` (same JSON as job-done FCM). The stack imports it by name and does not create or own it. Expected value is a standard Google service-account JSON (`project_id`, `client_email`, `private_key`). Missing, empty, or invalid JSON skips push; the reply still returns 201. APNs development and production auth keys are already uploaded in Firebase.
 
 WARDROBE-286 left an unused empty secret `wardrobe/<stage>/fcm-service-account`. After this change it is no longer referenced. Dev (`RemovalPolicy.DESTROY`) deletes it on deploy. Staging and production (`RemovalPolicy.RETAIN`) keep it; delete that empty secret by hand if desired. Never commit service-account JSON.
 
