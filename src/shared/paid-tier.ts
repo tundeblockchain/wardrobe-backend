@@ -14,12 +14,14 @@ const STORE_TO_SOURCE: Record<EntitlementStore, PaidTierSource | undefined> = {
   PLAY_STORE: 'android',
   STRIPE: 'stripe',
   UNKNOWN: undefined,
+  COMP: 'comp',
 };
 
 const SOURCE_TO_STORE: Record<PaidTierSource, EntitlementStore> = {
   ios: 'APP_STORE',
   android: 'PLAY_STORE',
   stripe: 'STRIPE',
+  comp: 'COMP',
 };
 
 export interface PaidTierFields {
@@ -185,6 +187,9 @@ function effectivePaidTier(
   stored: PaidTierFields,
   nowMs: number,
 ): SubscriptionTier {
+  if (stored.source === 'comp' || stored.store === 'COMP') {
+    return 'PREMIUM';
+  }
   if (stored.tier !== 'BASIC' && stored.tier !== 'PREMIUM') {
     return stored.tier;
   }

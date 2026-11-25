@@ -61,6 +61,11 @@ export const keys = {
   entitlementHistorySk: (updatedAt: string, unique: string) =>
     `ENTITLEMENT#${updatedAt}#${unique}`,
   /**
+   * Operator comp Premium (WARDROBE-291). Dedicated item — store webhooks
+   * and lapse-at-read never overwrite or delete this SK.
+   */
+  entitlementCompSk: 'ENTITLEMENT#COMP',
+  /**
    * Store receipt → first granted Firebase uid (WARDROBE-165).
    * Same `originalTransactionId` must not grant a later account on the
    * device. No GSI: webhook GetItem on this PK/SK.

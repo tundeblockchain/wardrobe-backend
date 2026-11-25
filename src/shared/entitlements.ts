@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { nanoid } from 'nanoid';
 import {
+  deleteItem,
   getItem,
   keys,
   putItem,
@@ -101,21 +102,20 @@ export interface SuperwallWebhookEvent {
  * on the latest row, or unknown stored values all become FREE. Dynamo
  * is the source of truth — Firebase custom claims are not read in this MVP.
  *
- * Always picks the latest entitlement record (WARDROBE-159). A stale
+ * Always picks the latest store entitlement record (WARDROBE-159). A stale
  * expired/canceled row must not win over a newer ACTIVE paid row.
  *
- * Does not write. Catalog and AI gates use this so a user who has not
- * called `GET /me` yet is still Free.
+ * A dedicated COMP row (WARDROBE-291) wins over the store row, including
+ * when the store grant is lapsed, refunded, or expired. Does not write.
+ * Catalog and AI gates use this so a user who has not called `GET /me`
+ * yet is still Free.
  */
 export async function resolveEntitlement(
   userId: string,
   nowMs: number = Date.now(),
 ): Promise<StoredEntitlement> {
-  const latest = await loadStoredEntitlement(userId);
-  if (!latest) {
-    return freeEntitlement(userId);
-  }
-  return effectiveEntitlement(latest, nowMs);
+  const rows = await listStoredEntitlements(userId);
+  return selectEffectiveEntitlement(rows, nowMs, userId);
 }
 
 /**
@@ -131,7 +131,7 @@ export async function ensureFreeEntitlement(
 ): Promise<StoredEntitlement> {
   const existing = await listStoredEntitlements(userId);
   if (existing.length > 0) {
-    return effectiveEntitlement(pickLatestEntitlement(existing)!, nowMs);
+    return selectEffectiveEntitlement(existing, nowMs, userId);
   }
 
   const created = freeEntitlement(userId);
@@ -139,7 +139,7 @@ export async function ensureFreeEntitlement(
 
   const after = await listStoredEntitlements(userId);
   if (after.length > 0) {
-    return effectiveEntitlement(pickLatestEntitlement(after)!, nowMs);
+    return selectEffectiveEntitlement(after, nowMs, userId);
   }
   return created;
 }
@@ -169,6 +169,11 @@ export function toEntitlementDto(
     paidTier: toPaidTierStatus(stored),
     trackingConsent,
   };
+  if (isCompEntitlement(stored)) {
+    dto.store = 'COMP';
+    dto.paidTier = { tier: 'premium', source: 'comp' };
+    return dto;
+  }
   if (stored.productId) {
     dto.productId = stored.productId;
   }
@@ -314,8 +319,9 @@ export function applySuperwallEvent(options: {
   nowIso?: string;
 }): { stored: StoredEntitlement; skipped: boolean } {
   const timestamp = options.nowIso ?? nowIso();
-  const history =
-    options.history ?? (options.existing ? [options.existing] : []);
+  const history = storeEntitlementRows(
+    options.history ?? (options.existing ? [options.existing] : []),
+  );
   if (options.eventId) {
     const duplicate = history.find((row) => row.lastEventId === options.eventId);
     if (duplicate) {
@@ -323,7 +329,10 @@ export function applySuperwallEvent(options: {
     }
   }
 
-  const existing = options.existing ?? pickLatestEntitlement(history);
+  const existing =
+    options.existing && !isCompEntitlement(options.existing)
+      ? options.existing
+      : pickLatestEntitlement(history);
   if (
     typeof options.eventAtMs === 'number' &&
     typeof existing?.lastEventAt === 'number' &&
@@ -427,7 +436,20 @@ export function storedEntitlementFromRow(
 export async function persistEntitlement(
   stored: StoredEntitlement,
 ): Promise<void> {
-  await putItem(entitlementItem(stored, { history: true }));
+  if (isCompEntitlement(stored)) {
+    logger.warn(
+      'Refusing to persist a COMP entitlement via the store write path',
+    );
+    return;
+  }
+  const item = entitlementItem(stored, { history: true });
+  if (isCompEntitlementSk(item.SK)) {
+    logger.warn(
+      'Refusing to write store entitlement history onto the COMP key',
+    );
+    return;
+  }
+  await putItem(item);
 }
 
 export interface SetPaidTierStatusInput {
@@ -474,7 +496,7 @@ export async function setPaidTierStatus(
     throw Errors.internal('setPaidTierStatus requires a basic or premium tier.');
   }
 
-  const history = await listStoredEntitlements(input.userId);
+  const history = storeEntitlementRows(await listStoredEntitlements(input.userId));
   const existing = pickLatestEntitlement(history);
   const effective = existing
     ? effectiveEntitlement(existing, Number.isFinite(nowMs) ? nowMs : Date.now())
@@ -543,7 +565,7 @@ export async function clearStripePaidTier(input: {
 }): Promise<ClearStripePaidTierResult> {
   const timestamp = input.nowIso ?? nowIso();
   const nowMs = input.nowMs ?? Date.parse(timestamp);
-  const history = await listStoredEntitlements(input.userId);
+  const history = storeEntitlementRows(await listStoredEntitlements(input.userId));
   const existing = pickLatestEntitlement(history);
   if (!existing) {
     return { cleared: false, reason: 'already_free' };
@@ -583,9 +605,15 @@ function entitlementItem(
   stored: StoredEntitlement,
   options?: { history?: boolean },
 ): DynamoItem {
+  if (options?.history && isCompEntitlement(stored)) {
+    throw Errors.internal('Store entitlement history must not use the COMP key.');
+  }
   const sk = options?.history
     ? keys.entitlementHistorySk(stored.updatedAt, historySkUnique(stored))
     : (stored.sk ?? keys.entitlementSk);
+  if (options?.history && isCompEntitlementSk(sk)) {
+    throw Errors.internal('Store entitlement history must not use the COMP key.');
+  }
   const item: DynamoItem = {
     PK: keys.userPk(stored.userId),
     SK: sk,
@@ -855,21 +883,136 @@ const DEFAULT_GRANT_DAYS = 30;
 const YEARLY_GRANT_DAYS = 365;
 
 /**
- * Latest row for GET /me and create gates. A FREE/NONE seed
+ * Latest store row for GET /me and create gates. A FREE/NONE seed
  * (`SK=ENTITLEMENT`, no Superwall event) never beats a subscription
  * history row, even when the seed was written later.
+ *
+ * COMP rows (WARDROBE-291) are excluded so Superwall / Stripe / lapse
+ * never treat the operator grant as the store plan.
  */
 export function pickLatestEntitlement(
   rows: StoredEntitlement[],
 ): StoredEntitlement | undefined {
-  if (rows.length === 0) {
+  const storeRows = storeEntitlementRows(rows);
+  if (storeRows.length === 0) {
     return undefined;
   }
-  const history = rows.filter((row) => !isFreeSeedEntitlement(row));
-  const pool = history.length > 0 ? history : rows;
+  const history = storeRows.filter((row) => !isFreeSeedEntitlement(row));
+  const pool = history.length > 0 ? history : storeRows;
   return pool.reduce((latest, row) =>
     compareEntitlementRecency(row, latest) >= 0 ? row : latest,
   );
+}
+
+/** Dedicated operator-comp Premium row (WARDROBE-291). */
+export function isCompEntitlementSk(sk: string | undefined): boolean {
+  return sk === keys.entitlementCompSk;
+}
+
+export function isCompEntitlement(row: { sk?: string }): boolean {
+  return isCompEntitlementSk(row.sk);
+}
+
+export function pickCompEntitlement(
+  rows: StoredEntitlement[],
+): StoredEntitlement | undefined {
+  return rows.find((row) => isCompEntitlement(row));
+}
+
+export function storeEntitlementRows(
+  rows: StoredEntitlement[],
+): StoredEntitlement[] {
+  return rows.filter((row) => !isCompEntitlement(row));
+}
+
+/**
+ * COMP wins over any store row (including lapsed / refunded / expired).
+ * After revoke, callers fall through to the store row.
+ */
+export function selectEffectiveEntitlement(
+  rows: StoredEntitlement[],
+  nowMs: number,
+  userId: string,
+): StoredEntitlement {
+  const comp = pickCompEntitlement(rows);
+  if (comp) {
+    return effectiveEntitlement(comp, nowMs);
+  }
+  const latest = pickLatestEntitlement(rows);
+  if (!latest) {
+    return freeEntitlement(userId);
+  }
+  return effectiveEntitlement(latest, nowMs);
+}
+
+export function compEntitlement(
+  userId: string,
+  timestamp = nowIso(),
+): StoredEntitlement {
+  return {
+    userId,
+    sk: keys.entitlementCompSk,
+    tier: 'PREMIUM',
+    status: 'ACTIVE',
+    store: 'COMP',
+    source: 'comp',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+export async function loadCompEntitlement(
+  userId: string,
+): Promise<StoredEntitlement | undefined> {
+  const item = await getItem(keys.userPk(userId), keys.entitlementCompSk);
+  return storedEntitlementFromRow(item);
+}
+
+export type GrantCompPremiumResult =
+  | { applied: true; idempotent: false }
+  | { applied: true; idempotent: true };
+
+/**
+ * Put `USER#{uid} / ENTITLEMENT#COMP` as PREMIUM with no expiry.
+ * Re-grant is a no-op when the dedicated row is already a valid comp grant.
+ */
+export async function grantCompPremium(
+  userId: string,
+  timestamp = nowIso(),
+): Promise<GrantCompPremiumResult> {
+  const existing = await loadCompEntitlement(userId);
+  if (
+    existing &&
+    existing.tier === 'PREMIUM' &&
+    !existing.expiresAt &&
+    existing.store === 'COMP' &&
+    existing.source === 'comp'
+  ) {
+    return { applied: true, idempotent: true };
+  }
+  const stored = compEntitlement(userId, existing?.createdAt ?? timestamp);
+  await putItem(compEntitlementItem(stored));
+  return { applied: true, idempotent: false };
+}
+
+/** Delete the dedicated COMP row. Missing row is success. */
+export async function revokeCompPremium(userId: string): Promise<void> {
+  await deleteItem(keys.userPk(userId), keys.entitlementCompSk);
+}
+
+function compEntitlementItem(stored: StoredEntitlement): DynamoItem {
+  return {
+    PK: keys.userPk(stored.userId),
+    SK: keys.entitlementCompSk,
+    entityType: 'ENTITLEMENT',
+    userId: stored.userId,
+    tier: 'PREMIUM',
+    status: 'ACTIVE',
+    store: 'COMP',
+    source: 'comp',
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+  };
 }
 
 export function isFreeSeedEntitlement(row: StoredEntitlement): boolean {
@@ -945,6 +1088,20 @@ export function effectiveEntitlement(
   stored: StoredEntitlement,
   nowMs: number,
 ): StoredEntitlement {
+  if (isCompEntitlement(stored)) {
+    const comp: StoredEntitlement = {
+      ...stored,
+      sk: keys.entitlementCompSk,
+      tier: 'PREMIUM',
+      status: 'ACTIVE',
+      store: 'COMP',
+      source: 'comp',
+    };
+    delete comp.expiresAt;
+    delete comp.productId;
+    delete comp.period;
+    return comp;
+  }
   if (stored.tier === 'FREE') {
     return stored;
   }
@@ -1089,7 +1246,8 @@ function isStore(value: unknown): value is EntitlementStore {
     value === 'APP_STORE' ||
     value === 'PLAY_STORE' ||
     value === 'STRIPE' ||
-    value === 'UNKNOWN'
+    value === 'UNKNOWN' ||
+    value === 'COMP'
   );
 }
 

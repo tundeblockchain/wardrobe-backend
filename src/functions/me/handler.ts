@@ -53,14 +53,17 @@ interface PatchMeBody {
  * Owner-only account APIs.
  *
  * GET    /me         — current entitlement (WARDROBE-91 / WARDROBE-159 /
- *                      WARDROBE-188 / WARDROBE-252). Flutter WARDROBE-90
- *                      reads this to soft-gate Superwall UX. Adds
- *                      `paidTier` and `trackingConsent` without changing
- *                      existing fields. Missing PROFILE / flag is
- *                      `trackingConsent: false` (no consent). The first
- *                      call for an account writes FREE / NONE at
- *                      SK=ENTITLEMENT. Superwall appends history rows;
- *                      this handler always returns the latest record.
+ *                      WARDROBE-188 / WARDROBE-252 / WARDROBE-291). Flutter
+ *                      WARDROBE-90 reads this to soft-gate Superwall UX.
+ *                      Adds `paidTier` and `trackingConsent` without
+ *                      changing existing fields. Comp grants expose
+ *                      `paidTier.source: "comp"` and `store: "COMP"` so
+ *                      clients can hide manage / upgrade prompts. Missing
+ *                      PROFILE / flag is `trackingConsent: false` (no
+ *                      consent). The first call for an account writes
+ *                      FREE / NONE at SK=ENTITLEMENT. Superwall appends
+ *                      history rows; a COMP row wins over the store
+ *                      record when present.
  * PATCH  /me         — `{ "trackingConsent": true | false }` on
  *                      `USER#{uid} / PROFILE` (WARDROBE-252). Any
  *                      non-boolean is 400 VALIDATION_ERROR. Returns

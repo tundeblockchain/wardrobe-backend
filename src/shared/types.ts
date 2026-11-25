@@ -661,6 +661,7 @@ export const ENTITLEMENT_STORES = [
   'PLAY_STORE',
   'STRIPE',
   'UNKNOWN',
+  'COMP',
 ] as const;
 export type EntitlementStore = (typeof ENTITLEMENT_STORES)[number];
 
@@ -725,8 +726,9 @@ export interface Entitlement {
   expiresAt?: string;
   updatedAt: string;
   /**
-   * Additive paid-tier status (WARDROBE-188). `null` when the effective
-   * plan is Free. Does not replace `tier` / `store` / `expiresAt`.
+   * Additive paid-tier status (WARDROBE-188 / WARDROBE-291). `null` when
+   * the effective plan is Free. Does not replace `tier` / `store` /
+   * `expiresAt`. Comp grants use `source: "comp"` (no `expiresAt`).
    */
   paidTier: PaidTierStatus | null;
   /**
@@ -740,8 +742,8 @@ export interface Entitlement {
 export const PAID_TIERS = ['basic', 'premium'] as const;
 export type PaidTier = (typeof PAID_TIERS)[number];
 
-/** Billing source on `GET /me` `paidTier.source` (WARDROBE-188). */
-export const PAID_TIER_SOURCES = ['ios', 'android', 'stripe'] as const;
+/** Billing source on `GET /me` `paidTier.source` (WARDROBE-188 / WARDROBE-291). */
+export const PAID_TIER_SOURCES = ['ios', 'android', 'stripe', 'comp'] as const;
 export type PaidTierSource = (typeof PAID_TIER_SOURCES)[number];
 
 export interface PaidTierStatus {

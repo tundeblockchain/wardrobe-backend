@@ -43,6 +43,7 @@ describe('paid-tier mapping (WARDROBE-188)', () => {
     expect(paidTierSourceFromStore('APP_STORE')).toBe('ios');
     expect(paidTierSourceFromStore('PLAY_STORE')).toBe('android');
     expect(paidTierSourceFromStore('STRIPE')).toBe('stripe');
+    expect(paidTierSourceFromStore('COMP')).toBe('comp');
     expect(paidTierSourceFromStore('UNKNOWN')).toBeUndefined();
     expect(paidTierSourceFromStore(undefined)).toBeUndefined();
   });
