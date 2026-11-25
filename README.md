@@ -79,7 +79,7 @@ aws secretsmanager put-secret-value \
   --secret-string file://firebase-fcm-service-account.json
 ```
 
-Standard Google fields (`project_id`, `client_email`, `private_key`) or camelCase (`projectId`, `clientEmail`, `privateKey`) are accepted. The processing and outfit-render Lambdas read `FIREBASE_FCM_SECRET_ARN` at runtime.
+Standard Google fields (`project_id`, `client_email`, `private_key`) or camelCase (`projectId`, `clientEmail`, `privateKey`) are accepted. Extra Google service-account fields (`type`, `private_key_id`, …) are ignored. The processing and outfit-render Lambdas read `FIREBASE_FCM_SECRET_ARN` at runtime. Support reply push (WARDROBE-286 / WARDROBE-290) reads the same secret by name.
 
 Account delete (`DELETE /me`, WARDROBE-154) uses a **different** secret for the Firebase Admin SDK. After deploy, replace the generated placeholder with a Firebase **service-account JSON** that can call `auth().deleteUser`. Authenticated `DELETE /me` will wipe AWS data first, then delete the Auth user. Never commit the JSON.
 
@@ -3550,10 +3550,12 @@ Admin reply push: after the reply write succeeds, if the conversation has a uid,
 
 Admin reply email "Open in Pocket Closet" href is `<app-link>/support/{conversationId}` from SSM `/wardrobe/<stage>/support/app-link` (trailing slash trimmed). Omitted when the param is missing.
 
-The FCM service-account JSON is read at runtime from Secrets Manager `wardrobe/<stage>/fcm-service-account` and cached. Missing or invalid JSON skips push. The admin Lambda uses a lightweight Google OAuth JWT flow (`jose`); `firebase-admin` is not added to this Lambda bundle.
+The FCM service-account JSON is read at runtime from the existing Secrets Manager secret `wardrobe/<stage>/firebase-fcm` (same secret as job-done push) and cached. CDK looks that secret up by name (`Secret.fromSecretNameV2`) and does not create or manage it. Missing, empty, or invalid JSON skips push (`pushStatus: skipped`). The admin Lambda uses a lightweight Google OAuth JWT flow (`jose`); `firebase-admin` is not added to this Lambda bundle.
 
 ### Operator setup
 
-1. Create (or replace the placeholder in) Secrets Manager `wardrobe/<stage>/fcm-service-account` with the Firebase service-account JSON (`project_id`, `client_email`, `private_key`). Leave the placeholder to skip push.
-2. Upload the APNs key in the Firebase console (operator). This repo does not store APNs keys.
+1. Confirm Secrets Manager `wardrobe/<stage>/firebase-fcm` already holds a Firebase service-account JSON (`type`, `project_id`, `client_email`, `private_key`, …). This is the same secret as job-done FCM (WARDROBE-114). Leave it empty or invalid to skip support reply push. Never commit the JSON.
+2. APNs development and production auth keys are already uploaded in Firebase. This repo does not store APNs keys.
+
+WARDROBE-286 created an unused placeholder `wardrobe/<stage>/fcm-service-account`. That construct is removed. Dev stacks used `RemovalPolicy.DESTROY`, so deploying this change deletes that empty secret via CloudFormation. Staging and production used `RemovalPolicy.RETAIN`, so CloudFormation leaves it in place; delete the empty `wardrobe/<stage>/fcm-service-account` secret by hand if desired.
 

@@ -144,6 +144,11 @@ export type SupportPushStatus = (typeof SUPPORT_PUSH_STATUSES)[number];
  */
 export const SUPPORT_PUSH_TIMEOUT_MS = 3_000;
 export const SUPPORT_PUSH_TIMEOUT_MS_ENV = 'SUPPORT_PUSH_TIMEOUT_MS';
+/**
+ * SecretId for GetSecretValue (name or ARN). CDK imports
+ * `wardrobe/<stage>/firebase-fcm` by name and injects that name, not a
+ * complete ARN — fromSecretNameV2 ARNs end in `-??????`.
+ */
 export const FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV =
   'FCM_SERVICE_ACCOUNT_SECRET_ARN';
 
@@ -164,8 +169,9 @@ export function readSupportPushTimeoutMs(
     : SUPPORT_PUSH_TIMEOUT_MS;
 }
 
-export function fcmServiceAccountSecretName(stage: string): string {
-  return `wardrobe/${stage}/fcm-service-account`;
+/** Existing FCM secret (WARDROBE-114). Imported by name; not owned here. */
+export function firebaseFcmSecretName(stage: string): string {
+  return `wardrobe/${stage}/firebase-fcm`;
 }
 
 export function supportInboxRecipientParamName(stage: string): string {

@@ -134,9 +134,10 @@ export function buildSupportReplyFcmMessage(input: {
 /**
  * Optional Firebase service-account JSON for FCM HTTP v1.
  *
- * Secret path: `wardrobe/{stage}/fcm-service-account`
- * (ARN on `FCM_SERVICE_ACCOUNT_SECRET_ARN`).
- * Accepts standard Google JSON or camelCase.
+ * Secret path: `wardrobe/{stage}/firebase-fcm`
+ * (`FCM_SERVICE_ACCOUNT_SECRET_ARN` holds the secret name or ARN).
+ * Accepts standard Google JSON (`project_id`, `client_email`, `private_key`)
+ * or camelCase. Extra Google fields (`type`, `private_key_id`, …) are ignored.
  *
  * Missing / placeholder / unparseable secrets skip push — never 5xx.
  */
