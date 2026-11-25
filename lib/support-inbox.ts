@@ -31,7 +31,7 @@ import {
   SUPPORT_PUSH_TIMEOUT_MS_ENV,
   SUPPORT_TABLE_NAME_ENV,
   SUPPORT_UPLOAD_IP_RATE_LIMIT_ENV,
-  fcmServiceAccountSecretName,
+  firebaseFcmSecretName,
   supportInboxAppLinkParamName,
   supportInboxRecipientParamName,
   supportTableName,
@@ -207,14 +207,16 @@ export function addSupportInbox(
     process.env.SUPPORT_INBOX_APP_LINK,
   );
 
-  // Placeholder until the operator uploads a Firebase service-account JSON.
+  // Existing WARDROBE-114 secret, created outside this construct. Import by
+  // name only — do not create or manage it. grantRead on a name-imported
+  // secret uses the `-??????` ARN suffix wildcard. Pass secretName (not the
+  // partial ARN) as SecretId; GetSecretValue rejects `-??????`.
   // Missing / invalid JSON skips push (WARDROBE-286). Never commit the real key.
-  const fcmSecret = new secretsmanager.Secret(scope, 'SupportFcmServiceAccountSecret', {
-    secretName: fcmServiceAccountSecretName(stage),
-    description:
-      'Firebase service-account JSON for support reply FCM HTTP v1 (WARDROBE-286). Store { "project_id", "client_email", "private_key" }. Leave the placeholder to skip push. Never commit the real key.',
-    removalPolicy,
-  });
+  const fcmSecret = secretsmanager.Secret.fromSecretNameV2(
+    scope,
+    'SupportInboxFirebaseFcmSecret',
+    firebaseFcmSecretName(stage),
+  );
 
   const supportInboxAdminFn = lambda(scope, 'SupportInboxAdminFn', 'admin-handler.ts', {
     ...commonLambdaProps,
@@ -237,7 +239,7 @@ export function addSupportInbox(
         process.env.SUPPORT_EMAIL_TIMEOUT_MS,
         String(SUPPORT_EMAIL_TIMEOUT_MS),
       ),
-      [FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV]: fcmSecret.secretArn,
+      [FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV]: fcmSecret.secretName,
       [SUPPORT_PUSH_TIMEOUT_MS_ENV]: readContextOrEnv(
         scope,
         'supportPushTimeoutMs',
@@ -423,12 +425,6 @@ export function addSupportInbox(
     description:
       'SSM parameter for the Pocket Closet app link used in admin reply emails. The operator sets its value. Omit to send replies without the link.',
   });
-  new cdk.CfnOutput(scope, 'SupportFcmServiceAccountSecretName', {
-    value: fcmServiceAccountSecretName(stage),
-    description:
-      'Secrets Manager secret for Firebase FCM service-account JSON used on support reply push. The operator replaces the placeholder. Leave the placeholder to skip push.',
-  });
-
   return { table, supportInboxFn, supportInboxAdminFn, supportInboxUserFn };
 }
 

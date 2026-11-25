@@ -31,7 +31,9 @@ function deviceRow(token: string, uid = OWNER_UID): Record<string, unknown> {
 }
 
 const SERVICE_ACCOUNT = {
+  type: 'service_account',
   project_id: 'wardrobe-prod',
+  private_key_id: 'unused',
   client_email: 'fcm@wardrobe-prod.iam.gserviceaccount.com',
   private_key: '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n',
 };
@@ -85,7 +87,8 @@ describe('support inbox FCM push (WARDROBE-286)', () => {
       }),
     ).toBe('skipped');
 
-    process.env[FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV] = 'arn:secret:fcm';
+    process.env[FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV] =
+      'wardrobe/dev/firebase-fcm';
     expect(
       await sendSupportReplyPushBestEffort(
         {
@@ -95,6 +98,23 @@ describe('support inbox FCM push (WARDROBE-286)', () => {
         },
         {
           getSecretString: async () => 'placeholder',
+          listDevices: async () => [deviceRow('tok')],
+        },
+      ),
+    ).toBe('skipped');
+
+    resetSupportFcmCache();
+    expect(
+      await sendSupportReplyPushBestEffort(
+        {
+          conversationId: CONVERSATION_ID,
+          messageId: MESSAGE_ID,
+          uid: OWNER_UID,
+        },
+        {
+          getSecretString: async () => {
+            throw new Error('SecretEmpty');
+          },
           listDevices: async () => [deviceRow('tok')],
         },
       ),
@@ -141,7 +161,8 @@ describe('support inbox FCM push (WARDROBE-286)', () => {
   });
 
   it('sends FCM HTTP v1 with no message text, prunes UNREGISTERED and INVALID_ARGUMENT tokens, and records sent', async () => {
-    process.env[FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV] = 'arn:secret:fcm';
+    process.env[FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV] =
+      'wardrobe/dev/firebase-fcm';
     const deleteDevice = jest.fn(async () => undefined);
     const fetchImpl = jest.fn(async (url: string, init?: { body?: string }) => {
       if (url.includes('oauth2.googleapis.com')) {
@@ -226,7 +247,8 @@ describe('support inbox FCM push (WARDROBE-286)', () => {
   });
 
   it('returns failed without throwing when FCM send throws, and logs no PII', async () => {
-    process.env[FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV] = 'arn:secret:fcm';
+    process.env[FCM_SERVICE_ACCOUNT_SECRET_ARN_ENV] =
+      'wardrobe/dev/firebase-fcm';
     const log = {
       info: jest.fn(),
       warn: jest.fn(),

@@ -3,7 +3,7 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { DEFAULT_SUPPORT_INBOX_ALLOWED_ORIGINS } from '../../lib/support-inbox-cors';
 import { WardrobeStack } from '../../lib/wardrobe-stack';
 import {
-  fcmServiceAccountSecretName,
+  firebaseFcmSecretName,
   supportInboxAppLinkParamName,
   supportInboxRecipientParamName,
 } from '../../src/shared/support-inbox-names';
@@ -287,13 +287,22 @@ describe('support inbox admin stack wiring (WARDROBE-284)', () => {
         ),
         SUPPORT_EMAIL_TIMEOUT_MS: '3000',
         SUPPORT_PUSH_TIMEOUT_MS: '3000',
-        FCM_SERVICE_ACCOUNT_SECRET_ARN: expect.anything(),
+        FCM_SERVICE_ACCOUNT_SECRET_ARN: firebaseFcmSecretName('dev'),
         MEDIA_BUCKET_NAME: expect.anything(),
       }),
     );
     expect(env).not.toHaveProperty('RESEND_API_KEY');
     expect(env).not.toHaveProperty('SUPPORT_INBOX_APP_LINK');
     expect(env).not.toHaveProperty('FCM_SERVICE_ACCOUNT_JSON');
+
+    const secretStatements = statementsFor(
+      'SupportInboxAdminFn',
+      'secretsmanager:GetSecretValue',
+    );
+    const secretBlob = JSON.stringify(secretStatements);
+    expect(secretBlob).toContain('firebase-fcm-??????');
+    expect(secretBlob).not.toContain('fcm-service-account');
+    expect(secretBlob).toContain('secretsmanager:GetSecretValue');
 
     expect(template.findResources('AWS::SSM::Parameter')).toEqual({});
     template.hasOutput('SupportInboxAppLinkParamName', {
@@ -440,6 +449,9 @@ describe('support inbox user stack wiring (WARDROBE-286)', () => {
     expect(JSON.stringify(policiesFor('SupportInboxUserFn'))).not.toContain(
       'fcm-service-account',
     );
+    expect(JSON.stringify(policiesFor('SupportInboxUserFn'))).not.toContain(
+      'firebase-fcm',
+    );
 
     const functions = Object.entries(
       template.findResources('AWS::Lambda::Function'),
@@ -453,16 +465,23 @@ describe('support inbox user stack wiring (WARDROBE-286)', () => {
     }
   });
 
-  test('creates an FCM service-account placeholder secret with no secret values in the template', () => {
-    template.hasResourceProperties('AWS::SecretsManager::Secret', {
-      Name: fcmServiceAccountSecretName('dev'),
-    });
-    template.hasOutput('SupportFcmServiceAccountSecretName', {
-      Value: fcmServiceAccountSecretName('dev'),
-    });
+  test('imports firebase-fcm by name and does not create fcm-service-account', () => {
+    const secrets = Object.values(
+      template.findResources('AWS::SecretsManager::Secret'),
+    ) as Array<{ Properties?: { Name?: string } }>;
+    const names = secrets.map((secret) => secret.Properties?.Name);
+    expect(names).toContain(firebaseFcmSecretName('dev'));
+    expect(names).not.toContain('wardrobe/dev/fcm-service-account');
+    const outputIds = Object.keys(template.toJSON().Outputs ?? {});
+    expect(
+      outputIds.some((id) => id.includes('SupportFcmServiceAccountSecretName')),
+    ).toBe(false);
 
     const synthesized = JSON.stringify(template.toJSON());
-    expect(synthesized).toContain('wardrobe/dev/fcm-service-account');
+    expect(synthesized).toContain('wardrobe/dev/firebase-fcm');
+    expect(synthesized).toContain('firebase-fcm-??????');
+    expect(synthesized).not.toContain('wardrobe/dev/fcm-service-account');
+    expect(synthesized).not.toContain('SupportFcmServiceAccountSecret');
     expect(synthesized).not.toMatch(/BEGIN PRIVATE KEY/);
     expect(synthesized).not.toMatch(/firebase-adminsdk/);
     expect(synthesized).not.toMatch(/re_[A-Za-z0-9]{10,}/);
