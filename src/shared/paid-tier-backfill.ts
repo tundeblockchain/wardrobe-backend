@@ -44,6 +44,9 @@ export function paidTierBackfillPatch(
   if (item.entityType !== 'ENTITLEMENT') {
     return null;
   }
+  if (item.SK === 'ENTITLEMENT#COMP' || item.store === 'COMP' || item.source === 'comp') {
+    return null;
+  }
 
   const patch: PaidTierBackfillPatch = {};
 

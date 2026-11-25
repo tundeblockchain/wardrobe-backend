@@ -15,6 +15,7 @@ describe('DynamoDB key design (backend.md §16–17)', () => {
     expect(
       keys.entitlementHistorySk('2026-10-02T00:00:00.000Z', 'evt_1'),
     ).toBe('ENTITLEMENT#2026-10-02T00:00:00.000Z#evt_1');
+    expect(keys.entitlementCompSk).toBe('ENTITLEMENT#COMP');
     expect(keys.transactionOwnerPk('700002050981465')).toBe(
       'TXN#700002050981465',
     );

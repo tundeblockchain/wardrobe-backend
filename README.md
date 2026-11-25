@@ -441,14 +441,14 @@ Authorization: Bearer <firebase-id-token>
 | `features.otherAi` | boolean | Premium only — item-processing enqueue / retry (classify / colour / bg-removal), and PERSONAL Virtual Profile create / list / get / mutate. Outfit suggestions are paid-tier (Basic + Premium) and are not this flag. |
 | `limits` | object or `null` | Free caps. `null` = unlimited |
 | `usage` | object | Current owned counts (all wardrobes) |
-| `productId` / `store` / `period` / `expiresAt` | optional | Soft-omitted when unknown. `store` is `APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`. `period` is `MONTHLY` \| `YEARLY` \| `UNKNOWN` |
-| `paidTier` | object or `null` | Additive (WARDROBE-188). `null` on Free. Does not replace `tier` / `store` / `expiresAt`. See **Paid-tier status** below |
+| `productId` / `store` / `period` / `expiresAt` | optional | Soft-omitted when unknown. `store` is `APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN` \| `COMP`. `period` is `MONTHLY` \| `YEARLY` \| `UNKNOWN` |
+| `paidTier` | object or `null` | Additive (WARDROBE-188 / WARDROBE-291). `null` on Free. Does not replace `tier` / `store` / `expiresAt`. Comp grants use `paidTier.source: "comp"`. See **Paid-tier status** and **Comp Premium** below |
 
 Never includes Dynamo `PK` / `SK` / `lastEventId`. Soft-gate UX from this DTO; still handle the error codes below because the server enforces.
 
 #### Paid-tier status (WARDROBE-188)
 
-Each account has **one** paid-tier status on the existing `ENTITLEMENT` record (no extra table). `GET /me` keeps every existing field and **adds** `paidTier`.
+Each account has **one** store paid-tier status on the existing `ENTITLEMENT` record (no extra table). Operator comp Premium (WARDROBE-291) is a second dedicated row (`ENTITLEMENT#COMP`) that wins on read when present. `GET /me` keeps every existing field and **adds** `paidTier`.
 
 Existing records store uppercase `tier` (`FREE` \| `BASIC` \| `PREMIUM`) and Superwall `store` (`APP_STORE` \| `PLAY_STORE` \| `STRIPE` \| `UNKNOWN`). `source` is derived from `store` (`APP_STORE` → `ios`, `PLAY_STORE` → `android`, `STRIPE` → `stripe`). Expiry is the same `expiresAt` attribute.
 
@@ -515,8 +515,72 @@ App Store Premium (existing fields unchanged; `paidTier` added):
 | `paidTier` field | Type | Notes |
 | --- | --- | --- |
 | `tier` | `basic` \| `premium` | Lowercase. Omit the whole object (`null`) on Free |
-| `source` | `ios` \| `android` \| `stripe` | Soft-omitted when `store` is missing or `UNKNOWN` |
-| `expiresAt` | ISO 8601 | Same value as top-level `expiresAt`. Soft-omitted when unknown |
+| `source` | `ios` \| `android` \| `stripe` \| `comp` | Soft-omitted when `store` is missing or `UNKNOWN`. `"comp"` is an operator grant (WARDROBE-291) — hide manage / upgrade prompts |
+| `expiresAt` | ISO 8601 | Same value as top-level `expiresAt`. Soft-omitted when unknown. Omitted on comp grants (no expiry) |
+
+#### Comp Premium (WARDROBE-291)
+
+Operators can grant **permanent, non-expiring Premium** to a test/reviewer account without editing DynamoDB by hand. The grant is a dedicated item `USER#{uid} / ENTITLEMENT#COMP` (`store: COMP`, `source: comp`, `tier: PREMIUM`, no `expiresAt`). Superwall (App Store / Play), Stripe, and read-time lapse never write or delete that row. After `--revoke`, `GET /me` falls back to whatever the store entitlement row says.
+
+**Client contract.** Hide manage-subscription and upgrade/paywall prompts when:
+
+```text
+paidTier.source === "comp"
+```
+
+Equivalent top-level field: `store === "COMP"`. Existing fields stay backward compatible: `tier` is still `"PREMIUM"`, `paidTier.tier` is still `"premium"`, and `productId` / `period` / `expiresAt` are omitted. Clients that already switch on `paidTier.source` (`ios` / `android` / `stripe`) should treat `"comp"` as a third-party-free grant — do not open App Store, Play, or Stripe portal.
+
+Example `GET /me` while a comp row exists (even if the store row is lapsed, refunded, or expired):
+
+```json
+{
+  "userId": "firebase-uid",
+  "tier": "PREMIUM",
+  "status": "ACTIVE",
+  "features": {
+    "unlimitedCatalog": true,
+    "aiTryOn": true,
+    "otherAi": true
+  },
+  "limits": null,
+  "usage": {
+    "wardrobes": 0,
+    "items": 0,
+    "outfits": 0
+  },
+  "store": "COMP",
+  "updatedAt": "2026-11-01T00:00:00.000Z",
+  "paidTier": {
+    "tier": "premium",
+    "source": "comp"
+  },
+  "trackingConsent": false
+}
+```
+
+Operator script (`premium:grant`). Requires AWS credentials that can `GetItem` / `PutItem` / `DeleteItem` on `wardrobe-app-{stage}`. `--email` also needs `GOOGLE_APPLICATION_CREDENTIALS` (same Firebase Admin lookup as `support:grant-admin`). Do not commit service-account files.
+
+```bash
+# Unix / macOS (npm run forwards args after --)
+STAGE=prod npm run premium:grant -- --uid <firebaseUid>
+STAGE=prod npm run premium:grant -- --email <email>
+STAGE=prod npm run premium:grant -- --uid <firebaseUid> --revoke
+TABLE_NAME=wardrobe-app-prod npm run premium:grant -- --uid <firebaseUid>
+```
+
+PowerShell strips `--` from `npm run`, so call `ts-node` directly:
+
+```powershell
+$env:STAGE="prod"
+npx ts-node --transpile-only scripts/grant-comp-premium.ts --uid <uid>
+npx ts-node --transpile-only scripts/grant-comp-premium.ts --email <email>
+npx ts-node --transpile-only scripts/grant-comp-premium.ts --uid <uid> --revoke
+
+$env:TABLE_NAME="wardrobe-app-prod"
+npx ts-node --transpile-only scripts/grant-comp-premium.ts --uid <uid>
+```
+
+Re-running grant is idempotent. `--email` with no such Firebase user exits non-zero and does not log the email.
 
 Stripe / store webhooks must set paid-tier through `setPaidTierStatus` (one write helper):
 
@@ -2673,6 +2737,7 @@ Repeat for `02`–`04`. `referenceImages` is a Dynamo string set or list of stri
 PK                         SK                         GSI1PK                GSI1SK
 USER#{uid}                 PROFILE
 USER#{uid}                 ENTITLEMENT
+USER#{uid}                 ENTITLEMENT#COMP           (operator comp Premium; WARDROBE-291)
 USER#{uid}                 WARDROBE#{wardrobeId}
 USER#{uid}                 AIPROFILE#{aiProfileId}    (omitted — sparse)
 USER#{uid}                 SHOPPING#{itemId}          (24h TTL cache)
@@ -2724,6 +2789,7 @@ scripts/ensure-cdk-json.js
 scripts/seed-generic-models.ts   idempotent GENERIC_MODEL catalog writer (WARDROBE-45)
 scripts/seed-stripe.ts           idempotent Stripe Basic/Premium monthly prices (WARDROBE-187)
 scripts/backfill-paid-tier.ts    idempotent ENTITLEMENT source backfill (WARDROBE-188)
+scripts/grant-comp-premium.ts    operator COMP Premium grant/revoke (WARDROBE-291)
 scripts/grant-support-admin.ts   set/remove Firebase `admin` custom claim (WARDROBE-284)
 src/functions/
   health/

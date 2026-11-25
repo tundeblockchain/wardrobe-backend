@@ -39,6 +39,7 @@ export const GET_ME_EXISTING_STORE_VALUES = [
   'PLAY_STORE',
   'STRIPE',
   'UNKNOWN',
+  'COMP',
 ] as const;
 export const GET_ME_EXISTING_PERIOD_VALUES = [
   'MONTHLY',

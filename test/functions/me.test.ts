@@ -1703,6 +1703,81 @@ describe('me handler (WARDROBE-36)', () => {
       );
     });
 
+    it('returns COMP Premium over a lapsed store row (WARDROBE-291)', async () => {
+      mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
+        if (
+          command._op === 'Query' &&
+          command.input.ExpressionAttributeValues?.[':sk'] === 'ENTITLEMENT'
+        ) {
+          return {
+            Items: [
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT#2026-10-01T00:00:00.000Z#evt_store',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'PREMIUM',
+                status: 'EXPIRED',
+                store: 'STRIPE',
+                source: 'stripe',
+                productId: 'wardrobe_premium_monthly',
+                expiresAt: '2020-01-01T00:00:00.000Z',
+                lastEventId: 'evt_store',
+                createdAt: '2019-01-01T00:00:00.000Z',
+                updatedAt: '2020-01-01T00:00:00.000Z',
+              },
+              {
+                PK: `USER#${OWNER_ID}`,
+                SK: 'ENTITLEMENT#COMP',
+                entityType: 'ENTITLEMENT',
+                userId: OWNER_ID,
+                tier: 'PREMIUM',
+                status: 'ACTIVE',
+                store: 'COMP',
+                source: 'comp',
+                createdAt: '2026-11-01T00:00:00.000Z',
+                updatedAt: '2026-11-01T00:00:00.000Z',
+              },
+            ],
+          };
+        }
+        if (command._op === 'Get') {
+          return {};
+        }
+        if (command._op === 'Query') {
+          return { Items: [] };
+        }
+        throw new Error(`unexpected Dynamo op ${command._op}`);
+      });
+
+      const result = asResult(
+        await handler(event({ path: '/me', method: 'GET' })),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(bodyOf(result)).toEqual({
+        userId: OWNER_ID,
+        tier: 'PREMIUM',
+        status: 'ACTIVE',
+        features: {
+          unlimitedCatalog: true,
+          aiTryOn: true,
+          otherAi: true,
+        },
+        limits: null,
+        usage: { wardrobes: 0, items: 0, outfits: 0 },
+        store: 'COMP',
+        updatedAt: '2026-11-01T00:00:00.000Z',
+        paidTier: {
+          tier: 'premium',
+          source: 'comp',
+        },
+        trackingConsent: false,
+      });
+      expect(bodyOf(result)).not.toHaveProperty('expiresAt');
+      expect(bodyOf(result)).not.toHaveProperty('productId');
+    });
+
     it('treats an expired Premium row as Free', async () => {
       mockDynamoSend.mockImplementation(async (command: DynamoCommand) => {
         if (
